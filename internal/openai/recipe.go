@@ -11,7 +11,7 @@ import (
 
 type FunctionCallArgument struct {
 	models.RecipeDef
-	Summary string `json:"summarize_recipe_changes"`
+	Summary string `json:"recipe_summary"`
 }
 
 // createRecipeDefRequest creates a chat completion request for a recipe definition based on the chat completion messages.
@@ -19,6 +19,14 @@ func createRecipeDefRequest(chatCompletionMessages []openai.ChatCompletionMessag
 	// Validate the chat completion messages
 	if len(chatCompletionMessages) == 0 {
 		return nil, errors.New("failed to create recipe chat completion: chatCompletionMessages is empty")
+	}
+
+	// Define the summary prompt
+	var summaryPrompt string
+	if isRegen {
+		summaryPrompt = os.Getenv("SUMMARIZE_RECIPE_CHANGES")
+	} else {
+		summaryPrompt = os.Getenv("SUMMARIZE_RECIPE") // "Please summarize the recipe."
 	}
 
 	// Define the function call recipe definition parameters
@@ -67,14 +75,10 @@ func createRecipeDefRequest(chatCompletionMessages []openai.ChatCompletionMessag
 			Description: "Provide a list of recipe suggestions(just the titles) based on: 1. Homemade versions of store-bought ingredients used in this recipe. 2. Something that would pair well with this recipe.",
 			Items:       &jsonschema.Definition{Type: jsonschema.String},
 		},
-	}
-
-	// Conditionally add summarize_recipe_changes to parameters if this is a regenerate request
-	if summarizeChanges := os.Getenv("SUMMARIZE_RECIPE_CHANGES"); isRegen {
-		recipeDefParams["summarize_recipe_changes"] = jsonschema.Definition{
+		"recipe_summary": {
 			Type:        jsonschema.String,
-			Description: summarizeChanges,
-		}
+			Description: summaryPrompt,
+		},
 	}
 
 	// Define the function for use in the API call
