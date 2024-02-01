@@ -95,7 +95,8 @@ func (h *RecipeHandler) GenerateRecipeWithChat(c *gin.Context) {
 
 	recipeResponse, err := h.Service.InitGenerateRecipeWithChat(user, request.UserPrompt)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		log.Printf("error: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "An unexpected error occurred while initializing generation"})
 		return
 	}
 
