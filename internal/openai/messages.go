@@ -14,7 +14,7 @@ func processExistingRecipeHistoryEntries(historyIn []models.RecipeHistoryEntry) 
 
 	for _, entryIn := range historyIn {
 		// Serialize the recipe history message
-		argumentJSON, err := util.SerializeToJSONStringWithBuffer(entryIn.RecipeResponse)
+		argumentJSON, err := util.SerializeToJSONStringWithBuffer(entryIn.Response)
 		if err != nil {
 			return nil, fmt.Errorf("failed to serialize chat completion message: %v", err)
 		}
@@ -30,7 +30,7 @@ func processExistingRecipeHistoryEntries(historyIn []models.RecipeHistoryEntry) 
 		default:
 			messagesOut = append(messagesOut, openai.ChatCompletionMessage{
 				Role:    openai.ChatMessageRoleUser,
-				Content: entryIn.UserPrompt,
+				Content: entryIn.Prompt,
 			})
 		}
 

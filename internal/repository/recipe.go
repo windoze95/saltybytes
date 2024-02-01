@@ -152,7 +152,7 @@ func (r *RecipeRepository) UpdateRecipeDef(recipe *models.Recipe, newRecipeHisto
 		return err
 	}
 
-	newRecipeHistoryEntry.RecipeHistoryID = recipe.HistoryID
+	newRecipeHistoryEntry.HistoryID = recipe.HistoryID
 
 	// Insert the new recipe history entry into the database
 	err = tx.Create(&newRecipeHistoryEntry).Error

@@ -10,7 +10,6 @@ type Recipe struct {
 	gorm.Model
 	RecipeDef
 	// Title        string
-	Version int `gorm:"default:1"`
 	// Ingredients  Ingredients    `gorm:"type:jsonb"` // Embedded slice of Ingredient
 	// Instructions pq.StringArray `gorm:"type:text[]"`
 	// CookTime      int
@@ -34,18 +33,19 @@ type Recipe struct {
 // RecipeHistory is the model for a recipe history and the current entry that is being used to represent the recipe.
 type RecipeHistory struct {
 	gorm.Model
-	Entries       []RecipeHistoryEntry `gorm:"foreignKey:RecipeHistoryID"`
+	Entries       []RecipeHistoryEntry `gorm:"foreignKey:HistoryID"`
 	ActiveEntryID *uint                // Foreign key (belongs to RecipeHistoryEntry)
 }
 
 // RecipeHistoryEntry is the model for a recipe history entry.
 type RecipeHistoryEntry struct {
 	gorm.Model
-	RecipeHistoryID uint // Foreign key (belongs to RecipeHistory)
-	UserPrompt      string
-	Type            RecipeType `gorm:"type:text"`
-	RecipeResponse  *RecipeDef `gorm:"type:jsonb"` // Embedded struct
-	Version         int        // To track the order of the entries
+	HistoryID uint // Foreign key (belongs to RecipeHistory)
+	Prompt    string
+	Response  *RecipeDef `gorm:"type:jsonb"` // Embedded struct
+	Summary   string
+	Type      RecipeType `gorm:"type:text"`
+	Order     int        // To track the order of the entries
 }
 
 // Tag is the model for a recipe hashtag.
