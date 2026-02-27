@@ -170,34 +170,11 @@ OPENAI_API_KEY=sk-...
 
 ---
 
-## Web Search (Google + Brave)
+## Web Search (Brave)
 
-Used for web recipe search — finding recipes across the internet filtered to known recipe sites. The app uses Google Custom Search as the primary provider and Brave Search as a free fallback when Google's daily quota is hit.
+Used for web recipe search — finding recipes across the internet. Brave Search is the active provider. Google CSE support exists in the codebase but is disabled because Google no longer allows Custom Search Engines to search the entire web (a curated site list is required).
 
-Both are optional. If neither is configured, web search returns an error gracefully; all other features work.
-
-### GOOGLE_SEARCH_KEY + GOOGLE_SEARCH_CX
-
-**Free tier**: 100 queries/day (~3,000/month).
-
-1. Go to [Google Cloud Console](https://console.cloud.google.com/)
-2. Create a project (or use an existing one)
-3. Enable the **Custom Search API**:
-   - Go to **APIs & Services** → **Library**
-   - Search for "Custom Search API" → **Enable**
-4. Create an API key:
-   - **APIs & Services** → **Credentials** → **Create Credentials** → **API key**
-   - Copy the key → this is your `GOOGLE_SEARCH_KEY`
-5. Create a Custom Search Engine:
-   - Go to [programmablesearchengine.google.com](https://programmablesearchengine.google.com/)
-   - Click **Add** → name it "SaltyBytes Recipes"
-   - Under "What to search" select **Search the entire web**
-   - Create it, then go to **Edit** → copy the **Search engine ID** → this is your `GOOGLE_SEARCH_CX`
-
-```
-GOOGLE_SEARCH_KEY=AIza...
-GOOGLE_SEARCH_CX=a1b2c3d4e...
-```
+If `BRAVE_SEARCH_KEY` is not configured, web search returns an error gracefully; all other features work.
 
 ### BRAVE_SEARCH_KEY
 
@@ -212,7 +189,14 @@ GOOGLE_SEARCH_CX=a1b2c3d4e...
 BRAVE_SEARCH_KEY=BSA...
 ```
 
-**Combined free tier**: ~5,000 searches/month at zero cost. Google is tried first; when it returns a 429/403 (daily limit), the app automatically falls back to Brave for the rest of the day.
+### GOOGLE_SEARCH_KEY + GOOGLE_SEARCH_CX (currently unused)
+
+Google CSE is disabled in the code. These variables are accepted but ignored at runtime. If Google re-enables full-web search for Custom Search Engines in the future, the provider can be re-enabled in `internal/ai/web_search.go`.
+
+```
+GOOGLE_SEARCH_KEY=AIza...
+GOOGLE_SEARCH_CX=a1b2c3d4e...
+```
 
 ---
 
@@ -228,9 +212,9 @@ BRAVE_SEARCH_KEY=BSA...
 [ ] S3_BUCKET          — your bucket name
 [ ] ANTHROPIC_API_KEY  — from console.anthropic.com
 [ ] OPENAI_API_KEY     — from platform.openai.com
-[ ] GOOGLE_SEARCH_KEY  — from Google Cloud Console (optional)
-[ ] GOOGLE_SEARCH_CX   — from Programmable Search Engine (optional)
 [ ] BRAVE_SEARCH_KEY   — from brave.com/search/api (optional)
+[ ] GOOGLE_SEARCH_KEY  — from Google Cloud Console (disabled, optional)
+[ ] GOOGLE_SEARCH_CX   — from Programmable Search Engine (disabled, optional)
 ```
 
 Once all variables are set:
