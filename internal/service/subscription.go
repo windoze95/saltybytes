@@ -56,26 +56,22 @@ func (s *SubscriptionService) UpgradeSubscription(userID uint) (*models.Subscrip
 	return nil, fmt.Errorf("paid plans are not yet available")
 }
 
-// IncrementUsage increments a usage counter for the given type.
+// IncrementUsage atomically increments a usage counter in the database.
 // Valid usageType values: "allergen", "search", "ai_generation".
 func (s *SubscriptionService) IncrementUsage(userID uint, usageType string) error {
-	sub, err := s.GetSubscription(userID)
-	if err != nil {
-		return err
-	}
-
+	var column string
 	switch usageType {
 	case "allergen":
-		sub.AllergenAnalysesUsed++
+		column = "allergen_analyses_used"
 	case "search":
-		sub.WebSearchesUsed++
+		column = "web_searches_used"
 	case "ai_generation":
-		sub.AIGenerationsUsed++
+		column = "ai_generations_used"
 	default:
 		return fmt.Errorf("unknown usage type: %s", usageType)
 	}
 
-	return nil
+	return s.Repo.IncrementSubscriptionUsage(userID, column)
 }
 
 // CheckLimit returns true if the user is within their usage limits for the given type.

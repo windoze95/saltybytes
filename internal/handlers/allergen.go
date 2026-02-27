@@ -73,6 +73,11 @@ func (h *AllergenHandler) AnalyzeRecipe(c *gin.Context) {
 		return
 	}
 
+	// Increment usage counter after successful analysis
+	if err := h.Service.SubService.IncrementUsage(user.ID, "allergen"); err != nil {
+		logger.Get().Error("failed to increment allergen usage", zap.Uint("user_id", user.ID), zap.Error(err))
+	}
+
 	c.JSON(http.StatusOK, gin.H{"analysis": result})
 }
 

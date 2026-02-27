@@ -28,16 +28,18 @@ type AllergenService struct {
 	FamilyRepo   *repository.FamilyRepository
 	RecipeRepo   *repository.RecipeRepository
 	AIProvider   ai.TextProvider
+	SubService   *SubscriptionService
 }
 
 // NewAllergenService is the constructor function for initializing a new AllergenService.
-func NewAllergenService(cfg *config.Config, allergenRepo *repository.AllergenRepository, familyRepo *repository.FamilyRepository, recipeRepo *repository.RecipeRepository, aiProvider ai.TextProvider) *AllergenService {
+func NewAllergenService(cfg *config.Config, allergenRepo *repository.AllergenRepository, familyRepo *repository.FamilyRepository, recipeRepo *repository.RecipeRepository, aiProvider ai.TextProvider, subService *SubscriptionService) *AllergenService {
 	return &AllergenService{
 		Cfg:          cfg,
 		AllergenRepo: allergenRepo,
 		FamilyRepo:   familyRepo,
 		RecipeRepo:   recipeRepo,
 		AIProvider:   aiProvider,
+		SubService:   subService,
 	}
 }
 

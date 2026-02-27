@@ -138,9 +138,12 @@ func SetupRouter(cfg *config.Config, database *gorm.DB) *gin.Engine {
 	apiProtected.PUT("/family/members/:member_id/dietary", middleware.AttachUserToContext(userService), familyHandler.UpdateDietaryProfile)
 	apiProtected.POST("/family/members/:member_id/dietary/interview", middleware.AttachUserToContext(userService), familyHandler.DietaryInterview)
 
+	// Subscription service (shared by allergen + subscription routes)
+	subService := service.NewSubscriptionService(cfg, userRepo)
+
 	// Allergen analysis routes setup
 	allergenRepo := repository.NewAllergenRepository(database)
-	allergenService := service.NewAllergenService(cfg, allergenRepo, familyRepo, recipeRepo, textProvider)
+	allergenService := service.NewAllergenService(cfg, allergenRepo, familyRepo, recipeRepo, textProvider, subService)
 	allergenHandler := handlers.NewAllergenHandler(allergenService)
 
 	apiProtected.POST("/recipes/:recipe_id/allergens/analyze", middleware.AttachUserToContext(userService), allergenHandler.AnalyzeRecipe)
@@ -166,7 +169,6 @@ func SetupRouter(cfg *config.Config, database *gorm.DB) *gin.Engine {
 	apiProtected.GET("/recipes/similar/:recipe_id", middleware.AttachUserToContext(userService), similarityHandler.FindSimilar)
 
 	// Subscription routes
-	subService := service.NewSubscriptionService(cfg, userRepo)
 	subHandler := handlers.NewSubscriptionHandler(subService)
 	apiProtected.GET("/subscription", middleware.AttachUserToContext(userService), subHandler.GetSubscription)
 	apiProtected.POST("/subscription/upgrade", middleware.AttachUserToContext(userService), subHandler.UpgradeSubscription)

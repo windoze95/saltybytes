@@ -130,6 +130,23 @@ func (r *UserRepository) UpdatePersonalization(userID uint, updatedPersonalizati
 	return err
 }
 
+// IncrementSubscriptionUsage atomically increments a usage counter on the
+// subscription row for the given user. column must be one of:
+// "allergen_analyses_used", "web_searches_used", "ai_generations_used".
+func (r *UserRepository) IncrementSubscriptionUsage(userID uint, column string) error {
+	result := r.DB.Model(&models.Subscription{}).
+		Where("user_id = ?", userID).
+		UpdateColumn(column, gorm.Expr(column+" + 1"))
+	if result.Error != nil {
+		logger.Get().Error("failed to increment subscription usage", zap.Uint("user_id", userID), zap.String("column", column), zap.Error(result.Error))
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return errors.New("no subscription found for user")
+	}
+	return nil
+}
+
 // UsernameExists checks if a username already exists.
 func (r *UserRepository) UsernameExists(username string) (bool, error) {
 	lowercaseUsername := strings.ToLower(username)
