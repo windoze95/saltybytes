@@ -138,6 +138,8 @@ func (s *RecipeService) FinishRegenerateRecipe(recipe *models.Recipe, user *mode
 			}
 		}
 
+		s.generateAndStoreEmbedding(ctx, recipe.ID, &recipeDef)
+
 		recipeErrChan <- nil
 	}(ctx, recipeErrChan, imageErrChan)
 

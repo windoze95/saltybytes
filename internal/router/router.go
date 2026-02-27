@@ -50,7 +50,11 @@ func SetupRouter(cfg *config.Config, database *gorm.DB) *gin.Engine {
 
 	// Recipe-related routes setup
 	recipeRepo := repository.NewRecipeRepository(database)
+	vectorRepo := repository.NewVectorRepository(database)
+	embedProvider := ai.NewEmbeddingProvider(cfg.EnvVars.OpenAIAPIKey)
 	recipeService := service.NewRecipeService(cfg, recipeRepo, textProvider, imageProvider)
+	recipeService.EmbedProvider = embedProvider
+	recipeService.VectorRepo = vectorRepo
 	recipeHandler := handlers.NewRecipeHandler(recipeService)
 
 	// Import-related routes setup
@@ -158,8 +162,6 @@ func SetupRouter(cfg *config.Config, database *gorm.DB) *gin.Engine {
 	apiProtected.GET("/recipes/search", middleware.AttachUserToContext(userService), searchHandler.SearchRecipes)
 
 	// Vector similarity routes
-	vectorRepo := repository.NewVectorRepository(database)
-	embedProvider := ai.NewEmbeddingProvider(cfg.EnvVars.OpenAIAPIKey)
 	similarityHandler := handlers.NewSimilarityHandler(vectorRepo, embedProvider, recipeService)
 	apiProtected.GET("/recipes/similar/:recipe_id", middleware.AttachUserToContext(userService), similarityHandler.FindSimilar)
 

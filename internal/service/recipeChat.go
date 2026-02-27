@@ -125,6 +125,8 @@ func (s *RecipeService) FinishGenerateRecipe(recipe *models.Recipe, user *models
 			// Non-fatal: the recipe was created successfully, tree is supplementary
 		}
 
+		s.generateAndStoreEmbedding(ctx, recipe.ID, &recipeDef)
+
 		recipeErrChan <- nil
 	}(ctx, recipeErrChan, imageErrChan)
 

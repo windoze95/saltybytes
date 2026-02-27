@@ -145,6 +145,8 @@ func (s *RecipeService) FinishGenerateRecipeWithFork(recipe *models.Recipe, sour
 			// Non-fatal: the recipe was created successfully, tree is supplementary
 		}
 
+		s.generateAndStoreEmbedding(ctx, recipe.ID, &recipeDef)
+
 		recipeErrChan <- nil
 	}(ctx, recipeErrChan, imageErrChan)
 

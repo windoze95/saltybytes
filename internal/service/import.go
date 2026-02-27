@@ -325,6 +325,9 @@ func (s *ImportService) createImportedRecipe(ctx context.Context, recipeDef *mod
 		log.Error("failed to create recipe tree for import", zap.Uint("recipe_id", recipe.ID), zap.Error(err))
 	}
 
+	// Generate and store embedding for similarity search (best-effort)
+	s.RecipeService.generateAndStoreEmbedding(ctx, recipe.ID, recipeDef)
+
 	log.Info("recipe imported successfully", zap.Uint("recipe_id", recipe.ID), zap.String("title", recipeDef.Title))
 
 	recipeResponse := s.RecipeService.ToRecipeResponse(recipe)

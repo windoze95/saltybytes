@@ -6,12 +6,14 @@ import (
 	"fmt"
 	"strings"
 
-	"gorm.io/gorm"
 	"github.com/windoze95/saltybytes-api/internal/ai"
 	"github.com/windoze95/saltybytes-api/internal/config"
+	"github.com/windoze95/saltybytes-api/internal/logger"
 	"github.com/windoze95/saltybytes-api/internal/models"
 	"github.com/windoze95/saltybytes-api/internal/repository"
 	"github.com/windoze95/saltybytes-api/internal/s3"
+	"go.uber.org/zap"
+	"gorm.io/gorm"
 )
 
 // RecipeService is the business logic layer for recipe-related operations.
@@ -20,6 +22,14 @@ type RecipeService struct {
 	Repo          repository.RecipeRepo
 	TextProvider  ai.TextProvider
 	ImageProvider ai.ImageProvider
+	// Optional: set these to enable embedding generation on recipe create/update.
+	EmbedProvider ai.EmbeddingProvider
+	VectorRepo    VectorUpdater
+}
+
+// VectorUpdater is the subset of VectorRepository needed by RecipeService.
+type VectorUpdater interface {
+	UpdateEmbedding(recipeID uint, embedding []float32) error
 }
 
 // RecipeResponse is the response object for recipe-related operations.
@@ -65,6 +75,29 @@ func NewRecipeService(cfg *config.Config, repo repository.RecipeRepo, textProvid
 		Repo:          repo,
 		TextProvider:  textProvider,
 		ImageProvider: imageProvider,
+	}
+}
+
+// generateAndStoreEmbedding creates a vector embedding for a recipe and persists it.
+// This is best-effort: failures are logged but do not block recipe operations.
+func (s *RecipeService) generateAndStoreEmbedding(ctx context.Context, recipeID uint, recipeDef *models.RecipeDef) {
+	if s.EmbedProvider == nil || s.VectorRepo == nil {
+		return
+	}
+
+	text := recipeDef.Title
+	for _, ing := range recipeDef.Ingredients {
+		text += " " + ing.Name
+	}
+
+	embedding, err := s.EmbedProvider.GenerateEmbedding(ctx, text)
+	if err != nil {
+		logger.Get().Warn("failed to generate recipe embedding", zap.Uint("recipe_id", recipeID), zap.Error(err))
+		return
+	}
+
+	if err := s.VectorRepo.UpdateEmbedding(recipeID, embedding); err != nil {
+		logger.Get().Warn("failed to store recipe embedding", zap.Uint("recipe_id", recipeID), zap.Error(err))
 	}
 }
 
