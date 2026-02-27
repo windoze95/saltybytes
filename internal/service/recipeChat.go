@@ -47,7 +47,7 @@ func (s *RecipeService) FinishGenerateRecipe(recipe *models.Recipe, user *models
 	defer cancel()
 
 	recipeErrChan := make(chan error)
-	imageErrChan := make(chan error)
+	imageErrChan := make(chan error, 1) // buffered to prevent goroutine leak when genImage is false
 
 	req := ai.RecipeRequest{
 		UserPrompt:   userPrompt,

@@ -40,12 +40,16 @@ func (s *RecipeService) FinishRegenerateRecipe(recipe *models.Recipe, user *mode
 	defer cancel()
 
 	recipeErrChan := make(chan error)
-	imageErrChan := make(chan error)
+	imageErrChan := make(chan error, 1) // buffered to prevent goroutine leak when genImage is false
 
-	// Convert existing history entries to ai.Message format for conversation context
+	// Load recipe history for AI conversation context (GetRecipeByID doesn't preload it)
 	var existingHistory []ai.Message
-	if recipe.History != nil {
-		existingHistory = historyEntriesToMessages(recipe.History.Entries, &recipe.RecipeDef)
+	if recipe.HistoryID != 0 {
+		if history, err := s.Repo.GetHistoryByID(recipe.HistoryID); err == nil {
+			existingHistory = historyEntriesToMessages(history.Entries, &recipe.RecipeDef)
+		} else {
+			logger.Get().Warn("failed to load recipe history for regen", zap.Uint("recipe_id", recipe.ID), zap.Error(err))
+		}
 	}
 
 	req := ai.RegenerateRequest{

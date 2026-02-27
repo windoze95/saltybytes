@@ -42,21 +42,29 @@ func (s *RecipeService) InitGenerateRecipeWithFork(user *models.User, forkedReci
 
 	recipeResponse := s.ToRecipeResponse(recipe)
 
-	go s.FinishGenerateRecipeWithFork(recipe, user, userPrompt, genImage)
+	go s.FinishGenerateRecipeWithFork(recipe, forkedRecipe, user, userPrompt, genImage)
 
 	return recipeResponse, nil
 }
 
 // FinishGenerateRecipeWithFork finishes generating a recipe with fork.
-func (s *RecipeService) FinishGenerateRecipeWithFork(recipe *models.Recipe, user *models.User, userPrompt string, genImage bool) {
+// sourceRecipe is the original recipe being forked (used for AI conversation context).
+func (s *RecipeService) FinishGenerateRecipeWithFork(recipe *models.Recipe, sourceRecipe *models.Recipe, user *models.User, userPrompt string, genImage bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
 	recipeErrChan := make(chan error)
-	imageErrChan := make(chan error)
+	imageErrChan := make(chan error, 1) // buffered to prevent goroutine leak when genImage is false
 
-	// Convert existing history entries to ai.Message format for fork context
-	existingHistory := historyEntriesToMessages(recipe.History.Entries, &recipe.RecipeDef)
+	// Load the source recipe's history for AI conversation context
+	var existingHistory []ai.Message
+	if sourceRecipe.HistoryID != 0 {
+		if history, err := s.Repo.GetHistoryByID(sourceRecipe.HistoryID); err == nil {
+			existingHistory = historyEntriesToMessages(history.Entries, &sourceRecipe.RecipeDef)
+		} else {
+			logger.Get().Warn("failed to load source recipe history for fork", zap.Uint("recipe_id", sourceRecipe.ID), zap.Error(err))
+		}
+	}
 
 	req := ai.ForkRequest{
 		RecipeRequest: ai.RecipeRequest{

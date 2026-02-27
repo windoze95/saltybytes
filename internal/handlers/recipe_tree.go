@@ -58,7 +58,18 @@ func (h *RecipeTreeHandler) CreateBranch(c *gin.Context) {
 
 	user, err := util.GetUserFromContext(c)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	// Verify recipe ownership before allowing branch creation
+	recipe, err := h.Service.Repo.GetRecipeByID(recipeID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Recipe not found"})
+		return
+	}
+	if recipe.CreatedByID != user.ID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "You can only modify your own recipes"})
 		return
 	}
 
