@@ -50,6 +50,17 @@ func (h *AllergenHandler) AnalyzeRecipe(c *gin.Context) {
 		return
 	}
 
+	// Verify recipe ownership
+	recipe, err := h.Service.RecipeRepo.GetRecipeByID(recipeID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "recipe not found"})
+		return
+	}
+	if recipe.CreatedByID != user.ID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "you can only analyze your own recipes"})
+		return
+	}
+
 	result, err := h.Service.AnalyzeRecipe(c.Request.Context(), recipeID, isPremium)
 	if err != nil {
 		logger.Get().Error("allergen analysis failed", zap.String("recipe_id", recipeIDStr), zap.Error(err))
@@ -68,10 +79,27 @@ func (h *AllergenHandler) AnalyzeRecipe(c *gin.Context) {
 // GetAnalysis returns cached allergen analysis for a recipe.
 // GET /v1/recipes/:recipe_id/allergens
 func (h *AllergenHandler) GetAnalysis(c *gin.Context) {
+	user, err := util.GetUserFromContext(c)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
 	recipeIDStr := c.Param("recipe_id")
 	recipeID, err := parseUintParam(recipeIDStr)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid recipe ID"})
+		return
+	}
+
+	// Verify recipe ownership
+	recipe, err := h.Service.RecipeRepo.GetRecipeByID(recipeID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "recipe not found"})
+		return
+	}
+	if recipe.CreatedByID != user.ID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "you can only view your own recipe analyses"})
 		return
 	}
 
@@ -103,6 +131,17 @@ func (h *AllergenHandler) CheckFamily(c *gin.Context) {
 	recipeID, err := parseUintParam(recipeIDStr)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid recipe ID"})
+		return
+	}
+
+	// Verify recipe ownership
+	recipe, err := h.Service.RecipeRepo.GetRecipeByID(recipeID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "recipe not found"})
+		return
+	}
+	if recipe.CreatedByID != user.ID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "you can only check allergens for your own recipes"})
 		return
 	}
 

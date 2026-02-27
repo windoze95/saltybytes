@@ -79,6 +79,18 @@ func validateExternalURL(rawURL string) error {
 	return nil
 }
 
+// safeHTTPClient returns an HTTP client that re-validates each redirect hop
+// against the SSRF blocklist, preventing open-redirect attacks that bounce
+// through a public URL into a private/internal address.
+var safeHTTPClient = &http.Client{
+	CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 10 {
+			return fmt.Errorf("too many redirects")
+		}
+		return validateExternalURL(req.URL.String())
+	},
+}
+
 // ImportFromURL fetches a page, tries JSON-LD extraction first, falls back to AI.
 func (s *ImportService) ImportFromURL(ctx context.Context, url string, user *models.User) (*RecipeResponse, error) {
 	log := logger.Get().With(zap.Uint("user_id", user.ID), zap.String("source_url", url))
@@ -92,7 +104,7 @@ func (s *ImportService) ImportFromURL(ctx context.Context, url string, user *mod
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := safeHTTPClient.Do(req)
 	if err != nil {
 		log.Error("failed to fetch URL", zap.Error(err))
 		return nil, fmt.Errorf("failed to fetch URL: %w", err)
@@ -218,7 +230,7 @@ func (s *ImportService) PreviewFromURL(ctx context.Context, url string, unitSyst
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := safeHTTPClient.Do(req)
 	if err != nil {
 		log.Error("failed to fetch URL for preview", zap.Error(err))
 		return nil, fmt.Errorf("failed to fetch URL: %w", err)

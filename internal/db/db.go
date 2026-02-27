@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/windoze95/saltybytes-api/internal/config"
+	"github.com/windoze95/saltybytes-api/internal/db/migrations"
 	"github.com/windoze95/saltybytes-api/internal/logger"
 	"github.com/windoze95/saltybytes-api/internal/models"
 	"go.uber.org/zap"
@@ -64,6 +65,12 @@ func connectToDatabaseWithRetry(databaseURL string) (*gorm.DB, error) {
 	database.Exec(`ALTER TABLE recipe_nodes ADD CONSTRAINT IF NOT EXISTS fk_recipe_nodes_tree
 		FOREIGN KEY (tree_id) REFERENCES recipe_trees(id)
 		ON UPDATE CASCADE ON DELETE CASCADE`)
+
+	// Backfill tree structures for any recipes that have history but no tree.
+	// Idempotent: skips recipes that already have a tree_id.
+	if err := migrations.MigrateRecipeHistoryToTree(database); err != nil {
+		logger.Get().Error("recipe tree backfill failed", zap.Error(err))
+	}
 
 	return database, err
 }
