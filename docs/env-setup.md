@@ -178,10 +178,10 @@ If `BRAVE_SEARCH_KEY` is not configured, web search returns an error gracefully;
 
 ### BRAVE_SEARCH_KEY
 
-**Free tier**: 2,000 queries/month (1 query/second).
+**Pricing**: $5 per 1,000 requests, with $5 in free monthly credits (~1,000 queries/month at no cost). Credit card required for signup.
 
 1. Go to [brave.com/search/api](https://brave.com/search/api/)
-2. Sign up for the **Free** plan
+2. Sign up for the **Search** plan
 3. Go to your dashboard → **API Keys**
 4. Copy the key
 
