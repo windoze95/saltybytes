@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sync/atomic"
 	"time"
 
 	"github.com/windoze95/saltybytes-api/internal/logger"
@@ -20,8 +21,8 @@ type WebSearchProvider struct {
 	googleCX        string
 	braveAPIKey     string
 	httpClient      *http.Client
-	googleExhausted bool
-	braveExhausted  bool
+	googleExhausted atomic.Bool
+	braveExhausted  atomic.Bool
 }
 
 // NewWebSearchProvider creates a search provider with Google primary + Brave fallback.
@@ -43,7 +44,7 @@ func (p *WebSearchProvider) SearchRecipes(ctx context.Context, query string, cou
 	}
 
 	// Try Brave first (unless we already know it's exhausted for the month)
-	if !p.braveExhausted && p.braveAPIKey != "" {
+	if !p.braveExhausted.Load() && p.braveAPIKey != "" {
 		results, err := p.searchBrave(ctx, query, count)
 		if err == nil {
 			return results, nil
@@ -52,7 +53,7 @@ func (p *WebSearchProvider) SearchRecipes(ctx context.Context, query string, cou
 	}
 
 	// Fallback to Google
-	if !p.googleExhausted && p.googleAPIKey != "" {
+	if !p.googleExhausted.Load() && p.googleAPIKey != "" {
 		return p.searchGoogle(ctx, query, count)
 	}
 
@@ -126,7 +127,7 @@ func (p *WebSearchProvider) searchGoogle(ctx context.Context, query string, coun
 
 	// 429 = quota exhausted for today
 	if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == 403 {
-		p.googleExhausted = true
+		p.googleExhausted.Store(true)
 		return nil, fmt.Errorf("google quota exhausted (status %d)", resp.StatusCode)
 	}
 
@@ -141,7 +142,7 @@ func (p *WebSearchProvider) searchGoogle(ctx context.Context, query string, coun
 
 	if gResp.Error != nil {
 		if gResp.Error.Code == 429 || gResp.Error.Code == 403 {
-			p.googleExhausted = true
+			p.googleExhausted.Store(true)
 		}
 		return nil, fmt.Errorf("google API error %d: %s", gResp.Error.Code, gResp.Error.Message)
 	}
@@ -214,7 +215,7 @@ func (p *WebSearchProvider) searchBrave(ctx context.Context, query string, count
 	}
 
 	if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == 403 {
-		p.braveExhausted = true
+		p.braveExhausted.Store(true)
 		return nil, fmt.Errorf("brave quota exhausted (status %d)", resp.StatusCode)
 	}
 

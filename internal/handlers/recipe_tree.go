@@ -24,10 +24,27 @@ func NewRecipeTreeHandler(treeService *service.RecipeTreeService) *RecipeTreeHan
 // GetTree returns the full tree structure for a recipe.
 // GET /v1/recipes/:recipe_id/tree
 func (h *RecipeTreeHandler) GetTree(c *gin.Context) {
+	user, err := util.GetUserFromContext(c)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
 	recipeIDStr := c.Param("recipe_id")
 	recipeID, err := parseUintParam(recipeIDStr)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid recipe ID"})
+		return
+	}
+
+	// Verify recipe ownership
+	recipe, err := h.Service.Repo.GetRecipeByID(recipeID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Recipe not found"})
+		return
+	}
+	if recipe.CreatedByID != user.ID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "You can only view your own recipe trees"})
 		return
 	}
 

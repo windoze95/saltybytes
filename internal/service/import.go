@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 
@@ -40,9 +42,50 @@ func NewImportService(cfg *config.Config, recipeRepo repository.RecipeRepo, reci
 	}
 }
 
+// validateExternalURL checks that a user-supplied URL is safe to fetch.
+// It blocks private/internal IPs and non-HTTP(S) schemes to prevent SSRF.
+func validateExternalURL(rawURL string) error {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("invalid URL: %w", err)
+	}
+
+	// Only allow http and https
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("unsupported scheme %q: only http and https are allowed", u.Scheme)
+	}
+
+	host := u.Hostname()
+	if host == "" {
+		return fmt.Errorf("URL has no hostname")
+	}
+
+	// Resolve hostname to IPs and block internal/private ranges
+	ips, err := net.LookupHost(host)
+	if err != nil {
+		return fmt.Errorf("failed to resolve hostname %q: %w", host, err)
+	}
+
+	for _, ipStr := range ips {
+		ip := net.ParseIP(ipStr)
+		if ip == nil {
+			continue
+		}
+		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() {
+			return fmt.Errorf("URL resolves to a blocked address: %s", ipStr)
+		}
+	}
+
+	return nil
+}
+
 // ImportFromURL fetches a page, tries JSON-LD extraction first, falls back to AI.
 func (s *ImportService) ImportFromURL(ctx context.Context, url string, user *models.User) (*RecipeResponse, error) {
 	log := logger.Get().With(zap.Uint("user_id", user.ID), zap.String("source_url", url))
+
+	if err := validateExternalURL(url); err != nil {
+		return nil, fmt.Errorf("URL validation failed: %w", err)
+	}
 
 	// Fetch the URL content
 	resp, err := http.Get(url)
@@ -162,6 +205,10 @@ func (s *ImportService) ImportManual(ctx context.Context, recipeDef *models.Reci
 // Uses JSON-LD first (free), then falls back to the cheap PreviewProvider.
 func (s *ImportService) PreviewFromURL(ctx context.Context, url string, unitSystem string) (*models.RecipeDef, error) {
 	log := logger.Get().With(zap.String("source_url", url))
+
+	if err := validateExternalURL(url); err != nil {
+		return nil, fmt.Errorf("URL validation failed: %w", err)
+	}
 
 	resp, err := http.Get(url)
 	if err != nil {
