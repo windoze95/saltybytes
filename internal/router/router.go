@@ -74,8 +74,6 @@ func SetupRouter(cfg *config.Config, database *gorm.DB) *gin.Engine {
 
 		// Get a single recipe by it's ID
 		apiPublic.GET("/recipes/:recipe_id", recipeHandler.GetRecipe)
-		// Get a single recipe history by the recipe history's ID
-		apiPublic.GET("/recipes/chat-history/:history_id", recipeHandler.GetRecipeHistory)
 	}
 
 	// Group for API routes that require token verification
@@ -96,6 +94,8 @@ func SetupRouter(cfg *config.Config, database *gorm.DB) *gin.Engine {
 
 		// List the authenticated user's recipes
 		apiProtected.GET("/recipes", middleware.AttachUserToContext(userService), recipeHandler.ListRecipes)
+		// Get a single recipe history by the recipe history's ID
+		apiProtected.GET("/recipes/chat-history/:history_id", middleware.AttachUserToContext(userService), recipeHandler.GetRecipeHistory)
 		// Generate a new recipe with chat
 		apiProtected.POST("/recipes/chat", middleware.AttachUserToContext(userService), recipeHandler.GenerateRecipe)
 		// Generate a new recipe based on a previous recipe and the user's chat

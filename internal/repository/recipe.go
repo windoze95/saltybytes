@@ -91,6 +91,19 @@ func (r *RecipeRepository) GetHistoryByID(historyID uint) (*models.RecipeHistory
 	return history, nil
 }
 
+// GetRecipeByHistoryID retrieves the recipe that owns a given history ID.
+func (r *RecipeRepository) GetRecipeByHistoryID(historyID uint) (*models.Recipe, error) {
+	var recipe models.Recipe
+	err := r.DB.Where("history_id = ?", historyID).First(&recipe).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, NotFoundError{message: "Recipe not found"}
+		}
+		return nil, err
+	}
+	return &recipe, nil
+}
+
 // GetRecipeHistoryEntriesAfterID retrieves entries belonging to a specific RecipeHistory
 // and having an ID greater than a given value.
 func (r *RecipeRepository) GetRecipeHistoryEntriesAfterID(historyID uint, afterID uint) ([]models.RecipeHistoryEntry, error) {

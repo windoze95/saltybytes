@@ -73,10 +73,10 @@ func (s *UserService) CreateUser(username, firstName, email, password string) (*
 			HashedPassword: hashedPasswordStr,
 			AuthType:       models.Standard,
 		},
-		// Subscription: &models.Subscription{
-		// 	SubscriptionTier: models.Free,
-		// 	ExpiresAt:        time.Now().AddDate(0, 1, 0), // One month from now
-		// },
+		Subscription: &models.Subscription{
+			Tier:           models.TierFree,
+			MonthlyResetAt: time.Now().AddDate(0, 1, 0),
+		},
 		Settings: &models.UserSettings{
 			KeepScreenAwake: true, // Default value
 		},

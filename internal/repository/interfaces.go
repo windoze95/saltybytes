@@ -7,6 +7,7 @@ type RecipeRepo interface {
 	GetUserRecipes(userID uint, page, pageSize int) ([]models.Recipe, int64, error)
 	GetRecipeByID(recipeID uint) (*models.Recipe, error)
 	GetHistoryByID(historyID uint) (*models.RecipeHistory, error)
+	GetRecipeByHistoryID(historyID uint) (*models.Recipe, error)
 	GetRecipeHistoryEntriesAfterID(historyID uint, afterID uint) ([]models.RecipeHistoryEntry, error)
 	CreateRecipe(recipe *models.Recipe) error
 	DeleteRecipe(recipeID uint) error

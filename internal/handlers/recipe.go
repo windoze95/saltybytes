@@ -86,10 +86,27 @@ func (h *RecipeHandler) GetRecipe(c *gin.Context) {
 
 // GetRecipeHistory returns a recipe history by ID.
 func (h *RecipeHandler) GetRecipeHistory(c *gin.Context) {
+	user, err := util.GetUserFromContext(c)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
 	historyIDStr := c.Param("history_id")
 	historyID, err := parseUintParam(historyIDStr)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid recipe history ID"})
+		return
+	}
+
+	// Verify ownership via the recipe that owns this history
+	recipe, err := h.Service.Repo.GetRecipeByHistoryID(historyID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Recipe history not found"})
+		return
+	}
+	if recipe.CreatedByID != user.ID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "You can only view your own recipe history"})
 		return
 	}
 

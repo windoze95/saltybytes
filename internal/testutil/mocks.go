@@ -219,6 +219,18 @@ func (m *MockRecipeRepo) GetHistoryByID(historyID uint) (*models.RecipeHistory, 
 	return &models.RecipeHistory{}, nil
 }
 
+func (m *MockRecipeRepo) GetRecipeByHistoryID(historyID uint) (*models.Recipe, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	for _, r := range m.Recipes {
+		if r.HistoryID == historyID {
+			return r, nil
+		}
+	}
+	return nil, repository.NotFoundError{}
+}
+
 func (m *MockRecipeRepo) GetRecipeHistoryEntriesAfterID(historyID uint, afterID uint) ([]models.RecipeHistoryEntry, error) {
 	return nil, nil
 }
