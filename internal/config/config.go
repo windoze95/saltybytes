@@ -1,87 +1,63 @@
 package config
 
 import (
-	"encoding/json"
 	"fmt"
-	"os"
 	"reflect"
+
+	"github.com/caarlos0/env/v11"
 )
 
+// Config holds the application configuration.
 type Config struct {
-	Title string `json:"title"`
-	Env   Env    `json:"env"`
+	EnvVars EnvVars  `json:"env"`
+	Prompts *Prompts `json:"-"`
 }
 
-type EnvVar string
-
-// Value returns the value of the environment variable in heroku
-func (e EnvVar) Value() string {
-	return os.Getenv(string(e))
+// EnvVars holds environment variables required by the application.
+// Fields tagged `optional:"true"` are skipped by CheckConfigEnvFields.
+type EnvVars struct {
+	Port               string `env:"PORT" envDefault:"8080"`
+	DatabaseUrl        string `env:"DATABASE_URL"`
+	JwtSecretKey       string `env:"JWT_SECRET_KEY"`
+	AWSRegion          string `env:"AWS_REGION"`
+	AWSAccessKeyID     string `env:"AWS_ACCESS_KEY_ID" optional:"true"`
+	AWSSecretAccessKey string `env:"AWS_SECRET_ACCESS_KEY" optional:"true"`
+	S3Bucket           string `env:"S3_BUCKET"`
+	IDHeader           string `env:"ID_HEADER"`
+	AnthropicAPIKey    string `env:"ANTHROPIC_API_KEY"`
+	OpenAIAPIKey       string `env:"OPENAI_API_KEY"`
+	GoogleSearchKey    string `env:"GOOGLE_SEARCH_KEY" optional:"true"`
+	GoogleSearchCX     string `env:"GOOGLE_SEARCH_CX" optional:"true"`
+	BraveSearchKey     string `env:"BRAVE_SEARCH_KEY" optional:"true"`
 }
 
-type Env struct {
-	Port                   EnvVar `json:"port"`
-	DatabaseUrl            EnvVar `json:"databaseUrl"`
-	OpenAIKeyEncryptionKey EnvVar `json:"openAIKeyEncryptionKey"`
-	JwtSecretKey           EnvVar `json:"jwtSecretKey"`
-	PublicOpenAIKey        EnvVar `json:"publicOpenAIKey"`
-	AWSRegion              EnvVar `json:"awsRegion"`
-	AWSAccessKeyID         EnvVar `json:"awsAccessKeyID"`
-	AWSSecretAccessKey     EnvVar `json:"awsSecretAccessKey"`
-	S3Bucket               EnvVar `json:"s3Bucket"`
-	FacebookClientID       EnvVar `json:"facebookClientID"`
-	FacebookClientSecret   EnvVar `json:"facebookClientSecret"`
-	FacebookRedirectURL    EnvVar `json:"facebookRedirectUrl"`
-}
-
-// LoadConfig reads a JSON configuration file and returns a Config struct.
-func LoadConfig(filePath string) (*Config, error) {
-	file, err := os.ReadFile(filePath)
-	if err != nil {
-		return nil, err
-	}
-
+// LoadConfig parses environment variables into the Config struct.
+func LoadConfig() (*Config, error) {
 	var config Config
-	if err := json.Unmarshal(file, &config); err != nil {
+	if err := env.Parse(&config.EnvVars); err != nil {
 		return nil, err
 	}
-
 	return &config, nil
 }
 
-// CheckConfigFields validates that all fields in Config are populated
-// and their Value method (if available) will not return an error.
-func CheckConfigFields(config *Config) error {
-	return checkFieldsRecursive(reflect.ValueOf(config))
+// CheckConfigEnvFields validates that all required EnvVars fields are set.
+func (c *Config) CheckConfigEnvFields() error {
+	return checkFieldsRecursive(reflect.ValueOf(c.EnvVars))
 }
 
-// checkFieldsRecursive recursively checks each field.
 func checkFieldsRecursive(v reflect.Value) error {
-	// Dereference pointer values
 	if v.Kind() == reflect.Ptr {
 		v = v.Elem()
 	}
-
-	// Iterate through each field
 	for i := 0; i < v.NumField(); i++ {
 		field := v.Field(i)
 		fieldType := v.Type().Field(i)
-
-		// Check for zero values
+		if fieldType.Tag.Get("optional") == "true" {
+			continue
+		}
 		if isZeroValue(field) {
 			return fmt.Errorf("$%s must be set", fieldType.Name)
 		}
-
-		// If it's an EnvVar, check its Value()
-		if field.Type().String() == "config.EnvVar" {
-			envVar := EnvVar(field.String())
-			envVal := envVar.Value()
-			if envVal == "" {
-				return fmt.Errorf("value of $%s must be set", fieldType.Name)
-			}
-		}
-
-		// Recursively check nested structs
 		if field.Kind() == reflect.Struct {
 			if err := checkFieldsRecursive(field); err != nil {
 				return err
@@ -91,7 +67,6 @@ func checkFieldsRecursive(v reflect.Value) error {
 	return nil
 }
 
-// isZeroValue checks if the value is a zero value for its type.
 func isZeroValue(v reflect.Value) bool {
 	return v.Interface() == reflect.Zero(v.Type()).Interface()
 }

@@ -1,67 +1,74 @@
 package main
 
 import (
-	"fmt"
-	"log"
+	"os"
 	"runtime"
 
 	"github.com/gin-gonic/gin"
-	_ "github.com/heroku/x/hmetrics/onload"
 	"github.com/windoze95/saltybytes-api/internal/config"
 	"github.com/windoze95/saltybytes-api/internal/db"
+	"github.com/windoze95/saltybytes-api/internal/logger"
 	"github.com/windoze95/saltybytes-api/internal/router"
+	"go.uber.org/zap"
 )
 
+// init is called before the main function.
 func init() {
-	ConfigureLogger()
+	// Initialize structured logger (dev mode if GIN_MODE != release)
+	isDev := os.Getenv("GIN_MODE") != "release"
+	logger.Init(isDev)
+
+	// Configure the runtime
 	ConfigureRuntime()
 }
 
+// Entry point for the API.
 func main() {
-	cfg, err := config.LoadConfig("configs/config.json")
-	if err != nil {
-		log.Fatalf("Error loading config: %v", err)
+	defer logger.Sync()
+
+	// Load the config
+	var cfg *config.Config
+	if c, err := config.LoadConfig(); err != nil {
+		logger.Get().Fatal("failed to load config", zap.Error(err))
+	} else {
+		cfg = c
 	}
 
-	err = config.CheckConfigFields(cfg)
-	if err != nil {
-		log.Fatalf("Error checking config fields: %v", err)
+	// Check that all ENV variables are set
+	if err := cfg.CheckConfigEnvFields(); err != nil {
+		logger.Get().Fatal("missing required config fields", zap.Error(err))
 	}
+
+	// Load prompts from YAML
+	prompts, err := config.LoadPrompts("configs/prompts.yaml")
+	if err != nil {
+		logger.Get().Fatal("failed to load prompts", zap.Error(err))
+	}
+	cfg.Prompts = prompts
 
 	// Connect to the database
 	database, err := db.New(cfg)
 	if err != nil {
-		log.Fatalf("Error connecting to the database: %v", err)
+		logger.Get().Fatal("failed to connect to database", zap.Error(err))
 	}
-	defer database.Close()
-
-	// // Load new store
-	// store := sessions.NewCookieStore([]byte(cfg.Env.SessionKey.Value()))
-	// store.Options = &sessions.Options{
-	// 	Path: "/",
-	// 	// MaxAge:   86400 * 7, // 7 days
-	// 	HttpOnly: true,
-	// 	Secure:   true,
-	// 	SameSite: http.SameSiteStrictMode,
-	// }
+	sqlDB, err := database.DB()
+	if err != nil {
+		logger.Get().Fatal("failed to get underlying sql.DB", zap.Error(err))
+	}
+	defer sqlDB.Close()
 
 	// Create a new gin router
+	gin.SetMode(gin.ReleaseMode)
 	r := router.SetupRouter(cfg, database)
 
 	// Run the server
-	r.Run(":" + cfg.Env.Port.Value())
-}
-
-// ConfigureLogger sets up the logging environment.
-func ConfigureLogger() {
-	log.SetFlags(0)
-	log.SetPrefix("[GIN] ")
-	log.SetOutput(gin.DefaultWriter)
+	logger.Get().Info("starting server", zap.String("port", cfg.EnvVars.Port))
+	r.Run(":" + cfg.EnvVars.Port)
 }
 
 // ConfigureRuntime sets the number of operating system threads.
 func ConfigureRuntime() {
 	nuCPU := runtime.NumCPU()
 	runtime.GOMAXPROCS(nuCPU)
-	fmt.Printf("Running with %d CPUs\n", nuCPU)
+	logger.Get().Info("runtime configured", zap.Int("cpus", nuCPU))
 }

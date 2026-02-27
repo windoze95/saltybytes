@@ -1,17 +1,14 @@
 {
-    "title": "SaltyBytes",
     "env": {
         "port": "PORT",
-        "databaseUrl": "HEROKU_POSTGRESQL_BRONZE_URL",
-        "openAIKeyEncryptionKey": "OPENAI_KEY_ENCRYPTION_KEY",
-        "jwtSecretKey": "JWT_SECRET_KEY",
-        "publicOpenAIKey": "PUBLIC_OPENAI_KEY",
-        "awsRegion": "AWS_REGION",
-        "awsAccessKeyID": "AWS_ACCESS_KEY_ID",
-        "awsSecretAccessKey": "AWS_SECRET_ACCESS_KEY",
-        "s3Bucket": "S3_BUCKET",
-        "facebookClientID": "FACEBOOK_CLIENT_ID",
-        "facebookClientSecret": "FACEBOOK_CLIENT_SECRET",
-        "facebookRedirectUrl": "FACEBOOK_REDIRECT_URL"
+        "database_url": "POSTGRESQL_URL",
+        "jwt_secret_key": "JWT_SECRET_KEY",
+        "aws_region": "AWS_REGION",
+        "aws_access_key_id": "AWS_ACCESS_KEY_ID",
+        "aws_secret_access_key": "AWS_SECRET_ACCESS_KEY",
+        "s3_bucket": "S3_BUCKET",
+        "id_header": "ID_HEADER",
+        "openai_prompts_path": "OPENAI_PROMPTS_PATH",
+        "openai_keys_path": "OPENAI_KEYS_PATH"
     }
 }

@@ -6,6 +6,7 @@ import (
 	"github.com/windoze95/saltybytes-api/internal/util"
 )
 
+// AttachUserToContext attaches a user to the context.
 func AttachUserToContext(userService *service.UserService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		userID, err := util.GetUserIDFromContext(c)
@@ -15,7 +16,6 @@ func AttachUserToContext(userService *service.UserService) gin.HandlerFunc {
 			return
 		}
 
-		// user, err := userService.GetPreloadedUserByID(uint(userID))
 		user, err := userService.GetUserByID(userID)
 		if err != nil {
 			c.Set("user", nil)

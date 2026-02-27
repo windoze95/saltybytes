@@ -6,37 +6,16 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/windoze95/saltybytes-api/internal/util"
 	"golang.org/x/time/rate"
 )
 
+// limiterInfo is a struct that holds a rate limiter and the last time it was seen.
 type limiterInfo struct {
 	limiter  *rate.Limiter
 	lastSeen time.Time
 }
 
-func RateLimitPublicOpenAIKey(publicOpenAIKeyRateLimiter *rate.Limiter) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		// Retrieve the user from the context
-		user, err := util.GetUserFromContext(c)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-
-		if user.Settings.EncryptedOpenAIKey == "" {
-			// Apply rate limiting and use shared key
-			if !publicOpenAIKeyRateLimiter.Allow() {
-				c.JSON(http.StatusTooManyRequests, gin.H{"error": "429: Too many requests"})
-				c.Abort()
-				return
-			}
-		}
-
-		c.Next()
-	}
-}
-
+// RateLimitByIP applies rate limiting to requests per IP address.
 func RateLimitByIP(rps int, cleanupInterval time.Duration, expiration time.Duration) gin.HandlerFunc {
 	var limiters sync.Map
 

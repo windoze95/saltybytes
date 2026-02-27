@@ -5,139 +5,171 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jinzhu/gorm"
+	"gorm.io/gorm"
 )
 
-// type User struct {
-// 	gorm.Model
-// 	Username         string `gorm:"unique"`
-// 	Email            string `gorm:"unique"`
-// 	HashedPassword   string
-// 	Settings         UserSettings `gorm:"foreignKey:UserID"`
-// 	CollectedRecipes []Recipe     `gorm:"many2many:user_collected_recipes;"`
-// 	GuidingContent   GuidingContent
-// }
-
+// User is the model for a user.
 type User struct {
 	gorm.Model
-	Username         string         `gorm:"unique;index"`
-	FirstName        string         `gorm:"default:null"`
-	Email            string         `gorm:"unique;default:null"`
-	FacebookID       string         `gorm:"unique;default:null;index"`
-	Auth             UserAuth       `gorm:"foreignKey:UserID"`
-	Subscription     Subscription   `gorm:"foreignKey:UserID"`
-	Settings         UserSettings   `gorm:"foreignKey:UserID"`
-	GuidingContent   GuidingContent `gorm:"foreignKey:UserID"`
-	CollectedRecipes []Recipe       `gorm:"many2many:user_collected_recipes;"`
+	Username  string    `gorm:"unique;index"`
+	FirstName string    `gorm:"default:null"`
+	Email     string    `gorm:"unique;default:null"`
+	Auth         *UserAuth     `gorm:"foreignKey:UserID"`
+	Subscription *Subscription `gorm:"foreignKey:UserID"`
+	Settings         *UserSettings    `gorm:"foreignKey:UserID"`
+	Personalization  *Personalization `gorm:"foreignKey:UserID"`
+	CollectedRecipes []*Recipe        `gorm:"many2many:user_collected_recipes;"`
 }
 
+// UserAuth is the model for a user's authentication information.
 type UserAuth struct {
 	gorm.Model
 	UserID         uint `gorm:"unique;index"`
-	HashedPassword *string
-	AuthType       string `gorm:"type:text"`
+	HashedPassword string
+	AuthType       UserAuthType `gorm:"type:text"`
 }
 
+// UserAuthType is the type for the UserAuthType enum.
 type UserAuthType string
 
+// UserAuthType enum values.
 const (
 	Standard UserAuthType = "standard"
-	Facebook UserAuthType = "facebook"
 )
 
+// IsValidAuthType checks if the AuthType is valid.
 func (ua *UserAuth) IsValidAuthType() bool {
 	switch ua.AuthType {
-	case "standard", "facebook":
+	case Standard:
 		return true
 	default:
 		return false
 	}
 }
 
+// BeforeCreate is a GORM hook that runs before creating a new UserAuth.
 func (ua *UserAuth) BeforeCreate(tx *gorm.DB) (err error) {
 	if !ua.IsValidAuthType() {
 		// Cancel transaction
 		return errors.New("invalid AuthType provided")
 	}
+
 	return nil
 }
 
+// BeforeUpdate is a GORM hook that runs before updating a UserAuth.
 func (ua *UserAuth) BeforeUpdate(tx *gorm.DB) (err error) {
 	if !ua.IsValidAuthType() {
 		// Cancel transaction
 		return errors.New("invalid AuthType provided")
 	}
+
 	return nil
 }
 
+// SubscriptionTier is the type for the SubscriptionTier enum.
 type SubscriptionTier string
 
+// SubscriptionTier enum values.
 const (
-	Free       SubscriptionTier = "Free"    // Free
-	ThirtyUses SubscriptionTier = "30-Uses" // Basic
-	NinetyUses SubscriptionTier = "90-Uses" // Premium
+	TierFree    SubscriptionTier = "free"
+	TierPremium SubscriptionTier = "premium"
 )
 
+// Subscription is the model for a user's subscription.
 type Subscription struct {
 	gorm.Model
-	UserID           uint             `gorm:"unique;index"`
-	SubscriptionTier SubscriptionTier `gorm:"type:text;default:'Free'"`
-	ExpiresAt        time.Time
-	RemainingUses    int `gorm:"default:5"`
+	UserID               uint             `gorm:"uniqueIndex;not null"`
+	Tier                 SubscriptionTier `gorm:"type:text;default:'free'"`
+	ExpiresAt            *time.Time
+	AllergenAnalysesUsed int              `gorm:"default:0"`
+	WebSearchesUsed      int              `gorm:"default:0"`
+	AIGenerationsUsed    int              `gorm:"default:0"`
+	MonthlyResetAt       time.Time
 }
 
+// CanUseAllergenAnalysis checks if the user can use allergen analysis.
+func (s *Subscription) CanUseAllergenAnalysis() bool {
+	if s.Tier == TierPremium {
+		return true
+	}
+	return s.AllergenAnalysesUsed < 5
+}
+
+// CanUseWebSearch checks if the user can use web search.
+func (s *Subscription) CanUseWebSearch() bool {
+	if s.Tier == TierPremium {
+		return true
+	}
+	return s.WebSearchesUsed < 20
+}
+
+// CanUseAIGeneration checks if the user can use AI generation.
+func (s *Subscription) CanUseAIGeneration() bool {
+	if s.Tier == TierPremium {
+		return true
+	}
+	return s.AIGenerationsUsed < 50
+}
+
+// IsValidSubscriptionTier checks if the SubscriptionTier is valid.
 func (s *Subscription) IsValidSubscriptionTier() bool {
-	switch s.SubscriptionTier {
-	case Free, ThirtyUses, NinetyUses:
+	switch s.Tier {
+	case TierFree, TierPremium:
 		return true
 	default:
 		return false
 	}
 }
 
+// BeforeCreate is a GORM hook that runs before creating a new user Subscription.
 func (s *Subscription) BeforeCreate(tx *gorm.DB) (err error) {
 	if !s.IsValidSubscriptionTier() {
-		// Set default
-		s.SubscriptionTier = Free
+		s.Tier = TierFree
 	}
+
 	return nil
 }
 
+// BeforeUpdate is a GORM hook that runs before updating a user Subscription.
 func (s *Subscription) BeforeUpdate(tx *gorm.DB) (err error) {
 	if !s.IsValidSubscriptionTier() {
-		// Cancel transaction
 		return errors.New("invalid SubscriptionTier provided")
 	}
+
 	return nil
 }
 
+// UserSettings is the model for a user's settings.
 type UserSettings struct {
 	gorm.Model
-	UserID             uint   `gorm:"unique;index"`
-	KeepScreenAwake    bool   `gorm:"default:true"`
-	UsePersonalAPIKey  bool   `gorm:"default:false"`
-	EncryptedOpenAIKey string `gorm:"default:''"`
+	UserID          uint `gorm:"unique;index"`
+	KeepScreenAwake bool `gorm:"default:true"`
 }
 
-type GuidingContent struct {
+// Personalization is the model for a user's personalization settings.
+type Personalization struct {
 	gorm.Model
-	UserID       uint `gorm:"unique;index"`
+	UserID       uint       `gorm:"unique;index"`
+	UnitSystem   UnitSystem `gorm:"type:int"`
+	Requirements string     // Additional instructions or guidelines
 	UID          uuid.UUID
-	UnitSystem   GuidingContentUnitSystem `gorm:"type:int;default:0"`
-	Requirements string                   // Additional instructions or guidelines
-	// DietaryRestrictions string // Specific dietary restrictions
-	// SupportingResearch string // Supporting research to help convey the user's expectations
 }
 
-type GuidingContentUnitSystem int
+// UnitSystem is the type for the UnitSystem enum.
+type UnitSystem int
 
+// UnitSystem enum values.
 const (
-	USCustomary GuidingContentUnitSystem = iota // 0
-	Metric                                      // 1
+	USCustomary     UnitSystem       = iota // 0 - US Customary
+	Metric                                  // 1 - Metric
+	USCustomaryText = "US Customary"        // 0 - US Customary
+	MetricText      = "Metric"              // 1 - Metric
 )
 
-func (gc *GuidingContent) IsValidUnitSystem() bool {
-	switch gc.UnitSystem {
+// IsValidUnitSystem checks if the UnitSystem is valid.
+func (p *Personalization) IsValidUnitSystem() bool {
+	switch p.UnitSystem {
 	case USCustomary, Metric:
 		return true
 	default:
@@ -145,29 +177,34 @@ func (gc *GuidingContent) IsValidUnitSystem() bool {
 	}
 }
 
-func (gc *GuidingContent) GetUnitSystemText() string {
-	switch gc.UnitSystem {
+// GetUnitSystemText returns the text representation of the UnitSystem.
+func (p *Personalization) GetUnitSystemText() string {
+	switch p.UnitSystem {
 	case USCustomary:
-		return "US Customary"
+		return USCustomaryText
 	case Metric:
-		return "Metric"
+		return MetricText
 	default:
-		return "US Customary"
+		return USCustomaryText
 	}
 }
 
-func (gc *GuidingContent) BeforeCreate(tx *gorm.DB) (err error) {
-	if !gc.IsValidUnitSystem() {
+// BeforeCreate is a GORM hook that runs before creating a new user Personalization.
+func (p *Personalization) BeforeCreate(tx *gorm.DB) (err error) {
+	if !p.IsValidUnitSystem() {
 		// Set default
-		gc.UnitSystem = USCustomary
+		p.UnitSystem = USCustomary
 	}
+
 	return nil
 }
 
-func (gc *GuidingContent) BeforeUpdate(tx *gorm.DB) (err error) {
-	if !gc.IsValidUnitSystem() {
+// BeforeUpdate is a GORM hook that runs before updating a user Personalization.
+func (p *Personalization) BeforeUpdate(tx *gorm.DB) (err error) {
+	if !p.IsValidUnitSystem() {
 		// Set default
-		gc.UnitSystem = USCustomary
+		p.UnitSystem = USCustomary
 	}
+
 	return nil
 }

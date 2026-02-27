@@ -1,11 +1,10 @@
 package service
 
 import (
-	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -13,38 +12,50 @@ import (
 	"github.com/asaskevich/govalidator"
 	"github.com/windoze95/saltybytes-api/internal/config"
 	"github.com/windoze95/saltybytes-api/internal/models"
-	"github.com/windoze95/saltybytes-api/internal/openai"
 	"github.com/windoze95/saltybytes-api/internal/repository"
-	"github.com/windoze95/saltybytes-api/internal/util"
 	"golang.org/x/crypto/bcrypt"
-	"golang.org/x/oauth2"
-	"golang.org/x/oauth2/facebook"
 )
 
+// UserService is the business logic layer for user-related operations.
 type UserService struct {
 	Cfg  *config.Config
-	Repo *repository.UserRepository
+	Repo repository.UserRepo
 }
 
-// Constructor function for initializing a new UserService
-func NewUserService(cfg *config.Config, repo *repository.UserRepository) *UserService {
+// UserResponse is the response object for user-related operations.
+type UserResponse struct {
+	ID              string                  `json:"id"`
+	Username        string                  `json:"username"`
+	FirstName       string                  `json:"first_name"`
+	Email           string                  `json:"email"`
+	Settings        SettingsResponse        `json:"settings"`
+	Personalization PersonalizationResponse `json:"personalization"`
+	CreatedAt       time.Time               `json:"createdAt"`
+	UpdatedAt       time.Time               `json:"updatedAt"`
+}
+
+// SettingsResponse is the response object for user settings.
+type SettingsResponse struct {
+	KeepScreenAwake bool `json:"keep_screen_awake"`
+}
+
+// PersonalizationResponse is the response object for user personalization.
+type PersonalizationResponse struct {
+	UnitSystem   int    `json:"unit_system"`
+	Requirements string `json:"requirements"`
+	UID          string `json:"uid"`
+}
+
+// NewUserService is the constructor function for initializing a new UserService
+func NewUserService(cfg *config.Config, repo repository.UserRepo) *UserService {
 	return &UserService{
 		Cfg:  cfg,
 		Repo: repo,
 	}
 }
 
+// CreateUser creates a new user.
 func (s *UserService) CreateUser(username, firstName, email, password string) (*models.User, error) {
-	// // Validate username
-	// if err := s.ValidateUsername(username); err != nil {
-	// 	return err
-	// }
-
-	// // Validate password
-	// if err := s.ValidatePassword(password); err != nil {
-	// 	return err
-	// }
-
 	// Hash password
 	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(password), 10)
 	if err != nil {
@@ -58,41 +69,23 @@ func (s *UserService) CreateUser(username, firstName, email, password string) (*
 		Username:  username,
 		FirstName: firstName,
 		Email:     email,
-		Auth: models.UserAuth{
-			HashedPassword: &hashedPasswordStr,
-			AuthType:       "standard",
+		Auth: &models.UserAuth{
+			HashedPassword: hashedPasswordStr,
+			AuthType:       models.Standard,
 		},
-		Subscription: models.Subscription{
-			SubscriptionTier: models.Free,
-			ExpiresAt:        time.Now().AddDate(0, 1, 0), // One month from now
+		Subscription: &models.Subscription{
+			Tier:           models.TierFree,
+			MonthlyResetAt: time.Now().AddDate(0, 1, 0),
 		},
-		Settings: models.UserSettings{
-			// KeepScreenAwake:    true,  // Default value
-			// UsePersonalAPIKey:  false, // Default value
-			// EncryptedOpenAIKey: "",    // Default value
+		Settings: &models.UserSettings{
+			KeepScreenAwake: true, // Default value
 		},
-		GuidingContent: models.GuidingContent{
+		Personalization: &models.Personalization{
 			UnitSystem: models.USCustomary, // Default value
+			// UID:        uuid.New(),
 		},
-		CollectedRecipes: []models.Recipe{},
+		// CollectedRecipes: []*models.Recipe{},
 	}
-
-	// settings := &models.UserSettings{}
-	// gc := &models.GuidingContent{}
-	// gc.UnitSystem = 1 // Default value
-
-	// if err := s.Repo.CreateUser(user); err != nil {
-	// 	if pgErr, ok := err.(*pq.Error); ok {
-	// 		if pgErr.Code == "23505" { // Unique constraint violation
-	// 			if strings.Contains(pgErr.Error(), "username") {
-	// 				return fmt.Errorf("username already in use")
-	// 			} else if strings.Contains(pgErr.Error(), "email") {
-	// 				return fmt.Errorf("email already in use")
-	// 			}
-	// 		}
-	// 	}
-	// 	return fmt.Errorf("error creating user: %v", err)
-	// }
 
 	user, err = s.Repo.CreateUser(user)
 	if err != nil {
@@ -102,268 +95,110 @@ func (s *UserService) CreateUser(username, firstName, email, password string) (*
 	return user, nil
 }
 
+// LoginUser logs in a user.
 func (s *UserService) LoginUser(username, password string) (*models.User, error) {
 	user, err := s.Repo.GetUserAuthByUsername(username)
 	if err != nil {
 		return nil, err
 	}
 
-	if err := bcrypt.CompareHashAndPassword([]byte(*user.Auth.HashedPassword), []byte(password)); err != nil {
+	if err := bcrypt.CompareHashAndPassword([]byte(user.Auth.HashedPassword), []byte(password)); err != nil {
 		return nil, errors.New("invalid username or password")
 	}
 
-	// Clear the hashed password before returning the user
-	// user.HashedPassword = ""
-
-	user = util.StripSensitiveUserData(user)
-
 	return user, nil
 }
 
-type FacebookUser struct {
-	ID        string `json:"id"`
-	FirstName string `json:"first_name"`
-	Email     string `json:"email"`
-}
-
-func (s *UserService) CreateFacebookUser(username, code string) (*models.User, error) {
-	// Construct OAuth2 config
-	fbOauthConfig := &oauth2.Config{
-		RedirectURL:  s.Cfg.Env.FacebookRedirectURL.Value(),
-		ClientID:     s.Cfg.Env.FacebookClientID.Value(),
-		ClientSecret: s.Cfg.Env.FacebookClientSecret.Value(),
-		Scopes:       []string{"email"},
-		Endpoint:     facebook.Endpoint,
+// ToUserResponse converts a User to a UserResponse.
+func ToUserResponse(user *models.User) *UserResponse {
+	resp := &UserResponse{
+		ID:        strconv.FormatUint(uint64(user.ID), 10),
+		Username:  user.Username,
+		FirstName: user.FirstName,
+		Email:     user.Email,
+		CreatedAt: user.CreatedAt,
+		UpdatedAt: user.UpdatedAt,
 	}
-
-	// Exchange the received code for a token
-	token, err := fbOauthConfig.Exchange(context.Background(), code)
-	if err != nil {
-		return nil, err
-	}
-
-	// Fetch user info
-	fbUser, err := fetchFacebookUserInfo(token, fbOauthConfig)
-	if err != nil {
-		return nil, err
-	}
-
-	if fbUser.Email == "" {
-		fbUser.Email = fbUser.ID + "@facebook.com"
-	}
-
-	// Check if the user already exists in the database; if not, create a new user
-	user, err := s.Repo.GetUserByFacebookID(fbUser.ID)
-	if err != nil {
-		// Create User and UserSettings
-		user = &models.User{
-			Username:   username,
-			Email:      fbUser.Email,
-			FacebookID: fbUser.ID,
-			Auth: models.UserAuth{
-				AuthType: "facebook",
-			},
-			Subscription: models.Subscription{
-				SubscriptionTier: models.Free,
-				ExpiresAt:        time.Now().AddDate(0, 1, 0), // One month from now
-			},
-			Settings:         models.UserSettings{},
-			GuidingContent:   models.GuidingContent{},
-			CollectedRecipes: []models.Recipe{},
-		}
-
-		// settings := &models.UserSettings{}
-		// gc := &models.GuidingContent{}
-		// gc.UnitSystem = 1 // Default value
-
-		// if err := s.Repo.CreateUser(user); err != nil {
-		// 	if pgErr, ok := err.(*pq.Error); ok {
-		// 		if pgErr.Code == "23505" { // Unique constraint violation
-		// 			if strings.Contains(pgErr.Error(), "username") {
-		// 				return nil, fmt.Errorf("username already in use")
-		// 			} else if strings.Contains(pgErr.Error(), "email") {
-		// 				return nil, fmt.Errorf("email already in use")
-		// 			}
-		// 		}
-		// 	}
-		// 	return nil, fmt.Errorf("error creating user: %v", err)
-		// }
-		user, err = s.Repo.CreateUser(user)
-		if err != nil {
-			return nil, err
-		}
-	} else {
-		// Update the user's email if it has changed
-		if user.Email != fbUser.Email {
-			user.Email = fbUser.Email
-			if err := s.Repo.UpdateUserEmail(user.ID, fbUser.Email); err != nil {
-				return nil, fmt.Errorf("error updating user email: %v", err)
-			}
+	if user.Settings != nil {
+		resp.Settings = SettingsResponse{
+			KeepScreenAwake: user.Settings.KeepScreenAwake,
 		}
 	}
-
-	return user, nil
-}
-
-func (s *UserService) TryFacebookLogin(code string) (*models.User, error) {
-	// Construct OAuth2 config
-	fbOauthConfig := &oauth2.Config{
-		RedirectURL:  s.Cfg.Env.FacebookRedirectURL.Value(),
-		ClientID:     s.Cfg.Env.FacebookClientID.Value(),
-		ClientSecret: s.Cfg.Env.FacebookClientSecret.Value(),
-		Scopes:       []string{"email"},
-		Endpoint:     facebook.Endpoint,
-	}
-
-	// Exchange the received code for a token
-	token, err := fbOauthConfig.Exchange(context.Background(), code)
-	if err != nil {
-		return nil, err
-	}
-
-	// Fetch user info
-	fbUser, err := fetchFacebookUserInfo(token, fbOauthConfig)
-	if err != nil {
-		return nil, err
-	}
-
-	// Check if the user already exists in the database by their Facebook ID
-	user, err := s.Repo.GetUserByFacebookID(fbUser.ID)
-	if err != nil {
-		// User does not exist; return an error to signify that signup is needed
-		return nil, fmt.Errorf("user does not exist")
-	}
-
-	if fbUser.Email == "" {
-		fbUser.Email = fbUser.ID + "@facebook.com"
-	}
-
-	// Update the user's email if it has changed
-	if user.Email != fbUser.Email {
-		user.Email = fbUser.Email
-		if err := s.Repo.UpdateUserEmail(user.ID, fbUser.Email); err != nil {
-			return nil, fmt.Errorf("error updating user email: %v", err)
+	if user.Personalization != nil {
+		resp.Personalization = PersonalizationResponse{
+			UnitSystem:   int(user.Personalization.UnitSystem),
+			Requirements: user.Personalization.Requirements,
+			UID:          user.Personalization.UID.String(),
 		}
 	}
-
-	return user, nil // User exists, return the user
+	return resp
 }
 
-func fetchFacebookUserInfo(token *oauth2.Token, fbOauthConfig *oauth2.Config) (*FacebookUser, error) {
-	// Use the token to make an HTTP request to Facebook API to get user's info
-	client := fbOauthConfig.Client(context.Background(), token)
-	resp, err := client.Get("https://graph.facebook.com/me?fields=id,first_name,email")
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	// Decode the response into a struct
-	var fbUser FacebookUser
-
-	if err := json.NewDecoder(resp.Body).Decode(&fbUser); err != nil {
-		return nil, err
-	}
-
-	return &fbUser, nil
-}
-
+// GetUserByID gets a user by their ID.
 func (s *UserService) GetUserByID(userID uint) (*models.User, error) {
 	return s.Repo.GetUserByID(userID)
 }
 
-func (s *UserService) GetPreloadedUserByID(userID uint) (*models.User, error) {
-	return s.Repo.GetPreloadedUserByID(userID)
+// UpdatePersonalization updates a user's personalization settings.
+func (s *UserService) UpdatePersonalization(user *models.User, updatedPersonalization *models.Personalization) error {
+	return s.Repo.UpdatePersonalization(user.ID, updatedPersonalization)
 }
 
-func (s *UserService) VerifyOpenAIKeyInUserSettings(user *models.User) (bool, error) {
-	// Decrypt the OpenAI key
-	decryptedKey, err := util.DecryptOpenAIKey(s.Cfg.Env.OpenAIKeyEncryptionKey.Value(), user.Settings.EncryptedOpenAIKey)
-	if err != nil {
-		return false, fmt.Errorf("failed to decrypt OpenAI key: %v", err)
-	}
-
-	// Verify the OpenAI key
-	isValid, err := openai.VerifyOpenAIKey(decryptedKey)
-	if err != nil {
-		return false, fmt.Errorf("failed to verify OpenAI key: %v", err)
-	}
-
-	return isValid, nil
-}
-
-func (s *UserService) UpdateUserSettings(user *models.User, newOpenAIKey string) (bool, error) {
-	// Encrypt the OpenAI key
-	encryptedOpenAIKey, err := util.EncryptOpenAIKey(s.Cfg.Env.OpenAIKeyEncryptionKey.Value(), newOpenAIKey)
-	if err != nil {
-		return false, err
-	}
-
-	// Check if the OpenAI key has changed
-	openAIKeyChanged := encryptedOpenAIKey != user.Settings.EncryptedOpenAIKey
-	if openAIKeyChanged {
-		if err := s.Repo.UpdateUserSettingsOpenAIKey(user.ID, encryptedOpenAIKey); err != nil {
-			return false, err
+// UpdateUser updates a user's profile fields (first name, email).
+func (s *UserService) UpdateUser(user *models.User, firstName, email string) error {
+	if email != "" && email != user.Email {
+		if err := s.ValidateEmail(email); err != nil {
+			return err
+		}
+		if err := s.Repo.UpdateUserEmail(user.ID, email); err != nil {
+			return err
 		}
 	}
-	return openAIKeyChanged, nil
+	if firstName != "" {
+		if err := s.Repo.UpdateUserFirstName(user.ID, firstName); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
-func (s *UserService) UpdateGuidingContent(user *models.User, updatedGC *models.GuidingContent) error {
-	return s.Repo.UpdateGuidingContent(user.ID, updatedGC)
+// UpdateSettings updates a user's settings.
+func (s *UserService) UpdateSettings(user *models.User, keepScreenAwake bool) error {
+	return s.Repo.UpdateUserSettingsKeepScreenAwake(user.ID, keepScreenAwake)
 }
 
-// // VerifyRecaptcha verifies the provided reCAPTCHA response
-// func (s *UserService) VerifyRecaptcha(recaptchaResponse string) error {
-// 	secretKey := s.Cfg.Env.RecaptchaSecretKey.Value()
-
-// 	// Google reCAPTCHA API endpoint for server-side verification
-// 	apiURL := "https://www.google.com/recaptcha/api/siteverify"
-
-// 	response, err := http.PostForm(apiURL, url.Values{"secret": {secretKey}, "response": {recaptchaResponse}})
-// 	if err != nil {
-// 		return errors.New("Failed to verify reCAPTCHA: " + err.Error())
-// 	}
-// 	defer response.Body.Close()
-
-// 	var result map[string]interface{}
-// 	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
-// 		return errors.New("Failed to read reCAPTCHA response: " + err.Error())
-// 	}
-
-// 	if success, ok := result["success"].(bool); !ok || !success {
-// 		return errors.New("reCAPTCHA verification failed")
-// 	}
-
-// 	return nil
-// }
-
+// ValidateUsername validates a username against a set of rules.
 func (s *UserService) ValidateUsername(username string) error {
-	// exists, err := s.Repo.UsernameExists(username)
-	// if err != nil {
-	// 	return fmt.Errorf("error checking username: %v", err)
-	// }
-	// if exists {
-	// 	return fmt.Errorf("username is already taken")
-	// }
+	// Check if the username already exists.
+	// This is also caught as a known error in the repository.
+	exists, err := s.Repo.UsernameExists(username)
+	if err != nil {
+		return fmt.Errorf("error checking username: %v", err)
+	}
+	if exists {
+		return fmt.Errorf("username is already taken")
+	}
 
+	// Check if the username is long enough
 	minLength := 3
 	if len(username) < minLength {
 		return fmt.Errorf("username must be at least %d characters", minLength)
 	}
 
+	// Check if the username is alphanumeric
 	if !govalidator.IsAlphanumeric(username) {
 		return fmt.Errorf("username can only contain alphanumeric characters")
 	}
 
+	// Define a list of forbidden usernames
 	var forbiddenUsernames = []string{
 		"admin",
 		"administrator",
 		"root",
-		"julian",
+		// "julian",
 		"awfulbits",
-		// "windoze95",
-		"yana",
+		"windoze95",
+		// "yana",
 		"russianminx",
 		"russianminxx",
 		"sys",
@@ -378,7 +213,6 @@ func (s *UserService) ValidateUsername(username string) error {
 		"register",
 		"password",
 		"user",
-		"user123",
 		"newuser",
 		"yourapp",
 		"yourcompany",
@@ -397,6 +231,7 @@ func (s *UserService) ValidateUsername(username string) error {
 		"saltybytes-root",
 	}
 
+	// Check if the username is in the forbidden list
 	lowercaseUsername := strings.ToLower(username)
 	for _, forbiddenUsername := range forbiddenUsernames {
 		if strings.EqualFold(lowercaseUsername, forbiddenUsername) {
@@ -404,7 +239,7 @@ func (s *UserService) ValidateUsername(username string) error {
 		}
 	}
 
-	// Profanity check using goaway library
+	// Profanity check
 	profanityDetector := goaway.NewProfanityDetector().WithSanitizeLeetSpeak(true).WithSanitizeSpecialCharacters(true).WithSanitizeAccents(false)
 	if profanityDetector.IsProfane(username) {
 		return fmt.Errorf("username contains inappropriate language")
@@ -414,6 +249,7 @@ func (s *UserService) ValidateUsername(username string) error {
 	return nil
 }
 
+// ValidateEmail validates an email address against a set of rules.
 func (s *UserService) ValidateEmail(email string) error {
 	if !govalidator.IsEmail(email) {
 		return fmt.Errorf("invalid email format")
@@ -421,6 +257,7 @@ func (s *UserService) ValidateEmail(email string) error {
 	return nil
 }
 
+// ValidatePassword validates a password against a set of rules.
 func (s *UserService) ValidatePassword(password string) error {
 	if len(password) < 8 {
 		return errors.New("password must be at least 8 characters long")

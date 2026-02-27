@@ -1,34 +1,36 @@
 package handlers
 
 import (
-	"errors"
 	"fmt"
-	"log"
 	"net/http"
+	"time"
 
-	"github.com/dgrijalva/jwt-go"
 	"github.com/gin-gonic/gin"
+	"github.com/golang-jwt/jwt/v5"
+	"github.com/windoze95/saltybytes-api/internal/logger"
+	"github.com/windoze95/saltybytes-api/internal/models"
 	"github.com/windoze95/saltybytes-api/internal/service"
 	"github.com/windoze95/saltybytes-api/internal/util"
-	"golang.org/x/oauth2"
-	"golang.org/x/oauth2/facebook"
+	"go.uber.org/zap"
 )
 
+// UserHandler is the handler for user-related requests.
 type UserHandler struct {
 	Service *service.UserService
 }
 
+// NewUserHandler is the constructor function for initializing a new UserHandler.
 func NewUserHandler(userService *service.UserService) *UserHandler {
 	return &UserHandler{Service: userService}
 }
 
+// CreateUser creates a new user.
 func (h *UserHandler) CreateUser(c *gin.Context) {
 	var newUser struct {
 		Username  string `json:"username" binding:"required"`
-		FirstName string `json:"firstName"`
+		FirstName string `json:"first_name"`
 		Email     string `json:"email" binding:"required"`
 		Password  string `json:"password" binding:"required"`
-		// Recaptcha string `json:"recaptcha" binding:"required"`
 	}
 
 	// Returns error if a required field is not included
@@ -36,12 +38,6 @@ func (h *UserHandler) CreateUser(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Username, email, and password fields are required"})
 		return
 	}
-
-	// // Verify reCAPTCHA
-	// if err := h.Service.VerifyRecaptcha(newUser.Recaptcha); err != nil {
-	// 	c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-	// 	return
-	// }
 
 	// Validate username
 	if err := h.Service.ValidateUsername(newUser.Username); err != nil {
@@ -69,16 +65,23 @@ func (h *UserHandler) CreateUser(c *gin.Context) {
 	}
 
 	// Log the user in
-	tokenString, err := generateAuthToken(user.ID, h.Service.Cfg.Env.JwtSecretKey.Value())
+	accessToken, err := generateAccessToken(user.ID, h.Service.Cfg.EnvVars.JwtSecretKey)
 	if err != nil {
-		log.Printf("error: handlers.LoginUser: %v", err)
+		logger.Get().Error("failed to generate access token on signup", zap.Uint("user_id", user.ID), zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	refreshToken, err := generateRefreshToken(user.ID, h.Service.Cfg.EnvVars.JwtSecretKey)
+	if err != nil {
+		logger.Get().Error("failed to generate refresh token on signup", zap.Uint("user_id", user.ID), zap.Error(err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"access_token": tokenString, "message": "User signed up successfully", "user": user})
+	c.JSON(http.StatusOK, gin.H{"access_token": accessToken, "refresh_token": refreshToken, "message": "User signed up successfully", "user": service.ToUserResponse(user)})
 }
 
+// LoginUser logs a user in.
 func (h *UserHandler) LoginUser(c *gin.Context) {
 	var userCredentials struct {
 		Username string `json:"username" binding:"required"`
@@ -96,133 +99,106 @@ func (h *UserHandler) LoginUser(c *gin.Context) {
 		return
 	}
 
-	// // Create a new session
-	// session := c.MustGet("session").(*sessions.Session)
-	// session.Values["user_id"] = user.ID
-	// session.Values["ip"] = c.ClientIP()
-	// session.Values["user_agent"] = c.Request.UserAgent()
-
-	// // Save the session
-	// session.Save(c.Request, c.Writer)
-
-	// c.JSON(http.StatusOK, gin.H{"message": "User logged in successfully"})
-
 	// Log the user in
-	tokenString, err := generateAuthToken(user.ID, h.Service.Cfg.Env.JwtSecretKey.Value())
+	accessToken, err := generateAccessToken(user.ID, h.Service.Cfg.EnvVars.JwtSecretKey)
 	if err != nil {
-		log.Printf("error: handlers.LoginUser: %v", err)
+		logger.Get().Error("failed to generate access token on login", zap.Uint("user_id", user.ID), zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	refreshToken, err := generateRefreshToken(user.ID, h.Service.Cfg.EnvVars.JwtSecretKey)
+	if err != nil {
+		logger.Get().Error("failed to generate refresh token on login", zap.Uint("user_id", user.ID), zap.Error(err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
-	// c.SetCookie(
-	// 	"auth_token",      // Cookie name
-	// 	tokenString,       // Cookie value
-	// 	31536000,          // Max age in seconds (365 days)
-	// 	"/",               // Path
-	// 	".api.saltybytes.ai", // Domain, set with leading dot for subdomain compatibility
-	// 	true,              // Secure
-	// 	true,              // HTTP only
-	// )
-
-	// http.SetCookie(c.Writer, &http.Cookie{
-	// 	Name:     "auth_token",
-	// 	Value:    tokenString,
-	// 	HttpOnly: true,
-	// 	Secure:   true,
-	// 	Path:     "/",
-	// })
-
-	// c.JSON(http.StatusOK, gin.H{"message": "User logged in successfully", "user": user})
-	c.JSON(http.StatusOK, gin.H{"access_token": tokenString, "message": "User logged in successfully", "user": user})
+	c.JSON(http.StatusOK, gin.H{"access_token": accessToken, "refresh_token": refreshToken, "message": "User logged in successfully", "user": service.ToUserResponse(user)})
 }
 
-func (h *UserHandler) FacebookAuth(c *gin.Context) {
-	// Construct OAuth2 config here
-	fbOauthConfig := &oauth2.Config{
-		RedirectURL:  h.Service.Cfg.Env.FacebookRedirectURL.Value(),
-		ClientID:     h.Service.Cfg.Env.FacebookClientID.Value(),
-		ClientSecret: h.Service.Cfg.Env.FacebookClientSecret.Value(),
-		Scopes:       []string{"email"},
-		Endpoint:     facebook.Endpoint,
+// generateAccessToken generates a short-lived JWT access token for a user.
+func generateAccessToken(userID uint, secretKey string) (string, error) {
+	claims := jwt.MapClaims{
+		"user_id": userID,
+		"exp":     time.Now().Add(15 * time.Minute).Unix(),
+		"iat":     time.Now().Unix(),
+		"type":    "access",
 	}
-
-	// Generate OAuth2 URL and redirect user to Facebook for authentication
-	authURL := fbOauthConfig.AuthCodeURL("", oauth2.AccessTypeOffline)
-	c.Redirect(http.StatusFound, authURL)
-}
-
-func (h *UserHandler) FacebookCallback(c *gin.Context) {
-	// Extract 'code' from query parameters
-	code := c.DefaultQuery("code", "")
-	if code == "" {
-		log.Printf("error: handlers.FacebookCallback: %v", errors.New("missing code"))
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Missing code"})
-		return
-	}
-
-	// Try to fetch the user information
-	user, err := h.Service.TryFacebookLogin(code)
-	if err == nil {
-		// Log the user in
-		tokenString, err := generateAuthToken(user.ID, h.Service.Cfg.Env.JwtSecretKey.Value())
-		if err != nil {
-			log.Printf("error: handlers.FacebookCallback: %v", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-
-		c.JSON(http.StatusOK, gin.H{"access_token": tokenString, "message": "User logged in successfully", "user": user})
-		return
-	}
-
-	// If user doesn't exist, ask for a username to complete the signup.
-	c.JSON(http.StatusOK, gin.H{"message": "Please provide a username", "code": code})
-}
-
-func (h *UserHandler) CompleteFacebookSignup(c *gin.Context) {
-	var details struct {
-		Code     string `json:"code" binding:"required"`
-		Username string `json:"username" binding:"required"`
-	}
-	if err := c.ShouldBindJSON(&details); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "All fields are required"})
-		return
-	}
-	user, err := h.Service.CreateFacebookUser(details.Username, details.Code)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-
-	// Log the user in
-	tokenString, err := generateAuthToken(user.ID, h.Service.Cfg.Env.JwtSecretKey.Value())
-	if err != nil {
-		log.Printf("error: handlers.CompleteFacebookSignup: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{"access_token": tokenString, "message": "User logged in successfully", "user": user})
-}
-
-func generateAuthToken(userID uint, secretKey string) (string, error) {
-	// Create a new token object, specifying signing method and the claims you would like it to contain.
-	token := jwt.New(jwt.SigningMethodHS256)
-
-	// Set claims
-	claims := token.Claims.(jwt.MapClaims)
-	claims["user_id"] = userID
-
-	// Sign and get the complete encoded token as a string using the secret
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	tokenString, err := token.SignedString([]byte(secretKey))
 	if err != nil {
-		return "", fmt.Errorf("generateAuthToken: %v ", err)
+		return "", fmt.Errorf("generateAccessToken: %v", err)
 	}
-
 	return tokenString, nil
 }
 
+// generateRefreshToken generates a long-lived JWT refresh token for a user.
+func generateRefreshToken(userID uint, secretKey string) (string, error) {
+	claims := jwt.MapClaims{
+		"user_id": userID,
+		"exp":     time.Now().Add(30 * 24 * time.Hour).Unix(),
+		"iat":     time.Now().Unix(),
+		"type":    "refresh",
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	tokenString, err := token.SignedString([]byte(secretKey))
+	if err != nil {
+		return "", fmt.Errorf("generateRefreshToken: %v", err)
+	}
+	return tokenString, nil
+}
+
+// RefreshToken validates a refresh token and issues a new access token.
+func (h *UserHandler) RefreshToken(c *gin.Context) {
+	var request struct {
+		RefreshToken string `json:"refresh_token" binding:"required"`
+	}
+
+	if err := c.ShouldBindJSON(&request); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "refresh_token is required"})
+		return
+	}
+
+	claims := jwt.MapClaims{}
+	token, err := jwt.ParseWithClaims(request.RefreshToken, claims, func(token *jwt.Token) (interface{}, error) {
+		return []byte(h.Service.Cfg.EnvVars.JwtSecretKey), nil
+	}, jwt.WithValidMethods([]string{"HS256"}))
+	if err != nil || !token.Valid {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid or expired refresh token"})
+		return
+	}
+
+	tokenType, ok := claims["type"].(string)
+	if !ok || tokenType != "refresh" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid token type"})
+		return
+	}
+
+	idFloat, ok := claims["user_id"].(float64)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid user_id in token"})
+		return
+	}
+	userID := uint(idFloat)
+
+	accessToken, err := generateAccessToken(userID, h.Service.Cfg.EnvVars.JwtSecretKey)
+	if err != nil {
+		logger.Get().Error("failed to generate access token on refresh", zap.Uint("user_id", userID), zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate access token"})
+		return
+	}
+
+	newRefreshToken, err := generateRefreshToken(userID, h.Service.Cfg.EnvVars.JwtSecretKey)
+	if err != nil {
+		logger.Get().Error("failed to generate refresh token on refresh", zap.Uint("user_id", userID), zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate refresh token"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"access_token": accessToken, "refresh_token": newRefreshToken})
+}
+
+// VerifyToken verifies a user's JWT token.
 func (h *UserHandler) VerifyToken(c *gin.Context) {
 	// Retrieve the user from the context
 	user, _ := util.GetUserFromContext(c)
@@ -230,16 +206,10 @@ func (h *UserHandler) VerifyToken(c *gin.Context) {
 		c.JSON(http.StatusUnauthorized, gin.H{"isAuthenticated": false})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"isAuthenticated": true, "user": user})
+	c.JSON(http.StatusOK, gin.H{"isAuthenticated": true, "user": service.ToUserResponse(user)})
 }
 
-func (h *UserHandler) LogoutUser(c *gin.Context) {
-	// Clear the cookie
-	util.ClearAuthTokenCookie(c)
-
-	c.JSON(http.StatusOK, gin.H{"message": "User logged out successfully"})
-}
-
+// GetUserByID fetches a user by ID.
 func (h *UserHandler) GetUserByID(c *gin.Context) {
 	// Retrieve the user from the context
 	user, err := util.GetUserFromContext(c)
@@ -248,9 +218,10 @@ func (h *UserHandler) GetUserByID(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"user": user})
+	c.JSON(http.StatusOK, gin.H{"user": service.ToUserResponse(user)})
 }
 
+// GetUserSettings fetches a user with settings.
 func (h *UserHandler) GetUserSettings(c *gin.Context) {
 	// Retrieve the user from the context
 	user, err := util.GetUserFromContext(c)
@@ -259,54 +230,88 @@ func (h *UserHandler) GetUserSettings(c *gin.Context) {
 		return
 	}
 
-	// Use the service to get and verify the settings
-	isValid, err := h.Service.VerifyOpenAIKeyInUserSettings(user)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{"isValid": isValid, "user": user})
+	c.JSON(http.StatusOK, gin.H{"settings": user.Settings})
 }
 
-func (h *UserHandler) UpdateUserSettings(c *gin.Context) {
-	// Retrieve the user from the context
+// UpdateUser updates user profile fields.
+func (h *UserHandler) UpdateUser(c *gin.Context) {
 	user, err := util.GetUserFromContext(c)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
-	// Parse the new OpenAI key from the request body
-	var newSettings struct {
-		OpenAIKey string `json:"apikey"`
+	var req struct {
+		FirstName string `json:"first_name"`
+		Email     string `json:"email"`
 	}
-	if err := c.ShouldBindJSON(&newSettings); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
 		return
 	}
 
-	openAIKeyChanged, err := h.Service.UpdateUserSettings(user, newSettings.OpenAIKey)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update settings: " + err.Error()})
+	if err := h.Service.UpdateUser(user, req.FirstName, req.Email); err != nil {
+		logger.Get().Error("failed to update user", zap.Uint("user_id", user.ID), zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
-	// This won't seem as redundant when more settings are added
-	if openAIKeyChanged {
-		c.JSON(http.StatusOK, gin.H{"message": "Settings updated successfully"})
-	} else {
-		c.JSON(http.StatusOK, gin.H{"message": "No changes made"})
-	}
+	c.JSON(http.StatusOK, gin.H{"message": "User updated successfully"})
 }
 
-// func (h *UserHandler) UpdatePreferences(c *gin.Context) {
-// 	// Parse request to get 'preferences' data
+// UpdateSettings updates a user's settings.
+func (h *UserHandler) UpdateSettings(c *gin.Context) {
+	user, err := util.GetUserFromContext(c)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
 
-// 	// Call the service layer function to perform the actual update
-// 	if err := h.Service.UpdateGuidingContent(userID, updatedGC); err != nil {
-// 		// Handle error
-// 	}
+	var req struct {
+		KeepScreenAwake bool `json:"keep_screen_awake"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
+		return
+	}
 
-// 	// Respond back to client
-// }
+	if err := h.Service.UpdateSettings(user, req.KeepScreenAwake); err != nil {
+		logger.Get().Error("failed to update settings", zap.Uint("user_id", user.ID), zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update settings"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "Settings updated successfully"})
+}
+
+// UpdatePersonalization updates a user's personalization settings.
+func (h *UserHandler) UpdatePersonalization(c *gin.Context) {
+	user, err := util.GetUserFromContext(c)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	var req struct {
+		UnitSystem   int    `json:"unit_system"`
+		Requirements string `json:"requirements"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
+		return
+	}
+
+	updatedPersonalization := &models.Personalization{
+		UnitSystem:   models.UnitSystem(req.UnitSystem),
+		Requirements: req.Requirements,
+		UID:          user.Personalization.UID,
+	}
+
+	if err := h.Service.UpdatePersonalization(user, updatedPersonalization); err != nil {
+		logger.Get().Error("failed to update personalization", zap.Uint("user_id", user.ID), zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update personalization"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "Personalization updated successfully"})
+}

@@ -6,10 +6,11 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func CheckIDHeader() gin.HandlerFunc {
+// CheckIDHeader checks the X-SaltyBytes-Identifier header for a specific value.
+func CheckIDHeader(id string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		idHeaderValue := c.GetHeader("X-SaltyBytes-Identifier")
-		if idHeaderValue != "SByt3sIDToken" { // This isn't a security measure as much as it is a cors configuration
+		if idHeaderValue != id {
 			// If the header is absent or the value is incorrect, reject the request
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
 			c.Abort()
