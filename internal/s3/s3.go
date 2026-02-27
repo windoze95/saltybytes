@@ -14,15 +14,23 @@ import (
 )
 
 // newS3Client creates a new S3 client from the app config.
+// When AWS access key and secret are provided, static credentials are used;
+// otherwise the default credential chain is preserved (IAM role, instance
+// profile, etc.) so ECS/EC2 task roles work without explicit keys.
 func newS3Client(ctx context.Context, cfg *config.Config) (*s3.Client, error) {
-	awsCfg, err := awsconfig.LoadDefaultConfig(ctx,
+	opts := []func(*awsconfig.LoadOptions) error{
 		awsconfig.WithRegion(cfg.EnvVars.AWSRegion),
-		awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(
+	}
+
+	if cfg.EnvVars.AWSAccessKeyID != "" && cfg.EnvVars.AWSSecretAccessKey != "" {
+		opts = append(opts, awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(
 			cfg.EnvVars.AWSAccessKeyID,
 			cfg.EnvVars.AWSSecretAccessKey,
 			"",
-		)),
-	)
+		)))
+	}
+
+	awsCfg, err := awsconfig.LoadDefaultConfig(ctx, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load AWS config: %v", err)
 	}

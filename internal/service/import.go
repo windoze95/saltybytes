@@ -88,7 +88,11 @@ func (s *ImportService) ImportFromURL(ctx context.Context, url string, user *mod
 	}
 
 	// Fetch the URL content
-	resp, err := http.Get(url)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		log.Error("failed to fetch URL", zap.Error(err))
 		return nil, fmt.Errorf("failed to fetch URL: %w", err)
@@ -210,7 +214,11 @@ func (s *ImportService) PreviewFromURL(ctx context.Context, url string, unitSyst
 		return nil, fmt.Errorf("URL validation failed: %w", err)
 	}
 
-	resp, err := http.Get(url)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		log.Error("failed to fetch URL for preview", zap.Error(err))
 		return nil, fmt.Errorf("failed to fetch URL: %w", err)

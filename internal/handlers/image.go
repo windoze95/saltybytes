@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"fmt"
+	"io"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -62,8 +63,8 @@ func (h *ImageHandler) UploadImage(c *gin.Context) {
 	}
 
 	// Read file bytes
-	imgBytes := make([]byte, header.Size)
-	if _, err := file.Read(imgBytes); err != nil {
+	imgBytes, err := io.ReadAll(file)
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to read image"})
 		return
 	}
