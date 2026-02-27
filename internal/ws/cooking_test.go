@@ -22,7 +22,8 @@ func setupTestCookingHandler() (*CookingHandler, *testutil.MockTextProvider, *te
 	voiceService := service.NewVoiceService(cfg, mockText, mockSpeech)
 	hub := NewHub()
 	go hub.Run()
-	return NewCookingHandler(hub, "test-secret", voiceService), mockText, mockSpeech
+	mockRepo := testutil.NewMockRecipeRepo()
+	return NewCookingHandler(hub, "test-secret", voiceService, mockRepo), mockText, mockSpeech
 }
 
 // newTestClient creates a Client with a buffered Send channel and no real

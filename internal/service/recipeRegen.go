@@ -137,30 +137,17 @@ func (s *RecipeService) FinishRegenerateRecipe(recipe *models.Recipe, user *mode
 		recipeErrChan <- nil
 	}(ctx, recipeErrChan, imageErrChan)
 
-	// Wait for the recipe generation goroutine to finish or timeout
+	// Wait for the recipe generation goroutine to finish or timeout.
+	// Unlike initial generation, regen operates on an existing recipe so we
+	// must NOT delete it on failure — the user's previous version is still valid.
 	select {
 	case err := <-recipeErrChan:
 		if err != nil {
-			recipeID := recipe.ID
-			logger.Get().Error("failed to finish recipe regeneration", zap.Uint("recipe_id", recipeID), zap.Error(err))
-			e := s.DeleteRecipe(context.Background(), recipeID)
-			if e != nil {
-				logger.Get().Error("failed to delete recipe after regeneration error", zap.Uint("recipe_id", recipeID), zap.Error(e))
-				return
-			}
-			logger.Get().Info("recipe deleted after regeneration error", zap.Uint("recipe_id", recipeID))
+			logger.Get().Error("failed to finish recipe regeneration", zap.Uint("recipe_id", recipe.ID), zap.Error(err))
 			return
 		}
 	case <-ctx.Done():
-		err := errors.New("incomplete recipe generation: timed out after 5 minutes")
-		recipeID := recipe.ID
-		logger.Get().Error("recipe regeneration timed out", zap.Uint("recipe_id", recipeID), zap.Error(err))
-		e := s.DeleteRecipe(context.Background(), recipeID)
-		if e != nil {
-			logger.Get().Error("failed to delete recipe after regeneration timeout", zap.Uint("recipe_id", recipeID), zap.Error(e))
-			return
-		}
-		logger.Get().Info("recipe deleted after regeneration timeout", zap.Uint("recipe_id", recipeID))
+		logger.Get().Error("recipe regeneration timed out", zap.Uint("recipe_id", recipe.ID), zap.Error(errors.New("timed out after 5 minutes")))
 		return
 	}
 

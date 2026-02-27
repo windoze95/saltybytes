@@ -58,6 +58,23 @@ func (s *FamilyService) AddMember(familyID uint, name, relationship string, user
 	return member, nil
 }
 
+// VerifyMemberOwnership checks that the given user owns the family that the
+// specified member belongs to. Returns an error if ownership cannot be verified.
+func (s *FamilyService) VerifyMemberOwnership(memberID uint, userID uint) error {
+	member, err := s.Repo.GetFamilyMemberByID(memberID)
+	if err != nil {
+		return fmt.Errorf("member not found: %w", err)
+	}
+	family, err := s.Repo.GetFamilyByOwnerID(userID)
+	if err != nil {
+		return errors.New("family not found")
+	}
+	if member.FamilyID != family.ID {
+		return errors.New("unauthorized: you do not own this family member")
+	}
+	return nil
+}
+
 // UpdateMember updates an existing family member's name and relationship.
 func (s *FamilyService) UpdateMember(memberID uint, name, relationship string) (*models.FamilyMember, error) {
 	member, err := s.Repo.GetFamilyMemberByID(memberID)

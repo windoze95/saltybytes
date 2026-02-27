@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/windoze95/saltybytes-api/internal/ai"
 	"github.com/windoze95/saltybytes-api/internal/logger"
+	"github.com/windoze95/saltybytes-api/internal/models"
 	"github.com/windoze95/saltybytes-api/internal/service"
 	"go.uber.org/zap"
 )
@@ -89,19 +91,26 @@ type ConnectedPayload struct {
 	UserID   uint   `json:"user_id"`
 }
 
+// RecipeLookup is used by the cooking handler to verify recipe ownership.
+type RecipeLookup interface {
+	GetRecipeByID(recipeID uint) (*models.Recipe, error)
+}
+
 // CookingHandler manages WebSocket connections for cooking mode.
 type CookingHandler struct {
 	Hub          *Hub
 	JwtSecret    string
 	VoiceService *service.VoiceService
+	Recipes      RecipeLookup
 }
 
 // NewCookingHandler returns a new CookingHandler.
-func NewCookingHandler(hub *Hub, jwtSecret string, voiceService *service.VoiceService) *CookingHandler {
+func NewCookingHandler(hub *Hub, jwtSecret string, voiceService *service.VoiceService, recipes RecipeLookup) *CookingHandler {
 	return &CookingHandler{
 		Hub:          hub,
 		JwtSecret:    jwtSecret,
 		VoiceService: voiceService,
+		Recipes:      recipes,
 	}
 }
 
@@ -167,6 +176,22 @@ func (ch *CookingHandler) HandleCookingSession(c *gin.Context) {
 		return
 	}
 	userID := uint(idFloat)
+
+	// Verify the user owns this recipe before granting WebSocket access
+	recipeIDUint, parseErr := strconv.ParseUint(recipeID, 10, 64)
+	if parseErr != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "invalid recipe_id"})
+		return
+	}
+	recipe, recipeErr := ch.Recipes.GetRecipeByID(uint(recipeIDUint))
+	if recipeErr != nil {
+		c.JSON(http.StatusNotFound, gin.H{"message": "recipe not found"})
+		return
+	}
+	if recipe.CreatedByID != userID {
+		c.JSON(http.StatusForbidden, gin.H{"message": "you do not own this recipe"})
+		return
+	}
 
 	// Upgrade to WebSocket
 	conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)

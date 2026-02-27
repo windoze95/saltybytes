@@ -178,7 +178,7 @@ func SetupRouter(cfg *config.Config, database *gorm.DB) *gin.Engine {
 	go hub.Run()
 	speechProvider := ai.NewWhisperProvider(cfg.EnvVars.OpenAIAPIKey)
 	voiceService := service.NewVoiceService(cfg, textProvider, speechProvider)
-	cookingHandler := ws.NewCookingHandler(hub, cfg.EnvVars.JwtSecretKey, voiceService)
+	cookingHandler := ws.NewCookingHandler(hub, cfg.EnvVars.JwtSecretKey, voiceService, recipeRepo)
 	r.GET("/v1/ws/cook/:recipe_id", cookingHandler.HandleCookingSession)
 
 	return r

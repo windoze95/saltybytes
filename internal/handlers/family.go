@@ -109,9 +109,20 @@ func (h *FamilyHandler) AddMember(c *gin.Context) {
 
 // UpdateMember updates a family member's details.
 func (h *FamilyHandler) UpdateMember(c *gin.Context) {
+	user, err := util.GetUserFromContext(c)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
 	memberID, err := strconv.ParseUint(c.Param("member_id"), 10, 64)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid member ID"})
+		return
+	}
+
+	if err := h.Service.VerifyMemberOwnership(uint(memberID), user.ID); err != nil {
+		c.JSON(http.StatusForbidden, gin.H{"error": "you do not own this family member"})
 		return
 	}
 
@@ -136,9 +147,20 @@ func (h *FamilyHandler) UpdateMember(c *gin.Context) {
 
 // DeleteMember deletes a family member.
 func (h *FamilyHandler) DeleteMember(c *gin.Context) {
+	user, err := util.GetUserFromContext(c)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
 	memberID, err := strconv.ParseUint(c.Param("member_id"), 10, 64)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid member ID"})
+		return
+	}
+
+	if err := h.Service.VerifyMemberOwnership(uint(memberID), user.ID); err != nil {
+		c.JSON(http.StatusForbidden, gin.H{"error": "you do not own this family member"})
 		return
 	}
 
@@ -153,9 +175,20 @@ func (h *FamilyHandler) DeleteMember(c *gin.Context) {
 
 // UpdateDietaryProfile updates the dietary profile for a family member.
 func (h *FamilyHandler) UpdateDietaryProfile(c *gin.Context) {
+	user, err := util.GetUserFromContext(c)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
 	memberID, err := strconv.ParseUint(c.Param("member_id"), 10, 64)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid member ID"})
+		return
+	}
+
+	if err := h.Service.VerifyMemberOwnership(uint(memberID), user.ID); err != nil {
+		c.JSON(http.StatusForbidden, gin.H{"error": "you do not own this family member"})
 		return
 	}
 
@@ -176,9 +209,20 @@ func (h *FamilyHandler) UpdateDietaryProfile(c *gin.Context) {
 
 // DietaryInterview conducts a multi-turn dietary interview for a family member.
 func (h *FamilyHandler) DietaryInterview(c *gin.Context) {
+	user, err := util.GetUserFromContext(c)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
 	memberID, err := strconv.ParseUint(c.Param("member_id"), 10, 64)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid member ID"})
+		return
+	}
+
+	if err := h.Service.VerifyMemberOwnership(uint(memberID), user.ID); err != nil {
+		c.JSON(http.StatusForbidden, gin.H{"error": "you do not own this family member"})
 		return
 	}
 
