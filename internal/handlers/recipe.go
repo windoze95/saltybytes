@@ -133,6 +133,8 @@ func (h *RecipeHandler) GenerateRecipe(c *gin.Context) {
 	var genImage bool
 	if request.GenImage == nil {
 		genImage = true
+	} else {
+		genImage = *request.GenImage
 	}
 
 	prompt := strings.TrimSpace(request.UserPrompt)
@@ -175,6 +177,8 @@ func (h *RecipeHandler) RegenerateRecipe(c *gin.Context) {
 	var genImage bool
 	if request.GenImage == nil {
 		genImage = true
+	} else {
+		genImage = *request.GenImage
 	}
 
 	prompt := strings.TrimSpace(request.UserPrompt)
@@ -214,6 +218,8 @@ func (h *RecipeHandler) GenerateRecipeWithFork(c *gin.Context) {
 	var genImage bool
 	if request.GenImage == nil {
 		genImage = true
+	} else {
+		genImage = *request.GenImage
 	}
 
 	prompt := strings.TrimSpace(request.UserPrompt)

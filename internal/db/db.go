@@ -2,6 +2,7 @@ package db
 
 import (
 	"fmt"
+	"net/url"
 	"time"
 
 	"github.com/windoze95/saltybytes-api/internal/config"
@@ -19,7 +20,7 @@ func New(cfg *config.Config) (*gorm.DB, error) {
 
 // connectToDatabaseWithRetry connects to the database and retries if necessary.
 func connectToDatabaseWithRetry(databaseURL string) (*gorm.DB, error) {
-	logger.Get().Info("connecting to database", zap.String("url", databaseURL))
+	logger.Get().Info("connecting to database", zap.String("url", redactDSN(databaseURL)))
 	var database *gorm.DB
 	var err error
 
@@ -65,4 +66,16 @@ func connectToDatabaseWithRetry(databaseURL string) (*gorm.DB, error) {
 		ON UPDATE CASCADE ON DELETE CASCADE`)
 
 	return database, err
+}
+
+// redactDSN parses a database connection string and masks the password.
+func redactDSN(dsn string) string {
+	u, err := url.Parse(dsn)
+	if err != nil {
+		return "[unparseable DSN]"
+	}
+	if u.User != nil {
+		u.User = url.UserPassword(u.User.Username(), "***")
+	}
+	return u.String()
 }

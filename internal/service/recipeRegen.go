@@ -25,6 +25,10 @@ func (s *RecipeService) InitRegenerateRecipe(user *models.User, recipeID uint, u
 		return fmt.Errorf("failed to get existing recipe: %w", err)
 	}
 
+	if recipe.CreatedByID != user.ID {
+		return errors.New("unauthorized: you do not own this recipe")
+	}
+
 	go s.FinishRegenerateRecipe(recipe, user, userPrompt, genImage)
 
 	return nil
@@ -39,7 +43,10 @@ func (s *RecipeService) FinishRegenerateRecipe(recipe *models.Recipe, user *mode
 	imageErrChan := make(chan error)
 
 	// Convert existing history entries to ai.Message format for conversation context
-	existingHistory := historyEntriesToMessages(recipe.History.Entries, &recipe.RecipeDef)
+	var existingHistory []ai.Message
+	if recipe.History != nil {
+		existingHistory = historyEntriesToMessages(recipe.History.Entries, &recipe.RecipeDef)
+	}
 
 	req := ai.RegenerateRequest{
 		RecipeRequest: ai.RecipeRequest{
