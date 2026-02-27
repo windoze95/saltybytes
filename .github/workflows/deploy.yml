@@ -64,9 +64,33 @@ jobs:
             --force-new-deployment
 
       - name: Wait for deployment to stabilize
+        timeout-minutes: 10
         run: |
-          echo "Waiting for ECS service to reach steady state..."
-          aws ecs wait services-stable \
-            --cluster $ECS_CLUSTER \
-            --services $ECS_SERVICE
-          echo "Deployment stable."
+          echo "Waiting for ECS service to reach steady state (10 min timeout)..."
+          SECONDS=0
+          while true; do
+            STATUS=$(aws ecs describe-services \
+              --cluster $ECS_CLUSTER \
+              --services $ECS_SERVICE \
+              --query 'services[0]' --output json)
+
+            PRIMARY_COUNT=$(echo "$STATUS" | jq '[.deployments[] | select(.status=="PRIMARY")] | length')
+            TOTAL_DEPLOYMENTS=$(echo "$STATUS" | jq '.deployments | length')
+            RUNNING=$(echo "$STATUS" | jq '.deployments[] | select(.status=="PRIMARY") | .runningCount')
+            DESIRED=$(echo "$STATUS" | jq '.deployments[] | select(.status=="PRIMARY") | .desiredCount')
+            ROLLOUT=$(echo "$STATUS" | jq -r '.deployments[] | select(.status=="PRIMARY") | .rolloutState')
+
+            echo "  [${SECONDS}s] deployments=$TOTAL_DEPLOYMENTS running=$RUNNING/$DESIRED rollout=$ROLLOUT"
+
+            if [ "$ROLLOUT" = "COMPLETED" ] && [ "$TOTAL_DEPLOYMENTS" -eq 1 ] && [ "$RUNNING" -eq "$DESIRED" ]; then
+              echo "Deployment stable."
+              exit 0
+            fi
+
+            if [ "$ROLLOUT" = "FAILED" ]; then
+              echo "ERROR: Deployment rolled back by ECS."
+              exit 1
+            fi
+
+            sleep 15
+          done
