@@ -3,6 +3,7 @@ package repository
 import (
 	"errors"
 	"strings"
+	"time"
 
 	"github.com/lib/pq"
 	"github.com/windoze95/saltybytes-api/internal/logger"
@@ -143,6 +144,24 @@ func (r *UserRepository) IncrementSubscriptionUsage(userID uint, column string) 
 	}
 	if result.RowsAffected == 0 {
 		return errors.New("no subscription found for user")
+	}
+	return nil
+}
+
+// ResetSubscriptionUsage zeroes all usage counters and advances the monthly
+// reset timestamp for the given user's subscription.
+func (r *UserRepository) ResetSubscriptionUsage(userID uint, nextReset time.Time) error {
+	result := r.DB.Model(&models.Subscription{}).
+		Where("user_id = ?", userID).
+		Updates(map[string]interface{}{
+			"allergen_analyses_used": 0,
+			"web_searches_used":      0,
+			"ai_generations_used":    0,
+			"monthly_reset_at":       nextReset,
+		})
+	if result.Error != nil {
+		logger.Get().Error("failed to reset subscription usage", zap.Uint("user_id", userID), zap.Error(result.Error))
+		return result.Error
 	}
 	return nil
 }

@@ -14,15 +14,25 @@ import (
 	"go.uber.org/zap"
 )
 
-// WebSearchProvider implements SearchProvider using Google Custom Search
-// with automatic fallback to Brave Search when Google's daily limit is hit.
+// exhaustionCooldown is how long to wait before retrying a provider after a
+// quota-exhaustion response (429/403). Providers reset their quotas on
+// different schedules (Google = daily, Brave = monthly), but a 1-hour
+// cooldown is a reasonable middle ground that avoids hammering a depleted
+// API while still recovering within the same process lifetime.
+const exhaustionCooldown = 1 * time.Hour
+
+// WebSearchProvider implements SearchProvider using Brave Search as the
+// primary engine. Google Custom Search support is retained but disabled
+// (see SearchRecipes) because Google CSE no longer supports searching
+// the entire web — it requires a curated list of sites. DO NOT DELETE
+// the Google code; it can be re-enabled if a suitable CSE config is created.
 type WebSearchProvider struct {
-	googleAPIKey    string
-	googleCX        string
-	braveAPIKey     string
-	httpClient      *http.Client
-	googleExhausted atomic.Bool
-	braveExhausted  atomic.Bool
+	googleAPIKey      string
+	googleCX          string
+	braveAPIKey       string
+	httpClient        *http.Client
+	googleExhaustedAt atomic.Int64 // Unix timestamp; 0 = not exhausted
+	braveExhaustedAt  atomic.Int64 // Unix timestamp; 0 = not exhausted
 }
 
 // NewWebSearchProvider creates a search provider with Google primary + Brave fallback.
@@ -37,25 +47,44 @@ func NewWebSearchProvider(googleAPIKey, googleCX, braveAPIKey string) *WebSearch
 	}
 }
 
-// SearchRecipes tries Brave first, falls back to Google when Brave's monthly limit is hit.
+// isExhausted returns true if the provider's cooldown period hasn't elapsed yet.
+func isExhausted(exhaustedAt *atomic.Int64) bool {
+	ts := exhaustedAt.Load()
+	if ts == 0 {
+		return false
+	}
+	return time.Since(time.Unix(ts, 0)) < exhaustionCooldown
+}
+
+// markExhausted records the current time as the exhaustion timestamp.
+func markExhausted(exhaustedAt *atomic.Int64) {
+	exhaustedAt.Store(time.Now().Unix())
+}
+
+// SearchRecipes tries Brave first. Google CSE is currently disabled because
+// Google no longer allows Custom Search Engines to search the entire web
+// (a curated site list is required). DO NOT DELETE the Google code — it can
+// be re-enabled once a suitable CSE configuration is set up.
 func (p *WebSearchProvider) SearchRecipes(ctx context.Context, query string, count int) ([]SearchResult, error) {
 	if count <= 0 {
 		count = 10
 	}
 
-	// Try Brave first (unless we already know it's exhausted for the month)
-	if !p.braveExhausted.Load() && p.braveAPIKey != "" {
+	// Try Brave (unless we recently hit a quota limit)
+	if !isExhausted(&p.braveExhaustedAt) && p.braveAPIKey != "" {
 		results, err := p.searchBrave(ctx, query, count)
 		if err == nil {
 			return results, nil
 		}
-		logger.Get().Warn("brave search failed, falling back to google", zap.Error(err))
+		logger.Get().Warn("brave search failed", zap.Error(err))
 	}
 
-	// Fallback to Google
-	if !p.googleExhausted.Load() && p.googleAPIKey != "" {
-		return p.searchGoogle(ctx, query, count)
-	}
+	// NOTE: Google CSE fallback is disabled. See struct comment for details.
+	// To re-enable, uncomment the block below:
+	//
+	// if !isExhausted(&p.googleExhaustedAt) && p.googleAPIKey != "" {
+	// 	return p.searchGoogle(ctx, query, count)
+	// }
 
 	return nil, fmt.Errorf("no search providers available")
 }
@@ -127,7 +156,7 @@ func (p *WebSearchProvider) searchGoogle(ctx context.Context, query string, coun
 
 	// 429 = quota exhausted for today
 	if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == 403 {
-		p.googleExhausted.Store(true)
+		markExhausted(&p.googleExhaustedAt)
 		return nil, fmt.Errorf("google quota exhausted (status %d)", resp.StatusCode)
 	}
 
@@ -142,7 +171,7 @@ func (p *WebSearchProvider) searchGoogle(ctx context.Context, query string, coun
 
 	if gResp.Error != nil {
 		if gResp.Error.Code == 429 || gResp.Error.Code == 403 {
-			p.googleExhausted.Store(true)
+			markExhausted(&p.googleExhaustedAt)
 		}
 		return nil, fmt.Errorf("google API error %d: %s", gResp.Error.Code, gResp.Error.Message)
 	}
@@ -215,7 +244,7 @@ func (p *WebSearchProvider) searchBrave(ctx context.Context, query string, count
 	}
 
 	if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == 403 {
-		p.braveExhausted.Store(true)
+		markExhausted(&p.braveExhaustedAt)
 		return nil, fmt.Errorf("brave quota exhausted (status %d)", resp.StatusCode)
 	}
 

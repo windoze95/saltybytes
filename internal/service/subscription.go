@@ -37,12 +37,16 @@ func (s *SubscriptionService) GetSubscription(userID uint) (*models.Subscription
 		}, nil
 	}
 
-	// Reset monthly usage if needed
+	// Reset monthly usage if needed and persist to DB
 	if time.Now().After(user.Subscription.MonthlyResetAt) {
+		nextReset := time.Now().AddDate(0, 1, 0)
+		if err := s.Repo.ResetSubscriptionUsage(userID, nextReset); err != nil {
+			return nil, fmt.Errorf("failed to reset subscription usage: %w", err)
+		}
 		user.Subscription.AllergenAnalysesUsed = 0
 		user.Subscription.WebSearchesUsed = 0
 		user.Subscription.AIGenerationsUsed = 0
-		user.Subscription.MonthlyResetAt = time.Now().AddDate(0, 1, 0)
+		user.Subscription.MonthlyResetAt = nextReset
 	}
 
 	return user.Subscription, nil
