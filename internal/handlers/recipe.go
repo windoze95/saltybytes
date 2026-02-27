@@ -160,9 +160,16 @@ func (h *RecipeHandler) RegenerateRecipe(c *gin.Context) {
 		return
 	}
 
+	// Use recipe_id from the URL path, not the request body
+	recipeIDStr := c.Param("recipe_id")
+	recipeID, err := parseUintParam(recipeIDStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid recipe ID"})
+		return
+	}
+
 	// Parse the request body for the user's prompt
 	var request struct {
-		RecipeID   uint   `json:"recipe_id"`
 		UserPrompt string `json:"user_prompt"`
 		GenImage   *bool  `json:"gen_image"`
 	}
@@ -182,9 +189,9 @@ func (h *RecipeHandler) RegenerateRecipe(c *gin.Context) {
 	}
 
 	prompt := strings.TrimSpace(request.UserPrompt)
-	err = h.Service.InitRegenerateRecipe(user, request.RecipeID, prompt, genImage)
+	err = h.Service.InitRegenerateRecipe(user, recipeID, prompt, genImage)
 	if err != nil {
-		logger.Get().Error("failed to initialize recipe regeneration", zap.Uint("recipe_id", request.RecipeID), zap.Error(err))
+		logger.Get().Error("failed to initialize recipe regeneration", zap.Uint("recipe_id", recipeID), zap.Error(err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "An unexpected error occurred while initializing generation"})
 		return
 	}
@@ -202,9 +209,16 @@ func (h *RecipeHandler) GenerateRecipeWithFork(c *gin.Context) {
 		return
 	}
 
+	// Use recipe_id from the URL path, not the request body
+	recipeIDStr := c.Param("recipe_id")
+	recipeID, err := parseUintParam(recipeIDStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid recipe ID"})
+		return
+	}
+
 	// Parse the request body for the user's prompt
 	var request struct {
-		RecipeID   uint   `json:"recipe_id"`
 		UserPrompt string `json:"user_prompt"`
 		GenImage   *bool  `json:"gen_image"`
 	}
@@ -223,9 +237,9 @@ func (h *RecipeHandler) GenerateRecipeWithFork(c *gin.Context) {
 	}
 
 	prompt := strings.TrimSpace(request.UserPrompt)
-	recipeResponse, err := h.Service.InitGenerateRecipeWithFork(user, request.RecipeID, prompt, genImage)
+	recipeResponse, err := h.Service.InitGenerateRecipeWithFork(user, recipeID, prompt, genImage)
 	if err != nil {
-		logger.Get().Error("failed to initialize recipe fork", zap.Uint("recipe_id", request.RecipeID), zap.Error(err))
+		logger.Get().Error("failed to initialize recipe fork", zap.Uint("recipe_id", recipeID), zap.Error(err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "An unexpected error occurred while initializing generation"})
 		return
 	}

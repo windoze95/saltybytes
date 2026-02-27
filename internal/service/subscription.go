@@ -48,18 +48,12 @@ func (s *SubscriptionService) GetSubscription(userID uint) (*models.Subscription
 	return user.Subscription, nil
 }
 
-// UpgradeSubscription upgrades a user to premium (placeholder for payment integration).
+// UpgradeSubscription upgrades a user to premium.
+// TODO: Integrate payment provider (Stripe/RevenueCat) and persist the
+// subscription change to the database. Until paid plans are wired up,
+// this endpoint returns an error to avoid silently faking premium state.
 func (s *SubscriptionService) UpgradeSubscription(userID uint) (*models.Subscription, error) {
-	sub, err := s.GetSubscription(userID)
-	if err != nil {
-		return nil, err
-	}
-
-	sub.Tier = models.TierPremium
-	expires := time.Now().AddDate(0, 1, 0)
-	sub.ExpiresAt = &expires
-
-	return sub, nil
+	return nil, fmt.Errorf("paid plans are not yet available")
 }
 
 // IncrementUsage increments a usage counter for the given type.
