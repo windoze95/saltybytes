@@ -2,12 +2,13 @@ package repository
 
 import (
 	"errors"
-	"log"
 	"strings"
 
-	"github.com/jinzhu/gorm"
 	"github.com/lib/pq"
+	"github.com/windoze95/saltybytes-api/internal/logger"
 	"github.com/windoze95/saltybytes-api/internal/models"
+	"go.uber.org/zap"
+	"gorm.io/gorm"
 )
 
 // UserRepository is a repository for interacting with users.
@@ -59,7 +60,7 @@ func (r *UserRepository) GetUserByID(userID uint) (*models.User, error) {
 // GetUserAuthByUsername retrieves a user's authentication information by their username.
 func (r *UserRepository) GetUserAuthByUsername(username string) (*models.User, error) {
 	var user models.User
-	if err := r.DB.Preload("Auth").
+	if err := r.DB.Preload("Auth").Preload("Settings").Preload("Personalization").
 		Where("username = ?", username).
 		First(&user).Error; err != nil {
 		return nil, err
@@ -68,13 +69,24 @@ func (r *UserRepository) GetUserAuthByUsername(username string) (*models.User, e
 	return &user, nil
 }
 
+// UpdateUserFirstName updates a user's first name.
+func (r *UserRepository) UpdateUserFirstName(userID uint, firstName string) error {
+	err := r.DB.Model(&models.User{}).
+		Where("id = ?", userID).
+		Update("first_name", firstName).Error
+	if err != nil {
+		logger.Get().Error("failed to update user first name", zap.Uint("user_id", userID), zap.Error(err))
+	}
+	return err
+}
+
 // UpdateUserEmail updates a user's email address.
 func (r *UserRepository) UpdateUserEmail(userID uint, email string) error {
 	err := r.DB.Model(&models.User{}).
 		Where("id = ?", userID).
 		Update("Email", email).Error
 	if err != nil {
-		log.Printf("Error updating user email: %v", err)
+		logger.Get().Error("failed to update user email", zap.Uint("user_id", userID), zap.Error(err))
 	}
 
 	return err
@@ -86,7 +98,7 @@ func (r *UserRepository) UpdateUserSettingsKeepScreenAwake(userID uint, keepScre
 		Where("user_id = ?", userID).
 		Update("KeepScreenAwake", keepScreenAwake).Error
 	if err != nil {
-		log.Printf("Error updating user settings: %v", err)
+		logger.Get().Error("failed to update user settings", zap.Uint("user_id", userID), zap.Error(err))
 	}
 
 	return err
@@ -100,7 +112,7 @@ func (r *UserRepository) UpdatePersonalization(userID uint, updatedPersonalizati
 	err := r.DB.Where("user_id = ?", userID).
 		First(&existingPersonalization).Error
 	if err != nil {
-		log.Printf("Error retrieving existing personalization: %v", err)
+		logger.Get().Error("failed to retrieve existing personalization", zap.Uint("user_id", userID), zap.Error(err))
 		return err
 	}
 
@@ -112,7 +124,7 @@ func (r *UserRepository) UpdatePersonalization(userID uint, updatedPersonalizati
 	// Perform the update
 	err = r.DB.Save(&existingPersonalization).Error
 	if err != nil {
-		log.Printf("Error saving updated personalization: %v", err)
+		logger.Get().Error("failed to save updated personalization", zap.Uint("user_id", userID), zap.Error(err))
 	}
 
 	return err
@@ -125,7 +137,7 @@ func (r *UserRepository) UsernameExists(username string) (bool, error) {
 	err := r.DB.Where("LOWER(username) = ?", lowercaseUsername).
 		First(&user).Error
 	if err != nil {
-		if gorm.IsRecordNotFoundError(err) {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return false, nil
 		}
 		return false, err

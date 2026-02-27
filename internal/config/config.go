@@ -1,204 +1,72 @@
 package config
 
 import (
-	"encoding/json"
 	"fmt"
-	"os"
 	"reflect"
-	"strings"
-	"sync"
+
+	"github.com/caarlos0/env/v11"
 )
 
-// Config struct to hold the configuration.
+// Config holds the application configuration.
 type Config struct {
-	Env Env `json:"env"`
-	// Prompts are actually the templates to construct the usable prompts.
-	// Use the FillSysPrompt and FillUserPrompt methods to retrieve a prompt.
-	OpenaiPrompts         OpenaiPrompts `json:"openai_prompts"`
-	OpenaiKeys            []string      `json:"openai_keys"`
-	CurrentOpenaiKeyIndex int
-	Mutex                 sync.RWMutex
+	EnvVars EnvVars  `json:"env"`
+	Prompts *Prompts `json:"-"`
 }
 
-// Env struct to hold the environment variables.
-type Env struct {
-	Port               EnvVar `json:"port"`
-	DatabaseUrl        EnvVar `json:"database_url"`
-	JwtSecretKey       EnvVar `json:"jwt_secret_key"`
-	AWSRegion          EnvVar `json:"aws_region"`
-	AWSAccessKeyID     EnvVar `json:"aws_access_key_id"`
-	AWSSecretAccessKey EnvVar `json:"aws_secret_access_key"`
-	S3Bucket           EnvVar `json:"s3_bucket"`
-	IdHeader           EnvVar `json:"id_header"`
-	OpenaiPromptsPath  EnvVar `json:"openai_prompts_path"`
-	OpenaiKeysPath     EnvVar `json:"openai_keys_path"`
+// EnvVars holds environment variables required by the application.
+// Fields tagged `optional:"true"` are skipped by CheckConfigEnvFields.
+type EnvVars struct {
+	Port               string `env:"PORT" envDefault:"8080"`
+	DatabaseUrl        string `env:"DATABASE_URL"`
+	JwtSecretKey       string `env:"JWT_SECRET_KEY"`
+	AWSRegion          string `env:"AWS_REGION"`
+	AWSAccessKeyID     string `env:"AWS_ACCESS_KEY_ID" optional:"true"`
+	AWSSecretAccessKey string `env:"AWS_SECRET_ACCESS_KEY" optional:"true"`
+	S3Bucket           string `env:"S3_BUCKET"`
+	IDHeader           string `env:"ID_HEADER"`
+	AnthropicAPIKey    string `env:"ANTHROPIC_API_KEY"`
+	OpenAIAPIKey       string `env:"OPENAI_API_KEY"`
+	GoogleSearchKey    string `env:"GOOGLE_SEARCH_KEY" optional:"true"`
+	GoogleSearchCX     string `env:"GOOGLE_SEARCH_CX" optional:"true"`
+	BraveSearchKey     string `env:"BRAVE_SEARCH_KEY" optional:"true"`
 }
 
-// EnvVar is a string that represents an environment variable.
-type EnvVar string
-
-// Value returns the value of the environment variable.
-func (e EnvVar) Value() string {
-	return os.Getenv(string(e))
-}
-
-// Prompts are actually the templates to construct the usable prompts.
-// Use the FillSysPrompt and FillUserPrompt methods to retrieve a prompt.
-type OpenaiPrompts struct {
-	GenNewRecipeSys              OpenaiPromptTemplate `json:"/saltybytes/openai_prompts/gen_new_recipe_sys"`
-	GenNewRecipeUser             OpenaiPromptTemplate `json:"/saltybytes/openai_prompts/gen_new_recipe_user"`
-	GenNewVisionImportArgsSys    OpenaiPromptTemplate `json:"/saltybytes/openai_prompts/gen_new_vision_import_args_sys"`
-	GenNewVisionImportArgsUser   OpenaiPromptTemplate `json:"/saltybytes/openai_prompts/gen_new_vision_import_args_user"`
-	GenNewVisionImportRecipeSys  OpenaiPromptTemplate `json:"/saltybytes/openai_prompts/gen_new_vision_import_recipe_sys"`
-	GenNewVisionImportRecipeUser OpenaiPromptTemplate `json:"/saltybytes/openai_prompts/gen_new_vision_import_recipe_user"`
-	RegenRecipeSys               OpenaiPromptTemplate `json:"/saltybytes/openai_prompts/regen_recipe_sys"`
-	RegenRecipeUser              OpenaiPromptTemplate `json:"/saltybytes/openai_prompts/regen_recipe_user"`
-}
-
-// OpenaiPromptTemplate is a string that represents an OpenAI prompt template.
-type OpenaiPromptTemplate string
-
-// LoadConfig reads a JSON configuration file and returns a Config struct.
-func LoadConfig(filePath string) (*Config, error) {
-	file, err := os.ReadFile(filePath)
-	if err != nil {
-		return nil, err
-	}
-
+// LoadConfig parses environment variables into the Config struct.
+func LoadConfig() (*Config, error) {
 	var config Config
-	if err := json.Unmarshal(file, &config); err != nil {
+	if err := env.Parse(&config.EnvVars); err != nil {
 		return nil, err
 	}
-
 	return &config, nil
 }
 
-// CheckConfigFields validates that all fields in Config are populated
-// and their Value method (if available) will not return an error.
+// CheckConfigEnvFields validates that all required EnvVars fields are set.
 func (c *Config) CheckConfigEnvFields() error {
-	return checkFieldsRecursive(reflect.ValueOf(c.Env))
+	return checkFieldsRecursive(reflect.ValueOf(c.EnvVars))
 }
 
-// checkFieldsRecursive recursively checks each field.
 func checkFieldsRecursive(v reflect.Value) error {
-	// Dereference pointer values
 	if v.Kind() == reflect.Ptr {
 		v = v.Elem()
 	}
-
-	// Iterate through each field
 	for i := 0; i < v.NumField(); i++ {
 		field := v.Field(i)
 		fieldType := v.Type().Field(i)
-
-		// Check for zero values
+		if fieldType.Tag.Get("optional") == "true" {
+			continue
+		}
 		if isZeroValue(field) {
 			return fmt.Errorf("$%s must be set", fieldType.Name)
 		}
-
-		// If it's an EnvVar, check its Value()
-		if field.Type().String() == "config.EnvVar" {
-			envVar := EnvVar(field.String())
-			envVal := envVar.Value()
-			if envVal == "" {
-				return fmt.Errorf("value of $%s must be set", fieldType.Name)
-			}
-		}
-
-		// Recursively check nested structs
 		if field.Kind() == reflect.Struct {
 			if err := checkFieldsRecursive(field); err != nil {
 				return err
 			}
 		}
 	}
-
 	return nil
 }
 
-// isZeroValue checks if the value is a zero value for its type.
 func isZeroValue(v reflect.Value) bool {
 	return v.Interface() == reflect.Zero(v.Type()).Interface()
-}
-
-// GetCurrentAPIKey returns the current API key and rotates to the next one.
-func (c *Config) GetCurrentAPIKey() string {
-	c.Mutex.Lock()
-	defer c.Mutex.Unlock()
-
-	key := c.OpenaiKeys[c.CurrentOpenaiKeyIndex]
-
-	c.rotateAPIKey()
-
-	return key
-}
-
-// rotateAPIKey rotates to the next API key.
-func (c *Config) rotateAPIKey() {
-	c.CurrentOpenaiKeyIndex = (c.CurrentOpenaiKeyIndex + 1) % len(c.OpenaiKeys)
-}
-
-// LoadOpenaiKeys loads all OpenAI API keys from AWS SSM Parameter Store.
-func (c *Config) LoadOpenaiKeys() error {
-	// Initialize SSMService with AWS configuration
-	ssmService, err := NewSSMService(c.Env.AWSRegion.Value(), c.Env.AWSAccessKeyID.Value(), c.Env.AWSSecretAccessKey.Value())
-	if err != nil {
-		return fmt.Errorf("failed to create SSM service: %v", err)
-	}
-
-	// Fetch Secure Strings
-	apiKeys, err := ssmService.GetSecureParameterList(c.Env.OpenaiKeysPath.Value())
-	if err != nil {
-		return fmt.Errorf("failed to get all parameters: %v", err)
-	}
-
-	// This is a temporary workaround for Heroku
-	apiKeys = strings.Split(os.Getenv("HEROKU_OPENAI_API_KEYS"), ",")
-
-	c.OpenaiKeys = apiKeys
-
-	return nil
-}
-
-// LoadOpenaiPrompts loads all OpenAI prompts from AWS SSM Parameter Store.
-func (c *Config) LoadOpenaiPrompts() error {
-	// Initialize SSMService with AWS configuration
-	ssmService, err := NewSSMService(c.Env.AWSRegion.Value(), c.Env.AWSAccessKeyID.Value(), c.Env.AWSSecretAccessKey.Value())
-	if err != nil {
-		return fmt.Errorf("failed to create SSM service: %v", err)
-	}
-
-	prompts, err := ssmService.GetOpenaiPromptsFromParameters(c.Env.OpenaiPromptsPath.Value())
-	if err != nil {
-		return fmt.Errorf("failed to get all parameters: %v", err)
-	}
-
-	prompts.GenNewRecipeSys = OpenaiPromptTemplate(os.Getenv("HEROKU_OPENAI_PROMPT_GEN_NEW_RECIPE_SYS"))
-
-	c.OpenaiPrompts = *prompts
-
-	return nil
-}
-
-// FillSysPrompt fetches a system prompt and replaces placeholders.
-func (p *OpenaiPrompts) FillSysPrompt(promptTemplate OpenaiPromptTemplate, unitSystem string, requirements string) string {
-	prompt := string(promptTemplate)
-
-	sanitizedRequirements := strings.Replace(requirements, "`", "", -1)
-
-	prompt = strings.Replace(prompt, "{unitSystem}", unitSystem, -1)
-	prompt = strings.Replace(prompt, "{requirements}", sanitizedRequirements, 1)
-
-	return prompt
-}
-
-// FillUserPrompt fetches a user prompt and replaces placeholders.
-func (p *OpenaiPrompts) FillUserPrompt(promptTemplate OpenaiPromptTemplate, userPrompt string) string {
-	prompt := string(promptTemplate)
-
-	sanitizedUserPrompt := strings.Replace(userPrompt, "`", "", -1)
-
-	prompt = strings.Replace(prompt, "{userPrompt}", sanitizedUserPrompt, 1)
-
-	return prompt
 }

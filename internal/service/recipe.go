@@ -4,53 +4,98 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"strings"
-	"time"
 
-	"github.com/google/uuid"
-	"github.com/jinzhu/gorm"
+	"gorm.io/gorm"
+	"github.com/windoze95/saltybytes-api/internal/ai"
 	"github.com/windoze95/saltybytes-api/internal/config"
 	"github.com/windoze95/saltybytes-api/internal/models"
-	"github.com/windoze95/saltybytes-api/internal/openai"
 	"github.com/windoze95/saltybytes-api/internal/repository"
 	"github.com/windoze95/saltybytes-api/internal/s3"
 )
 
 // RecipeService is the business logic layer for recipe-related operations.
 type RecipeService struct {
-	Cfg  *config.Config
-	Repo *repository.RecipeRepository
+	Cfg           *config.Config
+	Repo          repository.RecipeRepo
+	TextProvider  ai.TextProvider
+	ImageProvider ai.ImageProvider
 }
 
 // RecipeResponse is the response object for recipe-related operations.
+// Field names match RecipeListItem / Flutter Recipe model.
 type RecipeResponse struct {
-	ID                     uint               `json:"ID"`
-	Title                  string             `json:"title"`
-	Ingredients            models.Ingredients `json:"ingredients"`
-	Instructions           []string           `json:"instructions"`
-	CookTime               int                `json:"cook_time"`
-	UnitSystem             models.UnitSystem  `json:"unit_system"`
-	LinkedRecipes          []*models.Recipe   `json:"linked_recipes"`
-	LinkedSuggestions      []string           `json:"link_suggestions"`
-	Hashtags               []*models.Tag      `json:"hashtags"`
-	ImageURL               string             `json:"image_url"`
-	CreatedByID            uint               `json:"created_by_id"`
-	CreatedByUsername      string             `json:"created_by_username"`
-	HistoryID              uint               `json:"history_id"`
-	ForkedFromID           *uint              `json:"forked_from_id"`
-	ForkedFromName         *string            `json:"forked_from_name"`
-	UserUnitSystem         models.UnitSystem  `json:"user_unit_system"`
-	PersonalizationUID     uuid.UUID          `json:"personalization_uid"`
-	UserPersonalizationUID uuid.UUID          `json:"user_personalization_uid"`
+	ID              string             `json:"id"`
+	Title           string             `json:"title"`
+	OwnerID         string             `json:"ownerId"`
+	ImageURL        string             `json:"imageUrl"`
+	Ingredients     models.Ingredients `json:"ingredients"`
+	Instructions    []string           `json:"instructions"`
+	Tags            []string           `json:"tags"`
+	CookTimeMinutes int                `json:"cookTimeMinutes"`
+	SourceURL       string             `json:"sourceUrl,omitempty"`
+	CreatedAt       string             `json:"createdAt"`
+	UpdatedAt       string             `json:"updatedAt"`
+	// Additional detail fields
+	ParentRecipeID *string `json:"parentRecipeId,omitempty"`
+}
+
+// HistoryResponse is the response object for recipe history-related operations.
+type HistoryResponse struct {
+	Entries []models.RecipeHistoryEntry `json:"entries"`
+}
+
+// RecipeListItem is a lightweight response object for recipe listing.
+type RecipeListItem struct {
+	ID              string   `json:"id"`
+	Title           string   `json:"title"`
+	OwnerID         string   `json:"ownerId"`
+	ImageURL        string   `json:"imageUrl"`
+	CookTimeMinutes int      `json:"cookTimeMinutes"`
+	Tags            []string `json:"tags"`
+	SourceURL       string   `json:"sourceUrl,omitempty"`
+	CreatedAt       string   `json:"createdAt"`
+	UpdatedAt       string   `json:"updatedAt"`
 }
 
 // NewRecipeService is the constructor function for initializing a new RecipeService
-func NewRecipeService(cfg *config.Config, repo *repository.RecipeRepository) *RecipeService {
+func NewRecipeService(cfg *config.Config, repo repository.RecipeRepo, textProvider ai.TextProvider, imageProvider ai.ImageProvider) *RecipeService {
 	return &RecipeService{
-		Cfg:  cfg,
-		Repo: repo,
+		Cfg:           cfg,
+		Repo:          repo,
+		TextProvider:  textProvider,
+		ImageProvider: imageProvider,
 	}
+}
+
+// GetUserRecipes returns a paginated list of recipes for a user.
+func (s *RecipeService) GetUserRecipes(userID uint, page, pageSize int) ([]RecipeListItem, int64, error) {
+	recipes, total, err := s.Repo.GetUserRecipes(userID, page, pageSize)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to get user recipes: %w", err)
+	}
+
+	items := make([]RecipeListItem, len(recipes))
+	for i, r := range recipes {
+		tags := make([]string, 0, len(r.Hashtags))
+		for _, t := range r.Hashtags {
+			tags = append(tags, t.Hashtag)
+		}
+
+		items[i] = RecipeListItem{
+			ID:              fmt.Sprintf("%d", r.ID),
+			Title:           r.Title,
+			OwnerID:         fmt.Sprintf("%d", r.CreatedByID),
+			ImageURL:        r.ImageURL,
+			CookTimeMinutes: r.CookTime,
+			Tags:            tags,
+			SourceURL:       r.SourceURL,
+			CreatedAt:       r.CreatedAt.Format("2006-01-02T15:04:05Z"),
+			UpdatedAt:       r.UpdatedAt.Format("2006-01-02T15:04:05Z"),
+		}
+	}
+
+	return items, total, nil
 }
 
 // GetRecipeByID fetches a recipe by its ID.
@@ -62,14 +107,9 @@ func (s *RecipeService) GetRecipeByID(recipeID uint) (*RecipeResponse, error) {
 	}
 
 	// Create a RecipeResponse from the Recipe
-	recipeResponse := toRecipeResponse(recipe)
+	recipeResponse := s.ToRecipeResponse(recipe)
 
 	return recipeResponse, nil
-}
-
-// HistoryResponse is the response object for recipe history-related operations.
-type HistoryResponse struct {
-	Entries []models.RecipeHistoryEntry `json:"entries"`
 }
 
 // GetRecipeHistoryByID fetches a recipe history by its ID.
@@ -85,145 +125,8 @@ func (s *RecipeService) GetRecipeHistoryByID(historyID uint) (*HistoryResponse, 
 	return historyResponse, nil
 }
 
-// InitGenerateRecipeWithChat initializes a new recipe with chat.
-func (s *RecipeService) InitGenerateRecipeWithChat(user *models.User, userPrompt string) (*RecipeResponse, error) {
-	if user.Personalization.ID == 0 {
-		log.Printf("user %d Personalization is nil", user.ID)
-		return nil, errors.New("user's Personalization is nil")
-	}
-
-	// Populate initial fields of the Recipe struct
-	recipe := &models.Recipe{
-		CreatedBy:          user,
-		PersonalizationUID: user.Personalization.UID, // Set from user's existing Personalization
-		History: &models.RecipeHistory{
-			Entries: []models.RecipeHistoryEntry{},
-		},
-	}
-
-	// Create a Recipe with the basic Recipe details
-	if err := s.Repo.CreateRecipe(recipe); err != nil {
-		return nil, fmt.Errorf("failed to save recipe record: %w", err)
-	}
-
-	recipeResponse := toRecipeResponse(recipe)
-
-	go s.FinishGenerateRecipeWithChat(recipe, user, userPrompt)
-
-	// The recipe now has an ID generated by the database
-	return recipeResponse, nil
-}
-
-// FinishGenerateRecipeWithChat finishes generating a recipe with chat.
-func (s *RecipeService) FinishGenerateRecipeWithChat(recipe *models.Recipe, user *models.User, userPrompt string) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer cancel()
-
-	recipeErrChan := make(chan error)
-	imageErrChan := make(chan error)
-
-	recipeManager := &openai.RecipeManager{
-		UserPrompt:   userPrompt,
-		UnitSystem:   user.Personalization.GetUnitSystemText(),
-		Requirements: user.Personalization.Requirements,
-		Cfg:          s.Cfg,
-	}
-
-	// Goroutine to handle recipe generation
-	go func(ctx context.Context, recipeErrChan chan<- error, imageErrChan chan<- error) {
-		if err := recipeManager.GenerateRecipeWithChat(); err != nil {
-			recipeErrChan <- err
-			return
-		}
-
-		// Goroutine to handle image generation and upload
-		go func(ctx context.Context, imageErrChan chan<- error) {
-			if err := recipeManager.GenerateRecipeImage(); err != nil {
-				imageErrChan <- err
-				return
-			}
-
-			imageErrChan <- nil
-		}(ctx, imageErrChan)
-
-		if err := populateRecipeCoreFields(recipe, recipeManager); err != nil {
-			recipeErrChan <- err
-			return
-		}
-
-		if err := s.Repo.UpdateRecipeDef(recipe, recipeManager.NextRecipeHistoryEntry); err != nil {
-			recipeErrChan <- err
-			return
-		}
-
-		if err := s.AssociateTagsWithRecipe(recipe, recipeManager.RecipeDef.Hashtags); err != nil {
-			log.Println(err)
-		}
-
-		recipeErrChan <- nil
-	}(ctx, recipeErrChan, imageErrChan)
-
-	// Wait for the recipe generation goroutine to finish or timeout
-	select {
-	case err := <-recipeErrChan:
-		if err != nil {
-			recipeID := recipe.ID
-			log.Printf("Error finishing recipe %d generation: %v", recipeID, err)
-			e := s.DeleteRecipe(recipeID)
-			if e != nil {
-				log.Printf("error: failed to delete recipe %d: %v", recipeID, e)
-				return
-			}
-			log.Printf("recipe %d deleted", recipeID)
-			return
-		}
-		// Offloading failed recipes to frontend, Frontend will look for new recipe history entries
-		// if err := s.Repo.UpdateRecipeGenerationStatus(recipe.ID, true); err != nil {
-		// 	log.Printf("error: failed to update GenerationComplete: %v", err)
-		// 	return
-		// }
-	case <-ctx.Done():
-		err := errors.New("incomplete recipe generation: timed out after 5 minutes")
-		recipeID := recipe.ID
-		log.Printf("Error finishing recipe %d generation: %v", recipeID, err)
-		e := s.DeleteRecipe(recipeID)
-		if e != nil {
-			log.Printf("error: failed to delete recipe %d: %v", recipeID, e)
-			return
-		}
-		log.Printf("recipe %d deleted", recipeID)
-		return
-	}
-
-	// Wait for the image generation goroutine to finish or timeout
-	select {
-	case err := <-imageErrChan:
-		if err != nil {
-			log.Println(err)
-			return
-		}
-
-		var recipeImageURL string
-		if imageURL, err := uploadRecipeImage(recipe.ID, recipeManager, s.Cfg); err != nil {
-			log.Println(err)
-			return
-		} else {
-			recipeImageURL = imageURL
-		}
-
-		if err := s.Repo.UpdateRecipeImageURL(recipe.ID, recipeImageURL); err != nil {
-			log.Println(err)
-			return
-		}
-	case <-ctx.Done():
-		err := errors.New("incomplete recipe image generation: timed out after 5 minutes")
-		log.Println(err)
-		return
-	}
-}
-
 // DeleteRecipe deletes a recipe by its ID.
-func (s *RecipeService) DeleteRecipe(recipeID uint) error {
+func (s *RecipeService) DeleteRecipe(ctx context.Context, recipeID uint) error {
 	// Delete the recipe from the database
 	if err := s.Repo.DeleteRecipe(recipeID); err != nil {
 		return fmt.Errorf("failed to delete recipe: %w", err)
@@ -231,37 +134,52 @@ func (s *RecipeService) DeleteRecipe(recipeID uint) error {
 
 	// Delete the recipe image from S3
 	s3Key := s3.GenerateS3Key(recipeID)
-	if err := s3.DeleteRecipeImageFromS3(s.Cfg, s3Key); err != nil {
+	if err := s3.DeleteRecipeImageFromS3(ctx, s.Cfg, s3Key); err != nil {
 		return fmt.Errorf("failed to delete recipe image from S3: %w", err)
 	}
 
 	return nil
 }
 
-// populateRecipeFields populates the fields of the Recipe struct.
-func populateRecipeCoreFields(recipe *models.Recipe, recipeManager *openai.RecipeManager) error {
-	// ingredientsJSON, err := util.SerializeToJSONString(recipeManager.RecipeDef.Ingredients)
-	// if err != nil {
-	// 	return errors.New("failed to serialize ingredients: " + err.Error())
-	// }
-
-	// recipe.Title = recipeManager.RecipeDef.Title
-	// recipe.Ingredients = recipeManager.RecipeDef.Ingredients
-	// recipe.Instructions = recipeManager.RecipeDef.Instructions
-	// recipe.CookTime = recipeManager.RecipeDef.CookTime
-	// recipe.LinkSuggestions = recipeManager.RecipeDef.LinkedRecipeSuggestions
-	// recipe.ImagePrompt = recipeManager.RecipeDef.ImagePrompt
-
-	recipe.RecipeDef = *recipeManager.RecipeDef
+// populateRecipeCoreFields populates the recipe's core fields from an AI result.
+func populateRecipeCoreFields(recipe *models.Recipe, result *ai.RecipeResult, historyEntry models.RecipeHistoryEntry) error {
+	recipe.RecipeDef = recipeResultToRecipeDef(result)
 
 	if recipe.History == nil {
 		return errors.New("recipe history is nil")
 	}
 
-	// Append the new entry history to the existing entries history
-	recipe.History.Entries = append(recipe.History.Entries, recipeManager.RecipeHistoryEntries...)
+	recipe.History.Entries = append(recipe.History.Entries, historyEntry)
 
 	return validateRecipeCoreFields(recipe)
+}
+
+// recipeResultToRecipeDef converts an ai.RecipeResult to a models.RecipeDef.
+func recipeResultToRecipeDef(r *ai.RecipeResult) models.RecipeDef {
+	ingredients := make(models.Ingredients, len(r.Ingredients))
+	for i, ing := range r.Ingredients {
+		ingredients[i] = models.Ingredient{
+			Name:             ing.Name,
+			Unit:             ing.Unit,
+			Amount:           ing.Amount,
+			OriginalText:     ing.OriginalText,
+			NormalizedAmount: ing.NormalizedAmount,
+			NormalizedUnit:   ing.NormalizedUnit,
+			IsEstimated:      ing.IsEstimated,
+		}
+	}
+	return models.RecipeDef{
+		Title:             r.Title,
+		Ingredients:       ingredients,
+		Instructions:      r.Instructions,
+		CookTime:          r.CookTime,
+		ImagePrompt:       r.ImagePrompt,
+		Hashtags:          r.Hashtags,
+		LinkedSuggestions: r.LinkedSuggestions,
+		Portions:          r.Portions,
+		PortionSize:       r.PortionSize,
+		SourceURL:         r.SourceURL,
+	}
 }
 
 // validateRecipeFields validates that the Recipe's required fields are populated.
@@ -269,8 +187,7 @@ func validateRecipeCoreFields(recipe *models.Recipe) error {
 	if recipe.Title == "" ||
 		recipe.Ingredients == nil ||
 		recipe.Instructions == nil ||
-		recipe.ImagePrompt == "" ||
-		recipe.History.Entries == nil {
+		recipe.ImagePrompt == "" {
 		return errors.New("missing required fields in Recipe")
 	}
 
@@ -278,9 +195,9 @@ func validateRecipeCoreFields(recipe *models.Recipe) error {
 }
 
 // uploadRecipeImage uploads the recipe image to S3 and returns the new image URL.
-func uploadRecipeImage(recipeId uint, recipeManager *openai.RecipeManager, cfg *config.Config) (string, error) {
-	s3Key := s3.GenerateS3Key(recipeId)
-	imageURL, err := s3.UploadRecipeImageToS3(cfg, recipeManager.ImageBytes, s3Key)
+func uploadRecipeImage(ctx context.Context, recipeID uint, imageBytes []byte, cfg *config.Config) (string, error) {
+	s3Key := s3.GenerateS3Key(recipeID)
+	imageURL, err := s3.UploadRecipeImageToS3(ctx, cfg, imageBytes, s3Key)
 	if err != nil {
 		return "", errors.New("failed to upload image to S3: " + err.Error())
 	}
@@ -300,7 +217,7 @@ func (s *RecipeService) AssociateTagsWithRecipe(recipe *models.Recipe, tags []st
 		existingTag, err := s.Repo.FindTagByName(cleanedHashtag)
 		if err == nil {
 			associatedTags = append(associatedTags, *existingTag)
-		} else if gorm.IsRecordNotFoundError(err) {
+		} else if errors.Is(err, gorm.ErrRecordNotFound) {
 			newTag := models.Tag{Hashtag: cleanedHashtag}
 			if err := s.Repo.CreateTag(&newTag); err != nil {
 				return fmt.Errorf("failed to create new tag: %v", err)
@@ -319,36 +236,125 @@ func (s *RecipeService) AssociateTagsWithRecipe(recipe *models.Recipe, tags []st
 	return nil
 }
 
-// toRecipeResponse converts a Recipe to a RecipeResponse
-func toRecipeResponse(r *models.Recipe) *RecipeResponse {
-	var forkedFromID *uint
+// ToRecipeResponse converts a Recipe to a RecipeResponse.
+// Field names match RecipeListItem / Flutter Recipe model.
+func (s *RecipeService) ToRecipeResponse(r *models.Recipe) *RecipeResponse {
+	tags := make([]string, 0, len(r.Hashtags))
+	for _, t := range r.Hashtags {
+		tags = append(tags, t.Hashtag)
+	}
+
+	var parentRecipeID *string
 	if r.ForkedFromID != nil && *r.ForkedFromID != 0 {
-		forkedFromID = r.ForkedFromID
+		s := fmt.Sprintf("%d", *r.ForkedFromID)
+		parentRecipeID = &s
 	}
 
-	var forkedFromName *string
-	if r.ForkedFrom != nil {
-		forkedFromName = &r.ForkedFrom.Title
+	resp := &RecipeResponse{
+		ID:              fmt.Sprintf("%d", r.ID),
+		Title:           r.Title,
+		OwnerID:         fmt.Sprintf("%d", r.CreatedByID),
+		ImageURL:        r.ImageURL,
+		Ingredients:     r.Ingredients,
+		Instructions:    r.Instructions,
+		Tags:            tags,
+		CookTimeMinutes: r.CookTime,
+		SourceURL:       r.SourceURL,
+		CreatedAt:       r.CreatedAt.Format("2006-01-02T15:04:05Z"),
+		UpdatedAt:       r.UpdatedAt.Format("2006-01-02T15:04:05Z"),
+		ParentRecipeID:  parentRecipeID,
 	}
 
-	return &RecipeResponse{
-		ID:                 r.ID,
-		Title:              r.Title,
-		Ingredients:        r.Ingredients,
-		Instructions:       r.Instructions,
-		CookTime:           r.CookTime,
-		UnitSystem:         r.UnitSystem,
-		LinkedRecipes:      r.LinkedRecipes,
-		LinkedSuggestions:  r.LinkedSuggestions,
-		Hashtags:           r.Hashtags,
-		ImageURL:           r.ImageURL,
-		CreatedByID:        r.CreatedByID,
-		CreatedByUsername:  r.CreatedBy.Username,
-		HistoryID:          r.HistoryID,
-		ForkedFromID:       forkedFromID,
-		ForkedFromName:     forkedFromName,
-		PersonalizationUID: r.PersonalizationUID,
+	return resp
+}
+
+// --- RecipeTree/RecipeNode service methods ---
+
+// GetRecipeTree returns the tree structure for a recipe.
+func (s *RecipeService) GetRecipeTree(recipeID uint) (*TreeResponse, error) {
+	tree, err := s.Repo.GetTreeByRecipeID(recipeID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get recipe tree: %w", err)
 	}
+
+	treeWithNodes, err := s.Repo.GetTreeWithNodes(tree.ID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get tree nodes: %w", err)
+	}
+
+	return &TreeResponse{
+		TreeID:     treeWithNodes.ID,
+		RecipeID:   treeWithNodes.RecipeID,
+		RootNodeID: treeWithNodes.RootNodeID,
+		Nodes:      treeWithNodes.Nodes,
+	}, nil
+}
+
+// GetActiveNode returns the active node for a recipe's tree.
+func (s *RecipeService) GetActiveNode(recipeID uint) (*models.RecipeNode, error) {
+	tree, err := s.Repo.GetTreeByRecipeID(recipeID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get recipe tree: %w", err)
+	}
+
+	node, err := s.Repo.GetActiveNode(tree.ID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get active node: %w", err)
+	}
+
+	return node, nil
+}
+
+// GetNodeHistory returns the chain of nodes from root to the specified node.
+func (s *RecipeService) GetNodeHistory(nodeID uint) ([]models.RecipeNode, error) {
+	ancestors, err := s.Repo.GetNodeAncestors(nodeID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get node history: %w", err)
+	}
+	return ancestors, nil
+}
+
+// SwitchToNode sets a node as active and updates the recipe's fields from the node's response.
+func (s *RecipeService) SwitchToNode(recipeID uint, nodeID uint) error {
+	node, err := s.Repo.GetNodeByID(nodeID)
+	if err != nil {
+		return fmt.Errorf("failed to get node: %w", err)
+	}
+
+	if node.Response == nil {
+		return errors.New("cannot switch to node with no response")
+	}
+
+	if err := s.Repo.UpdateRecipeFromNode(recipeID, node); err != nil {
+		return fmt.Errorf("failed to update recipe from node: %w", err)
+	}
+
+	return nil
+}
+
+// NodeHistoryToEntries converts a chain of tree nodes into RecipeHistoryEntry format
+// for compatibility with ProcessExistingRecipeHistoryEntries. This bridges the tree
+// structure with existing AI generation code.
+func NodeHistoryToEntries(nodes []models.RecipeNode) []models.RecipeHistoryEntry {
+	entries := make([]models.RecipeHistoryEntry, 0, len(nodes))
+	for i, node := range nodes {
+		entries = append(entries, models.RecipeHistoryEntry{
+			Prompt:   node.Prompt,
+			Response: node.Response,
+			Summary:  node.Summary,
+			Type:     node.Type,
+			Order:    i,
+		})
+	}
+	return entries
+}
+
+// TreeResponse is the response object for recipe tree operations.
+type TreeResponse struct {
+	TreeID     uint                `json:"tree_id"`
+	RecipeID   uint                `json:"recipe_id"`
+	RootNodeID *uint               `json:"root_node_id"`
+	Nodes      []models.RecipeNode `json:"nodes"`
 }
 
 // cleanHashtag formats a hashtag string.

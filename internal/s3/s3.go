@@ -2,27 +2,44 @@ package s3
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/credentials"
-	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/aws/aws-sdk-go/service/s3"
-	"github.com/aws/aws-sdk-go/service/s3/s3manager"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/windoze95/saltybytes-api/internal/config"
 )
 
+// newS3Client creates a new S3 client from the app config.
+func newS3Client(ctx context.Context, cfg *config.Config) (*s3.Client, error) {
+	awsCfg, err := awsconfig.LoadDefaultConfig(ctx,
+		awsconfig.WithRegion(cfg.EnvVars.AWSRegion),
+		awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(
+			cfg.EnvVars.AWSAccessKeyID,
+			cfg.EnvVars.AWSSecretAccessKey,
+			"",
+		)),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load AWS config: %v", err)
+	}
+	return s3.NewFromConfig(awsCfg), nil
+}
+
 // UploadRecipeImageToS3 uploads a given byte array to an S3 bucket and returns the location URL.
-func UploadRecipeImageToS3(cfg *config.Config, imgBytes []byte, s3Key string) (string, error) {
-	sess := session.Must(session.NewSession(&aws.Config{
-		Region:      aws.String(cfg.Env.AWSRegion.Value()),
-		Credentials: credentials.NewStaticCredentials(cfg.Env.AWSAccessKeyID.Value(), cfg.Env.AWSSecretAccessKey.Value(), ""),
-	}))
+func UploadRecipeImageToS3(ctx context.Context, cfg *config.Config, imgBytes []byte, s3Key string) (string, error) {
+	client, err := newS3Client(ctx, cfg)
+	if err != nil {
+		return "", err
+	}
 
-	uploader := s3manager.NewUploader(sess)
+	uploader := manager.NewUploader(client)
 
-	result, err := uploader.Upload(&s3manager.UploadInput{
-		Bucket: aws.String(cfg.Env.S3Bucket.Value()),
+	result, err := uploader.Upload(ctx, &s3.PutObjectInput{
+		Bucket: aws.String(cfg.EnvVars.S3Bucket),
 		Key:    aws.String(s3Key),
 		Body:   bytes.NewReader(imgBytes),
 	})
@@ -34,16 +51,14 @@ func UploadRecipeImageToS3(cfg *config.Config, imgBytes []byte, s3Key string) (s
 }
 
 // DeleteRecipeImageFromS3 deletes a given image from an S3 bucket.
-func DeleteRecipeImageFromS3(cfg *config.Config, s3Key string) error {
-	sess := session.Must(session.NewSession(&aws.Config{
-		Region:      aws.String(cfg.Env.AWSRegion.Value()),
-		Credentials: credentials.NewStaticCredentials(cfg.Env.AWSAccessKeyID.Value(), cfg.Env.AWSSecretAccessKey.Value(), ""),
-	}))
+func DeleteRecipeImageFromS3(ctx context.Context, cfg *config.Config, s3Key string) error {
+	client, err := newS3Client(ctx, cfg)
+	if err != nil {
+		return err
+	}
 
-	deleter := s3.New(sess)
-
-	_, err := deleter.DeleteObject(&s3.DeleteObjectInput{
-		Bucket: aws.String(cfg.Env.S3Bucket.Value()),
+	_, err = client.DeleteObject(ctx, &s3.DeleteObjectInput{
+		Bucket: aws.String(cfg.EnvVars.S3Bucket),
 		Key:    aws.String(s3Key),
 	})
 	if err != nil {

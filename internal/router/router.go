@@ -1,23 +1,21 @@
 package router
 
 import (
-	"time"
-
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
-	"github.com/jinzhu/gorm"
+	"github.com/windoze95/saltybytes-api/internal/ai"
 	"github.com/windoze95/saltybytes-api/internal/config"
 	"github.com/windoze95/saltybytes-api/internal/handlers"
+	"github.com/windoze95/saltybytes-api/internal/logger"
 	"github.com/windoze95/saltybytes-api/internal/middleware"
 	"github.com/windoze95/saltybytes-api/internal/repository"
 	"github.com/windoze95/saltybytes-api/internal/service"
+	"github.com/windoze95/saltybytes-api/internal/ws"
+	"gorm.io/gorm"
 )
 
 // SetupRouter sets up the Gin router.
 func SetupRouter(cfg *config.Config, database *gorm.DB) *gin.Engine {
-	// Set Gin mode to release
-	gin.SetMode(gin.ReleaseMode)
-
 	// Create default Gin router
 	r := gin.Default()
 
@@ -29,18 +27,10 @@ func SetupRouter(cfg *config.Config, database *gorm.DB) *gin.Engine {
 		"https://saltybytes.ai",
 		"https://www.saltybytes.ai",
 	}
-	config.AllowHeaders = append(config.AllowHeaders, "X-SaltyBytes-Identifier")
-
 	r.Use(cors.New(config))
 
-	// Define constants and variables related to rate limiting
-	var globalRps int = 20                       // 20 request per second
-	var globalCleanupInterval = 10 * time.Minute // Cleanup every 10 minutes
-	var globalExpiration = 1 * time.Hour         // Remove unused limiters after 1 hour
-
-	// Apply rate limiting middleware to all routes
-	r.Use(middleware.RateLimitByIP(globalRps, globalCleanupInterval, globalExpiration))
-	r.Use(middleware.CheckIDHeader(cfg.Env.IdHeader.Value()))
+	// Add request ID middleware for request correlation
+	r.Use(logger.RequestIDMiddleware())
 
 	// Ping route for testing
 	r.GET("/ping", func(c *gin.Context) {
@@ -54,10 +44,19 @@ func SetupRouter(cfg *config.Config, database *gorm.DB) *gin.Engine {
 	userService := service.NewUserService(cfg, userRepo)
 	userHandler := handlers.NewUserHandler(userService)
 
+	// AI provider setup
+	textProvider := ai.NewAnthropicProvider(cfg.EnvVars.AnthropicAPIKey, cfg.Prompts)
+	imageProvider := ai.NewDALLEProvider(cfg.EnvVars.OpenAIAPIKey)
+
 	// Recipe-related routes setup
 	recipeRepo := repository.NewRecipeRepository(database)
-	recipeService := service.NewRecipeService(cfg, recipeRepo)
+	recipeService := service.NewRecipeService(cfg, recipeRepo, textProvider, imageProvider)
 	recipeHandler := handlers.NewRecipeHandler(recipeService)
+
+	// Import-related routes setup
+	previewProvider := ai.NewAnthropicLightProvider(cfg.EnvVars.AnthropicAPIKey, cfg.Prompts)
+	importService := service.NewImportService(cfg, recipeRepo, recipeService, textProvider, textProvider, previewProvider)
+	importHandler := handlers.NewImportHandler(importService)
 
 	// Group for API routes that don't require token verification
 	apiPublic := r.Group("/v1")
@@ -68,6 +67,8 @@ func SetupRouter(cfg *config.Config, database *gorm.DB) *gin.Engine {
 		apiPublic.POST("/users", userHandler.CreateUser)
 		// Login a user
 		apiPublic.POST("/auth/login", userHandler.LoginUser)
+		// Refresh an access token
+		apiPublic.POST("/auth/refresh", userHandler.RefreshToken)
 
 		// Recipe-related routes
 
@@ -89,25 +90,96 @@ func SetupRouter(cfg *config.Config, database *gorm.DB) *gin.Engine {
 		// Get a user by their ID
 		apiProtected.GET("/users/me", middleware.AttachUserToContext(userService), userHandler.GetUserByID)
 		// Get a user's settings
-		apiProtected.GET("/users/settings", middleware.AttachUserToContext(userService), userHandler.GetUserSettings)
+		apiProtected.GET("/users/me/settings", middleware.AttachUserToContext(userService), userHandler.GetUserSettings)
 
 		// Recipe-related routes
 
-		// // Get a single recipe by it's ID
-		// apiProtected.GET("/recipes/:recipe_id", recipeHandler.GetRecipe)
-		// Generate a new recipe
-		apiProtected.POST("/recipes/chat", middleware.AttachUserToContext(userService), recipeHandler.GenerateRecipeWithChat)
-		// Import a recipe with a link
-		// apiProtected.POST("/recipes/import/link", middleware.AttachUserToContext(userService), recipeHandler.ImportRecipeLink)
-		// Import a recipe with vision
-		// apiProtected.POST("/recipes/import/vision", middleware.AttachUserToContext(userService), recipeHandler.ImportRecipeVision)
-		// Import a recipe with copy-paste
-		// apiProtected.POST("/recipes/import/copypasta", middleware.AttachUserToContext(userService), recipeHandler.ImportRecipeCopyPasta)
-		// Manually enter a new recipe
-		// apiProtected.POST("/recipes/manual", middleware.AttachUserToContext(userService), recipeHandler.ManualEntryRecipe)
-		// Copycat a recipe
-		// apiProtected.POST("/recipes/copycat", middleware.AttachUserToContext(userService), recipeHandler.CopycatRecipe)
+		// List the authenticated user's recipes
+		apiProtected.GET("/recipes", middleware.AttachUserToContext(userService), recipeHandler.ListRecipes)
+		// Generate a new recipe with chat
+		apiProtected.POST("/recipes/chat", middleware.AttachUserToContext(userService), recipeHandler.GenerateRecipe)
+		// Generate a new recipe based on a previous recipe and the user's chat
+		apiProtected.PUT("/recipes/:recipe_id/chat", middleware.AttachUserToContext(userService), recipeHandler.RegenerateRecipe)
+
+		apiProtected.POST("/recipes/:recipe_id/fork", middleware.AttachUserToContext(userService), recipeHandler.GenerateRecipeWithFork)
+
+		// Recipe import routes
+		apiProtected.POST("/recipes/import/url", middleware.AttachUserToContext(userService), importHandler.ImportFromURL)
+		apiProtected.POST("/recipes/import/photo", middleware.AttachUserToContext(userService), importHandler.ImportFromPhoto)
+		apiProtected.POST("/recipes/import/text", middleware.AttachUserToContext(userService), importHandler.ImportFromText)
+		apiProtected.POST("/recipes/import/manual", middleware.AttachUserToContext(userService), importHandler.ImportManual)
+
+		// Recipe preview route (cheap extraction for pre-import preview)
+		apiProtected.POST("/recipes/preview/url", middleware.AttachUserToContext(userService), importHandler.PreviewFromURL)
+
+		// Recipe tree/branching routes
+		treeService := service.NewRecipeTreeService(cfg, recipeRepo)
+		treeHandler := handlers.NewRecipeTreeHandler(treeService)
+
+		apiProtected.GET("/recipes/:recipe_id/tree", middleware.AttachUserToContext(userService), treeHandler.GetTree)
+		apiProtected.POST("/recipes/:recipe_id/branch", middleware.AttachUserToContext(userService), treeHandler.CreateBranch)
+		apiProtected.PUT("/recipes/:recipe_id/tree/active/:node_id", middleware.AttachUserToContext(userService), treeHandler.SetActiveNode)
 	}
+
+	// Family-related routes setup
+	familyRepo := repository.NewFamilyRepository(database)
+	familyService := service.NewFamilyService(cfg, familyRepo, textProvider)
+	familyHandler := handlers.NewFamilyHandler(familyService)
+
+	apiProtected.POST("/family", middleware.AttachUserToContext(userService), familyHandler.CreateFamily)
+	apiProtected.GET("/family", middleware.AttachUserToContext(userService), familyHandler.GetFamily)
+	apiProtected.POST("/family/members", middleware.AttachUserToContext(userService), familyHandler.AddMember)
+	apiProtected.PUT("/family/members/:member_id", middleware.AttachUserToContext(userService), familyHandler.UpdateMember)
+	apiProtected.DELETE("/family/members/:member_id", middleware.AttachUserToContext(userService), familyHandler.DeleteMember)
+	apiProtected.PUT("/family/members/:member_id/dietary", middleware.AttachUserToContext(userService), familyHandler.UpdateDietaryProfile)
+	apiProtected.POST("/family/members/:member_id/dietary/interview", middleware.AttachUserToContext(userService), familyHandler.DietaryInterview)
+
+	// Allergen analysis routes setup
+	allergenRepo := repository.NewAllergenRepository(database)
+	allergenService := service.NewAllergenService(cfg, allergenRepo, familyRepo, recipeRepo, textProvider)
+	allergenHandler := handlers.NewAllergenHandler(allergenService)
+
+	apiProtected.POST("/recipes/:recipe_id/allergens/analyze", middleware.AttachUserToContext(userService), allergenHandler.AnalyzeRecipe)
+	apiProtected.GET("/recipes/:recipe_id/allergens", middleware.AttachUserToContext(userService), allergenHandler.GetAnalysis)
+	apiProtected.POST("/recipes/:recipe_id/allergens/check-family", middleware.AttachUserToContext(userService), allergenHandler.CheckFamily)
+
+	// User update routes
+	apiProtected.PUT("/users/me", middleware.AttachUserToContext(userService), userHandler.UpdateUser)
+	apiProtected.PUT("/users/me/settings", middleware.AttachUserToContext(userService), userHandler.UpdateSettings)
+	apiProtected.PUT("/users/me/personalization", middleware.AttachUserToContext(userService), userHandler.UpdatePersonalization)
+
+	// Recipe delete
+	apiProtected.DELETE("/recipes/:recipe_id", middleware.AttachUserToContext(userService), recipeHandler.DeleteRecipe)
+
+	// Search routes
+	searchProvider := ai.NewWebSearchProvider(cfg.EnvVars.GoogleSearchKey, cfg.EnvVars.GoogleSearchCX, cfg.EnvVars.BraveSearchKey)
+	searchService := service.NewSearchService(cfg, searchProvider)
+	searchHandler := handlers.NewSearchHandler(searchService)
+	apiProtected.GET("/recipes/search", middleware.AttachUserToContext(userService), searchHandler.SearchRecipes)
+
+	// Vector similarity routes
+	vectorRepo := repository.NewVectorRepository(database)
+	embedProvider := ai.NewEmbeddingProvider(cfg.EnvVars.OpenAIAPIKey)
+	similarityHandler := handlers.NewSimilarityHandler(vectorRepo, embedProvider, recipeService)
+	apiProtected.GET("/recipes/similar/:recipe_id", middleware.AttachUserToContext(userService), similarityHandler.FindSimilar)
+
+	// Subscription routes
+	subService := service.NewSubscriptionService(cfg, userRepo)
+	subHandler := handlers.NewSubscriptionHandler(subService)
+	apiProtected.GET("/subscription", middleware.AttachUserToContext(userService), subHandler.GetSubscription)
+	apiProtected.POST("/subscription/upgrade", middleware.AttachUserToContext(userService), subHandler.UpgradeSubscription)
+
+	// Image upload
+	imageHandler := handlers.NewImageHandler(cfg)
+	apiProtected.POST("/images/upload", middleware.AttachUserToContext(userService), imageHandler.UploadImage)
+
+	// WebSocket routes (authenticated via query param token)
+	hub := ws.NewHub()
+	go hub.Run()
+	speechProvider := ai.NewWhisperProvider(cfg.EnvVars.OpenAIAPIKey)
+	voiceService := service.NewVoiceService(cfg, textProvider, speechProvider)
+	cookingHandler := ws.NewCookingHandler(hub, cfg.EnvVars.JwtSecretKey, voiceService)
+	r.GET("/v1/ws/cook/:recipe_id", cookingHandler.HandleCookingSession)
 
 	return r
 }

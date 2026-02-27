@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -18,19 +19,35 @@ import (
 // UserService is the business logic layer for user-related operations.
 type UserService struct {
 	Cfg  *config.Config
-	Repo *repository.UserRepository
+	Repo repository.UserRepo
 }
 
 // UserResponse is the response object for user-related operations.
 type UserResponse struct {
-	ID        uint   `json:"ID"`
-	Username  string `json:"username"`
-	FirstName string `json:"first_name"`
-	Email     string `json:"email"`
+	ID              string                  `json:"id"`
+	Username        string                  `json:"username"`
+	FirstName       string                  `json:"first_name"`
+	Email           string                  `json:"email"`
+	Settings        SettingsResponse        `json:"settings"`
+	Personalization PersonalizationResponse `json:"personalization"`
+	CreatedAt       time.Time               `json:"createdAt"`
+	UpdatedAt       time.Time               `json:"updatedAt"`
+}
+
+// SettingsResponse is the response object for user settings.
+type SettingsResponse struct {
+	KeepScreenAwake bool `json:"keep_screen_awake"`
+}
+
+// PersonalizationResponse is the response object for user personalization.
+type PersonalizationResponse struct {
+	UnitSystem   int    `json:"unit_system"`
+	Requirements string `json:"requirements"`
+	UID          string `json:"uid"`
 }
 
 // NewUserService is the constructor function for initializing a new UserService
-func NewUserService(cfg *config.Config, repo *repository.UserRepository) *UserService {
+func NewUserService(cfg *config.Config, repo repository.UserRepo) *UserService {
 	return &UserService{
 		Cfg:  cfg,
 		Repo: repo,
@@ -56,10 +73,10 @@ func (s *UserService) CreateUser(username, firstName, email, password string) (*
 			HashedPassword: hashedPasswordStr,
 			AuthType:       models.Standard,
 		},
-		Subscription: &models.Subscription{
-			SubscriptionTier: models.Free,
-			ExpiresAt:        time.Now().AddDate(0, 1, 0), // One month from now
-		},
+		// Subscription: &models.Subscription{
+		// 	SubscriptionTier: models.Free,
+		// 	ExpiresAt:        time.Now().AddDate(0, 1, 0), // One month from now
+		// },
 		Settings: &models.UserSettings{
 			KeepScreenAwake: true, // Default value
 		},
@@ -79,7 +96,7 @@ func (s *UserService) CreateUser(username, firstName, email, password string) (*
 }
 
 // LoginUser logs in a user.
-func (s *UserService) LoginUser(username, password string) (*UserResponse, error) {
+func (s *UserService) LoginUser(username, password string) (*models.User, error) {
 	user, err := s.Repo.GetUserAuthByUsername(username)
 	if err != nil {
 		return nil, err
@@ -89,19 +106,32 @@ func (s *UserService) LoginUser(username, password string) (*UserResponse, error
 		return nil, errors.New("invalid username or password")
 	}
 
-	userResponse := toUserResponse(user)
-
-	return userResponse, nil
+	return user, nil
 }
 
-// toUserResponse converts a User to a UserResponse.
-func toUserResponse(user *models.User) *UserResponse {
-	return &UserResponse{
-		ID:        user.ID,
+// ToUserResponse converts a User to a UserResponse.
+func ToUserResponse(user *models.User) *UserResponse {
+	resp := &UserResponse{
+		ID:        strconv.FormatUint(uint64(user.ID), 10),
 		Username:  user.Username,
 		FirstName: user.FirstName,
 		Email:     user.Email,
+		CreatedAt: user.CreatedAt,
+		UpdatedAt: user.UpdatedAt,
 	}
+	if user.Settings != nil {
+		resp.Settings = SettingsResponse{
+			KeepScreenAwake: user.Settings.KeepScreenAwake,
+		}
+	}
+	if user.Personalization != nil {
+		resp.Personalization = PersonalizationResponse{
+			UnitSystem:   int(user.Personalization.UnitSystem),
+			Requirements: user.Personalization.Requirements,
+			UID:          user.Personalization.UID.String(),
+		}
+	}
+	return resp
 }
 
 // GetUserByID gets a user by their ID.
@@ -112,6 +142,29 @@ func (s *UserService) GetUserByID(userID uint) (*models.User, error) {
 // UpdatePersonalization updates a user's personalization settings.
 func (s *UserService) UpdatePersonalization(user *models.User, updatedPersonalization *models.Personalization) error {
 	return s.Repo.UpdatePersonalization(user.ID, updatedPersonalization)
+}
+
+// UpdateUser updates a user's profile fields (first name, email).
+func (s *UserService) UpdateUser(user *models.User, firstName, email string) error {
+	if email != "" && email != user.Email {
+		if err := s.ValidateEmail(email); err != nil {
+			return err
+		}
+		if err := s.Repo.UpdateUserEmail(user.ID, email); err != nil {
+			return err
+		}
+	}
+	if firstName != "" {
+		if err := s.Repo.UpdateUserFirstName(user.ID, firstName); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// UpdateSettings updates a user's settings.
+func (s *UserService) UpdateSettings(user *models.User, keepScreenAwake bool) error {
+	return s.Repo.UpdateUserSettingsKeepScreenAwake(user.ID, keepScreenAwake)
 }
 
 // ValidateUsername validates a username against a set of rules.
@@ -142,10 +195,10 @@ func (s *UserService) ValidateUsername(username string) error {
 		"admin",
 		"administrator",
 		"root",
-		"julian",
+		// "julian",
 		"awfulbits",
-		// "windoze95",
-		"yana",
+		"windoze95",
+		// "yana",
 		"russianminx",
 		"russianminxx",
 		"sys",

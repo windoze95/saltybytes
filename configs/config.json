@@ -1,7 +1,7 @@
 {
     "env": {
         "port": "PORT",
-        "database_url": "HEROKU_POSTGRESQL_BRONZE_URL",
+        "database_url": "POSTGRESQL_URL",
         "jwt_secret_key": "JWT_SECRET_KEY",
         "aws_region": "AWS_REGION",
         "aws_access_key_id": "AWS_ACCESS_KEY_ID",

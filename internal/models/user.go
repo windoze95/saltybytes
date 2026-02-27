@@ -5,17 +5,17 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jinzhu/gorm"
+	"gorm.io/gorm"
 )
 
 // User is the model for a user.
 type User struct {
 	gorm.Model
-	Username         string           `gorm:"unique;index"`
-	FirstName        string           `gorm:"default:null"`
-	Email            string           `gorm:"unique;default:null"`
-	Auth             *UserAuth        `gorm:"foreignKey:UserID"`
-	Subscription     *Subscription    `gorm:"foreignKey:UserID"`
+	Username  string    `gorm:"unique;index"`
+	FirstName string    `gorm:"default:null"`
+	Email     string    `gorm:"unique;default:null"`
+	Auth         *UserAuth     `gorm:"foreignKey:UserID"`
+	Subscription *Subscription `gorm:"foreignKey:UserID"`
 	Settings         *UserSettings    `gorm:"foreignKey:UserID"`
 	Personalization  *Personalization `gorm:"foreignKey:UserID"`
 	CollectedRecipes []*Recipe        `gorm:"many2many:user_collected_recipes;"`
@@ -72,24 +72,50 @@ type SubscriptionTier string
 
 // SubscriptionTier enum values.
 const (
-	Free    SubscriptionTier = "Free"    // Free
-	Basic   SubscriptionTier = "Basic"   // Basic
-	Premium SubscriptionTier = "Premium" // Premium
+	TierFree    SubscriptionTier = "free"
+	TierPremium SubscriptionTier = "premium"
 )
 
 // Subscription is the model for a user's subscription.
 type Subscription struct {
 	gorm.Model
-	UserID           uint             `gorm:"unique;index"`
-	SubscriptionTier SubscriptionTier `gorm:"type:text;default:'Free'"`
-	ExpiresAt        time.Time
-	RemainingTokens  int `gorm:"default:50000"`
+	UserID               uint             `gorm:"uniqueIndex;not null"`
+	Tier                 SubscriptionTier `gorm:"type:text;default:'free'"`
+	ExpiresAt            *time.Time
+	AllergenAnalysesUsed int              `gorm:"default:0"`
+	WebSearchesUsed      int              `gorm:"default:0"`
+	AIGenerationsUsed    int              `gorm:"default:0"`
+	MonthlyResetAt       time.Time
+}
+
+// CanUseAllergenAnalysis checks if the user can use allergen analysis.
+func (s *Subscription) CanUseAllergenAnalysis() bool {
+	if s.Tier == TierPremium {
+		return true
+	}
+	return s.AllergenAnalysesUsed < 5
+}
+
+// CanUseWebSearch checks if the user can use web search.
+func (s *Subscription) CanUseWebSearch() bool {
+	if s.Tier == TierPremium {
+		return true
+	}
+	return s.WebSearchesUsed < 20
+}
+
+// CanUseAIGeneration checks if the user can use AI generation.
+func (s *Subscription) CanUseAIGeneration() bool {
+	if s.Tier == TierPremium {
+		return true
+	}
+	return s.AIGenerationsUsed < 50
 }
 
 // IsValidSubscriptionTier checks if the SubscriptionTier is valid.
 func (s *Subscription) IsValidSubscriptionTier() bool {
-	switch s.SubscriptionTier {
-	case Free, Basic, Premium:
+	switch s.Tier {
+	case TierFree, TierPremium:
 		return true
 	default:
 		return false
@@ -99,8 +125,7 @@ func (s *Subscription) IsValidSubscriptionTier() bool {
 // BeforeCreate is a GORM hook that runs before creating a new user Subscription.
 func (s *Subscription) BeforeCreate(tx *gorm.DB) (err error) {
 	if !s.IsValidSubscriptionTier() {
-		// Set default
-		s.SubscriptionTier = Free
+		s.Tier = TierFree
 	}
 
 	return nil
@@ -109,7 +134,6 @@ func (s *Subscription) BeforeCreate(tx *gorm.DB) (err error) {
 // BeforeUpdate is a GORM hook that runs before updating a user Subscription.
 func (s *Subscription) BeforeUpdate(tx *gorm.DB) (err error) {
 	if !s.IsValidSubscriptionTier() {
-		// Cancel transaction
 		return errors.New("invalid SubscriptionTier provided")
 	}
 
