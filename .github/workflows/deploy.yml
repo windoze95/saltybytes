@@ -64,9 +64,9 @@ jobs:
             --force-new-deployment
 
       - name: Wait for deployment to stabilize
-        timeout-minutes: 10
+        timeout-minutes: 15
         run: |
-          echo "Waiting for ECS service to reach steady state (10 min timeout)..."
+          echo "Waiting for ECS service to reach steady state (15 min timeout)..."
           SECONDS=0
           while true; do
             STATUS=$(aws ecs describe-services \
