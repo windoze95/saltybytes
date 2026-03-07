@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/windoze95/saltybytes-api/internal/ai"
 	"github.com/windoze95/saltybytes-api/internal/models"
@@ -596,10 +597,95 @@ func (m *MockUserRepo) UsernameExists(username string) (bool, error) {
 	return false, nil
 }
 
+// --- MockSearchProvider ---
+
+// MockSearchProvider is a mock implementation of ai.SearchProvider.
+type MockSearchProvider struct {
+	SearchRecipesFunc func(ctx context.Context, query string, count int) ([]ai.SearchResult, error)
+}
+
+func (m *MockSearchProvider) SearchRecipes(ctx context.Context, query string, count int) ([]ai.SearchResult, error) {
+	if m.SearchRecipesFunc != nil {
+		return m.SearchRecipesFunc(ctx, query, count)
+	}
+	return nil, fmt.Errorf("SearchRecipes not configured")
+}
+
+// --- MockEmbeddingProvider ---
+
+// MockEmbeddingProvider is a mock implementation of ai.EmbeddingProvider.
+type MockEmbeddingProvider struct {
+	GenerateEmbeddingFunc func(ctx context.Context, text string) ([]float32, error)
+}
+
+func (m *MockEmbeddingProvider) GenerateEmbedding(ctx context.Context, text string) ([]float32, error) {
+	if m.GenerateEmbeddingFunc != nil {
+		return m.GenerateEmbeddingFunc(ctx, text)
+	}
+	return nil, fmt.Errorf("GenerateEmbedding not configured")
+}
+
+// --- MockSearchCacheRepo ---
+
+// MockSearchCacheRepo mocks repository.SearchCacheRepository for testing.
+type MockSearchCacheRepo struct {
+	GetByNormalizedQueryFunc func(query string) (*models.SearchCache, error)
+	UpsertFunc               func(entry *models.SearchCache) error
+	IncrementHitCountFunc    func(id uint) error
+	FindSimilarFunc          func(embedding []float32, threshold float64, limit int) ([]models.SearchCache, error)
+	GetHotQueriesFunc        func(minHits int, maxAge, refreshWindow time.Duration) ([]models.SearchCache, error)
+	DeleteStaleFunc          func(maxAge time.Duration) (int64, error)
+}
+
+func (m *MockSearchCacheRepo) GetByNormalizedQuery(query string) (*models.SearchCache, error) {
+	if m.GetByNormalizedQueryFunc != nil {
+		return m.GetByNormalizedQueryFunc(query)
+	}
+	return nil, fmt.Errorf("not found")
+}
+
+func (m *MockSearchCacheRepo) Upsert(entry *models.SearchCache) error {
+	if m.UpsertFunc != nil {
+		return m.UpsertFunc(entry)
+	}
+	return nil
+}
+
+func (m *MockSearchCacheRepo) IncrementHitCount(id uint) error {
+	if m.IncrementHitCountFunc != nil {
+		return m.IncrementHitCountFunc(id)
+	}
+	return nil
+}
+
+func (m *MockSearchCacheRepo) FindSimilar(embedding []float32, threshold float64, limit int) ([]models.SearchCache, error) {
+	if m.FindSimilarFunc != nil {
+		return m.FindSimilarFunc(embedding, threshold, limit)
+	}
+	return nil, nil
+}
+
+func (m *MockSearchCacheRepo) GetHotQueries(minHits int, maxAge, refreshWindow time.Duration) ([]models.SearchCache, error) {
+	if m.GetHotQueriesFunc != nil {
+		return m.GetHotQueriesFunc(minHits, maxAge, refreshWindow)
+	}
+	return nil, nil
+}
+
+func (m *MockSearchCacheRepo) DeleteStale(maxAge time.Duration) (int64, error) {
+	if m.DeleteStaleFunc != nil {
+		return m.DeleteStaleFunc(maxAge)
+	}
+	return 0, nil
+}
+
 // Compile-time interface checks.
 var _ ai.TextProvider = (*MockTextProvider)(nil)
 var _ ai.VisionProvider = (*MockVisionProvider)(nil)
 var _ ai.ImageProvider = (*MockImageProvider)(nil)
 var _ ai.SpeechProvider = (*MockSpeechProvider)(nil)
+var _ ai.SearchProvider = (*MockSearchProvider)(nil)
+var _ ai.EmbeddingProvider = (*MockEmbeddingProvider)(nil)
 var _ repository.RecipeRepo = (*MockRecipeRepo)(nil)
 var _ repository.UserRepo = (*MockUserRepo)(nil)
+var _ repository.SearchCacheRepo = (*MockSearchCacheRepo)(nil)

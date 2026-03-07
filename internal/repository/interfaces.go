@@ -1,6 +1,10 @@
 package repository
 
-import "github.com/windoze95/saltybytes-api/internal/models"
+import (
+	"time"
+
+	"github.com/windoze95/saltybytes-api/internal/models"
+)
 
 // RecipeRepo is the interface for recipe repository operations.
 type RecipeRepo interface {
@@ -28,6 +32,16 @@ type RecipeRepo interface {
 	AddNodeToTree(node *models.RecipeNode, setActive bool) error
 	SetActiveNode(treeID uint, nodeID uint) error
 	UpdateRecipeFromNode(recipeID uint, node *models.RecipeNode) error
+}
+
+// SearchCacheRepo is the interface for search cache repository operations.
+type SearchCacheRepo interface {
+	GetByNormalizedQuery(query string) (*models.SearchCache, error)
+	Upsert(entry *models.SearchCache) error
+	IncrementHitCount(id uint) error
+	FindSimilar(embedding []float32, threshold float64, limit int) ([]models.SearchCache, error)
+	GetHotQueries(minHits int, maxAge, refreshWindow time.Duration) ([]models.SearchCache, error)
+	DeleteStale(maxAge time.Duration) (int64, error)
 }
 
 // UserRepo is the interface for user repository operations.
