@@ -59,7 +59,11 @@ func connectToDatabaseWithRetry(databaseURL string) (*gorm.DB, error) {
 		&models.RecipeNode{},
 		&models.Recipe{},
 		&models.AllergenAnalysis{},
+		&models.SearchCache{},
 	)
+
+	// HNSW index for vector similarity on search cache embeddings
+	database.Exec(`CREATE INDEX IF NOT EXISTS idx_search_caches_embedding ON search_caches USING hnsw (embedding vector_cosine_ops)`)
 
 	// Add the FK from recipe_nodes.tree_id → recipe_trees.id that gorm:"-" skipped.
 	database.Exec(`ALTER TABLE recipe_nodes ADD CONSTRAINT IF NOT EXISTS fk_recipe_nodes_tree

@@ -160,7 +160,10 @@ func SetupRouter(cfg *config.Config, database *gorm.DB) *gin.Engine {
 
 	// Search routes
 	searchProvider := ai.NewWebSearchProvider(cfg.EnvVars.GoogleSearchKey, cfg.EnvVars.GoogleSearchCX, cfg.EnvVars.BraveSearchKey)
-	searchService := service.NewSearchService(cfg, searchProvider)
+	searchCacheRepo := repository.NewSearchCacheRepository(database)
+	searchService := service.NewSearchService(cfg, searchProvider, subService, searchCacheRepo)
+	searchService.EmbedProvider = embedProvider
+	searchService.StartBackgroundTasks()
 	searchHandler := handlers.NewSearchHandler(searchService)
 	apiProtected.GET("/recipes/search", middleware.AttachUserToContext(userService), searchHandler.SearchRecipes)
 
