@@ -31,6 +31,7 @@ func (r *RecipeRepository) GetUserRecipes(userID uint, page, pageSize int) ([]mo
 	}
 
 	err := r.DB.Preload("Hashtags").
+		Preload("Canonical").
 		Preload("CreatedBy", func(db *gorm.DB) *gorm.DB {
 			return db.Select("ID", "Username")
 		}).
@@ -51,6 +52,7 @@ func (r *RecipeRepository) GetRecipeByID(recipeID uint) (*models.Recipe, error) 
 	var recipe models.Recipe
 
 	err := r.DB.Preload("Hashtags").
+		Preload("Canonical").
 		Preload("CreatedBy", func(db *gorm.DB) *gorm.DB {
 			return db.Select("ID", "Username")
 		}).
@@ -315,6 +317,25 @@ func (r *RecipeRepository) CreateTag(tag *models.Tag) error {
 		logger.Get().Error("failed to create tag", zap.Error(err))
 	}
 	return err
+}
+
+// MaterializeRecipeFromCanonical copies canonical RecipeDef into the recipe's own
+// columns and sets HasDiverged=true, completing copy-on-write.
+func (r *RecipeRepository) MaterializeRecipeFromCanonical(recipeID uint, data models.RecipeDef) error {
+	return r.DB.Model(&models.Recipe{}).
+		Where("id = ?", recipeID).
+		Updates(map[string]interface{}{
+			"Title":             data.Title,
+			"Ingredients":       data.Ingredients,
+			"Instructions":      data.Instructions,
+			"CookTime":          data.CookTime,
+			"ImagePrompt":       data.ImagePrompt,
+			"LinkedSuggestions": data.LinkedSuggestions,
+			"Portions":          data.Portions,
+			"PortionSize":       data.PortionSize,
+			"SourceURL":         data.SourceURL,
+			"HasDiverged":       true,
+		}).Error
 }
 
 // UpdateRecipeTagsAssociation updates the tags associated with a recipe.

@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/windoze95/saltybytes-api/internal/ai"
 	"github.com/windoze95/saltybytes-api/internal/config"
@@ -28,6 +29,7 @@ type ImportService struct {
 	TextProvider    ai.TextProvider
 	VisionProvider  ai.VisionProvider
 	PreviewProvider ai.TextProvider
+	CanonicalRepo   repository.CanonicalRecipeRepo
 }
 
 // NewImportService creates a new ImportService.
@@ -92,61 +94,125 @@ var safeHTTPClient = &http.Client{
 }
 
 // ImportFromURL fetches a page, tries JSON-LD extraction first, falls back to AI.
-func (s *ImportService) ImportFromURL(ctx context.Context, url string, user *models.User) (*RecipeResponse, error) {
-	log := logger.Get().With(zap.Uint("user_id", user.ID), zap.String("source_url", url))
+// When a CanonicalRepo is configured, it checks the canonical cache first and
+// saves extractions for future deduplication.
+func (s *ImportService) ImportFromURL(ctx context.Context, rawURL string, user *models.User) (*RecipeResponse, error) {
+	log := logger.Get().With(zap.Uint("user_id", user.ID), zap.String("source_url", rawURL))
 
-	if err := validateExternalURL(url); err != nil {
+	if err := validateExternalURL(rawURL); err != nil {
 		return nil, fmt.Errorf("URL validation failed: %w", err)
 	}
 
-	// Fetch the URL content
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	// Check canonical cache if available
+	if s.CanonicalRepo != nil {
+		normalizedURL, normErr := NormalizeURL(rawURL)
+		if normErr == nil {
+			if canonical, err := s.CanonicalRepo.GetByNormalizedURL(normalizedURL); err == nil {
+				log.Info("import from canonical cache hit")
+				go s.CanonicalRepo.IncrementHitCount(canonical.ID)
+				canonicalID := canonical.ID
+				recipeResp, _, createErr := s.createImportedRecipe(ctx, &canonical.RecipeData, user, models.RecipeTypeImportLink, rawURL, &canonicalID)
+				return recipeResp, createErr
+			}
+		}
+	}
+
+	recipeDef, method, err := s.extractFromURL(ctx, rawURL)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
+		log.Error("extraction failed", zap.Error(err))
+		return nil, err
+	}
+
+	// Save to canonical cache
+	var canonicalID *uint
+	if s.CanonicalRepo != nil {
+		if normalizedURL, normErr := NormalizeURL(rawURL); normErr == nil {
+			now := time.Now()
+			entry := &models.CanonicalRecipe{
+				NormalizedURL:    normalizedURL,
+				OriginalURL:      rawURL,
+				RecipeData:       *recipeDef,
+				ExtractionMethod: method,
+				FetchedAt:        now,
+				LastAccessedAt:   now,
+			}
+			if upsertErr := s.CanonicalRepo.Upsert(entry); upsertErr == nil {
+				canonicalID = &entry.ID
+			} else {
+				log.Warn("failed to upsert canonical", zap.Error(upsertErr))
+			}
+		}
+	}
+
+	recipeResp, _, createErr := s.createImportedRecipe(ctx, recipeDef, user, models.RecipeTypeImportLink, rawURL, canonicalID)
+	return recipeResp, createErr
+}
+
+// ImportFromCanonical creates a recipe as a thin reference to a canonical entry.
+func (s *ImportService) ImportFromCanonical(ctx context.Context, canonicalID uint, user *models.User) (*RecipeResponse, error) {
+	if s.CanonicalRepo == nil {
+		return nil, fmt.Errorf("canonical repository not configured")
+	}
+
+	canonical, err := s.CanonicalRepo.GetByID(canonicalID)
+	if err != nil {
+		return nil, fmt.Errorf("canonical recipe not found: %w", err)
+	}
+
+	go s.CanonicalRepo.IncrementHitCount(canonical.ID)
+
+	cID := canonical.ID
+	resp, _, createErr := s.createImportedRecipe(ctx, &canonical.RecipeData, user, models.RecipeTypeImportLink, canonical.OriginalURL, &cID)
+	return resp, createErr
+}
+
+// extractFromURL fetches a URL and extracts recipe data via JSON-LD or AI fallback.
+// Shared by PreviewFromURL, ImportFromURL, and background refresh.
+func (s *ImportService) extractFromURL(ctx context.Context, rawURL string) (*models.RecipeDef, models.ExtractionMethod, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to create request: %w", err)
 	}
 	resp, err := safeHTTPClient.Do(req)
 	if err != nil {
-		log.Error("failed to fetch URL", zap.Error(err))
-		return nil, fmt.Errorf("failed to fetch URL: %w", err)
+		return nil, "", fmt.Errorf("failed to fetch URL: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("URL returned status %d", resp.StatusCode)
+		return nil, "", fmt.Errorf("URL returned status %d", resp.StatusCode)
 	}
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 2*1024*1024)) // 2MB limit
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 2*1024*1024))
 	if err != nil {
-		log.Error("failed to read URL body", zap.Error(err))
-		return nil, fmt.Errorf("failed to read URL body: %w", err)
+		return nil, "", fmt.Errorf("failed to read URL body: %w", err)
 	}
 	html := string(body)
 
-	// Try JSON-LD extraction first
-	recipeDef, err := extractJSONLD(html)
-	if err == nil && recipeDef != nil {
-		log.Info("extracted recipe from JSON-LD")
-		recipeDef.SourceURL = url
-		resp, _, err := s.createImportedRecipe(ctx, recipeDef, user, models.RecipeTypeImportLink, url)
-		return resp, err
+	// Try JSON-LD extraction first (free)
+	recipeDef, jsonLDErr := extractJSONLD(html)
+	if jsonLDErr == nil && recipeDef != nil {
+		recipeDef.SourceURL = rawURL
+		return recipeDef, models.ExtractionJSONLD, nil
 	}
 
-	// Fall back to AI text extraction
-	if s.TextProvider == nil {
-		return nil, fmt.Errorf("no AI text provider configured for fallback extraction")
+	// Fall back to AI extraction
+	provider := s.PreviewProvider
+	if provider == nil {
+		provider = s.TextProvider
+	}
+	if provider == nil {
+		return nil, "", fmt.Errorf("no AI text provider configured for fallback extraction")
 	}
 
-	unitSystem := user.Personalization.GetUnitSystemText()
-	result, err := s.TextProvider.ExtractRecipeFromText(ctx, html, unitSystem)
+	result, err := provider.ExtractRecipeFromText(ctx, html, "US customary")
 	if err != nil {
-		log.Error("AI text extraction failed", zap.Error(err))
-		return nil, fmt.Errorf("failed to extract recipe from URL: %w", err)
+		return nil, "", fmt.Errorf("failed to extract recipe from URL: %w", err)
 	}
 
 	recipeDef = aiResultToRecipeDef(result)
-	recipeDef.SourceURL = url
-	recipeResp, _, createErr := s.createImportedRecipe(ctx, recipeDef, user, models.RecipeTypeImportLink, url)
-	return recipeResp, createErr
+	recipeDef.SourceURL = rawURL
+	return recipeDef, models.ExtractionHaiku, nil
 }
 
 // ImportFromPhoto sends an image to the VisionProvider for recipe extraction.
@@ -169,7 +235,7 @@ func (s *ImportService) ImportFromPhoto(ctx context.Context, imageData []byte, u
 	recipeDef := aiResultToRecipeDef(result)
 
 	// Create the recipe first to get an ID for S3 upload
-	recipeResponse, recipeID, err := s.createImportedRecipe(ctx, recipeDef, user, models.RecipeTypeImportVision, "")
+	recipeResponse, recipeID, err := s.createImportedRecipe(ctx, recipeDef, user, models.RecipeTypeImportVision, "", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -207,74 +273,79 @@ func (s *ImportService) ImportFromText(ctx context.Context, text string, user *m
 	}
 
 	recipeDef := aiResultToRecipeDef(result)
-	resp, _, err := s.createImportedRecipe(ctx, recipeDef, user, models.RecipeTypeImportCopypasta, "")
+	resp, _, err := s.createImportedRecipe(ctx, recipeDef, user, models.RecipeTypeImportCopypasta, "", nil)
 	return resp, err
 }
 
 // ImportManual creates a recipe from structured form input.
 func (s *ImportService) ImportManual(ctx context.Context, recipeDef *models.RecipeDef, user *models.User, recipeType models.RecipeType) (*RecipeResponse, error) {
-	resp, _, err := s.createImportedRecipe(ctx, recipeDef, user, recipeType, "")
+	resp, _, err := s.createImportedRecipe(ctx, recipeDef, user, recipeType, "", nil)
 	return resp, err
 }
 
 // PreviewFromURL fetches a page and extracts recipe data without saving.
-// Uses JSON-LD first (free), then falls back to the cheap PreviewProvider.
-func (s *ImportService) PreviewFromURL(ctx context.Context, url string, unitSystem string) (*models.RecipeDef, error) {
-	log := logger.Get().With(zap.String("source_url", url))
+// When a CanonicalRepo is configured, it checks the cache first and saves
+// extractions for future deduplication. Returns the recipe data and optional canonical ID.
+func (s *ImportService) PreviewFromURL(ctx context.Context, rawURL string, unitSystem string) (*models.RecipeDef, *uint, error) {
+	log := logger.Get().With(zap.String("source_url", rawURL))
 
-	if err := validateExternalURL(url); err != nil {
-		return nil, fmt.Errorf("URL validation failed: %w", err)
+	if err := validateExternalURL(rawURL); err != nil {
+		return nil, nil, fmt.Errorf("URL validation failed: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	// Check canonical cache if available
+	if s.CanonicalRepo != nil {
+		normalizedURL, normErr := NormalizeURL(rawURL)
+		if normErr == nil {
+			if canonical, err := s.CanonicalRepo.GetByNormalizedURL(normalizedURL); err == nil {
+				if time.Since(canonical.FetchedAt) < canonicalTTL {
+					log.Info("preview canonical cache hit")
+					go s.CanonicalRepo.IncrementHitCount(canonical.ID)
+					data := canonical.RecipeData
+					if data.SourceURL == "" {
+						data.SourceURL = rawURL
+					}
+					canonicalID := canonical.ID
+					return &data, &canonicalID, nil
+				}
+			}
+		}
+	}
+
+	recipeDef, method, err := s.extractFromURL(ctx, rawURL)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-	resp, err := safeHTTPClient.Do(req)
-	if err != nil {
-		log.Error("failed to fetch URL for preview", zap.Error(err))
-		return nil, fmt.Errorf("failed to fetch URL: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("URL returned status %d", resp.StatusCode)
+		log.Error("preview extraction failed", zap.Error(err))
+		return nil, nil, err
 	}
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 2*1024*1024))
-	if err != nil {
-		log.Error("failed to read URL body for preview", zap.Error(err))
-		return nil, fmt.Errorf("failed to read URL body: %w", err)
-	}
-	html := string(body)
-
-	// Try JSON-LD extraction first (free)
-	recipeDef, err := extractJSONLD(html)
-	if err == nil && recipeDef != nil {
-		log.Info("preview extracted recipe from JSON-LD")
-		recipeDef.SourceURL = url
-		return recipeDef, nil
-	}
-
-	// Fall back to cheap AI extraction
-	if s.PreviewProvider == nil {
-		return nil, fmt.Errorf("no preview provider configured for fallback extraction")
-	}
-
-	result, err := s.PreviewProvider.ExtractRecipeFromText(ctx, html, unitSystem)
-	if err != nil {
-		log.Error("preview AI extraction failed", zap.Error(err))
-		return nil, fmt.Errorf("failed to extract recipe preview: %w", err)
+	// Save to canonical cache
+	var canonicalID *uint
+	if s.CanonicalRepo != nil {
+		if normalizedURL, normErr := NormalizeURL(rawURL); normErr == nil {
+			now := time.Now()
+			entry := &models.CanonicalRecipe{
+				NormalizedURL:    normalizedURL,
+				OriginalURL:      rawURL,
+				RecipeData:       *recipeDef,
+				ExtractionMethod: method,
+				FetchedAt:        now,
+				LastAccessedAt:   now,
+			}
+			if upsertErr := s.CanonicalRepo.Upsert(entry); upsertErr == nil {
+				canonicalID = &entry.ID
+			} else {
+				log.Warn("failed to upsert canonical for preview", zap.Error(upsertErr))
+			}
+		}
 	}
 
-	recipeDef = aiResultToRecipeDef(result)
-	recipeDef.SourceURL = url
-	return recipeDef, nil
+	return recipeDef, canonicalID, nil
 }
 
 // createImportedRecipe creates a recipe in the DB from a RecipeDef.
 // Returns the RecipeResponse and the raw DB recipe ID.
-func (s *ImportService) createImportedRecipe(ctx context.Context, recipeDef *models.RecipeDef, user *models.User, recipeType models.RecipeType, sourcePrompt string) (*RecipeResponse, uint, error) {
+// canonicalID links the recipe to a canonical entry; nil for non-URL imports.
+func (s *ImportService) createImportedRecipe(ctx context.Context, recipeDef *models.RecipeDef, user *models.User, recipeType models.RecipeType, sourcePrompt string, canonicalID *uint) (*RecipeResponse, uint, error) {
 	log := logger.Get().With(zap.Uint("user_id", user.ID), zap.String("type", string(recipeType)))
 
 	if recipeDef.Title == "" {
@@ -294,6 +365,8 @@ func (s *ImportService) createImportedRecipe(ctx context.Context, recipeDef *mod
 		UnitSystem:         user.Personalization.UnitSystem,
 		CreatedBy:          user,
 		PersonalizationUID: user.Personalization.UID,
+		CanonicalID:        canonicalID,
+		HasDiverged:        canonicalID == nil,
 		History: &models.RecipeHistory{
 			Entries: []models.RecipeHistoryEntry{historyEntry},
 		},
@@ -332,6 +405,70 @@ func (s *ImportService) createImportedRecipe(ctx context.Context, recipeDef *mod
 
 	recipeResponse := s.RecipeService.ToRecipeResponse(recipe)
 	return recipeResponse, recipe.ID, nil
+}
+
+// StartCanonicalBackgroundTasks starts periodic refresh and cleanup goroutines
+// for the canonical recipe cache.
+func (s *ImportService) StartCanonicalBackgroundTasks() {
+	if s.CanonicalRepo == nil {
+		return
+	}
+
+	go func() {
+		ticker := time.NewTicker(30 * time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			s.refreshHotCanonicals()
+		}
+	}()
+
+	go func() {
+		ticker := time.NewTicker(24 * time.Hour)
+		defer ticker.Stop()
+		for range ticker.C {
+			s.cleanupStaleCanonicals()
+		}
+	}()
+}
+
+func (s *ImportService) refreshHotCanonicals() {
+	log := logger.Get()
+
+	entries, err := s.CanonicalRepo.GetHotEntries(5, canonicalTTL, 2*time.Hour)
+	if err != nil {
+		log.Error("failed to get hot canonical entries", zap.Error(err))
+		return
+	}
+
+	for _, entry := range entries {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		recipeDef, method, err := s.extractFromURL(ctx, entry.OriginalURL)
+		cancel()
+		if err != nil {
+			log.Warn("failed to refresh canonical entry", zap.String("url", entry.OriginalURL), zap.Error(err))
+			continue
+		}
+
+		now := time.Now()
+		entry.RecipeData = *recipeDef
+		entry.ExtractionMethod = method
+		entry.FetchedAt = now
+		entry.LastAccessedAt = now
+		if err := s.CanonicalRepo.Upsert(&entry); err != nil {
+			log.Warn("failed to upsert refreshed canonical", zap.String("url", entry.OriginalURL), zap.Error(err))
+		}
+	}
+}
+
+func (s *ImportService) cleanupStaleCanonicals() {
+	deleted, err := s.CanonicalRepo.DeleteStale(90 * 24 * time.Hour)
+	if err != nil {
+		logger.Get().Error("failed to cleanup stale canonicals", zap.Error(err))
+		return
+	}
+	if deleted > 0 {
+		logger.Get().Info("cleaned up stale canonical entries", zap.Int64("deleted", deleted))
+	}
 }
 
 // aiResultToRecipeDef converts an ai.RecipeResult to a models.RecipeDef.

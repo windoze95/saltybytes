@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/windoze95/saltybytes-api/internal/ai"
@@ -139,7 +140,7 @@ func TestCreateImportedRecipe_AssociatesTags(t *testing.T) {
 		Hashtags:     []string{"baking", "easy"},
 	}
 
-	resp, _, err := svc.createImportedRecipe(context.Background(), recipeDef, user, models.RecipeTypeManualEntry, "")
+	resp, _, err := svc.createImportedRecipe(context.Background(), recipeDef, user, models.RecipeTypeManualEntry, "", nil)
 	if err != nil {
 		t.Fatalf("createImportedRecipe error: %v", err)
 	}
@@ -150,6 +151,92 @@ func TestCreateImportedRecipe_AssociatesTags(t *testing.T) {
 	// Tags should have been created
 	if len(repo.Tags) < 2 {
 		t.Errorf("Expected at least 2 tags, got %d", len(repo.Tags))
+	}
+}
+
+func TestPreviewFromURL_CanonicalCacheHit(t *testing.T) {
+	repo := testutil.NewMockRecipeRepo()
+	canonical := testutil.TestCanonicalRecipe()
+
+	canonicalRepo := &testutil.MockCanonicalRecipeRepo{
+		GetByNormalizedURLFunc: func(normalizedURL string) (*models.CanonicalRecipe, error) {
+			return canonical, nil
+		},
+	}
+
+	svc := newTestImportService(repo, nil, nil)
+	svc.CanonicalRepo = canonicalRepo
+
+	recipeDef, canonicalID, err := svc.PreviewFromURL(context.Background(), "https://example.com/classic-pancakes", "US customary")
+	if err != nil {
+		t.Fatalf("PreviewFromURL error: %v", err)
+	}
+	if recipeDef == nil {
+		t.Fatal("PreviewFromURL returned nil recipeDef")
+	}
+	if recipeDef.Title != "Classic Pancakes" {
+		t.Errorf("title = %q, want 'Classic Pancakes'", recipeDef.Title)
+	}
+	if canonicalID == nil {
+		t.Fatal("expected canonical_id to be set")
+	}
+	if *canonicalID != canonical.ID {
+		t.Errorf("canonical_id = %d, want %d", *canonicalID, canonical.ID)
+	}
+}
+
+func TestImportFromCanonical_Success(t *testing.T) {
+	repo := testutil.NewMockRecipeRepo()
+	canonical := testutil.TestCanonicalRecipe()
+
+	canonicalRepo := &testutil.MockCanonicalRecipeRepo{
+		GetByIDFunc: func(id uint) (*models.CanonicalRecipe, error) {
+			if id == canonical.ID {
+				return canonical, nil
+			}
+			return nil, fmt.Errorf("not found")
+		},
+	}
+
+	svc := newTestImportService(repo, nil, nil)
+	svc.CanonicalRepo = canonicalRepo
+	user := testutil.TestUser()
+
+	resp, err := svc.ImportFromCanonical(context.Background(), canonical.ID, user)
+	if err != nil {
+		t.Fatalf("ImportFromCanonical error: %v", err)
+	}
+	if resp == nil {
+		t.Fatal("ImportFromCanonical returned nil response")
+	}
+	if resp.Title != "Classic Pancakes" {
+		t.Errorf("title = %q, want 'Classic Pancakes'", resp.Title)
+	}
+	if len(repo.Recipes) != 1 {
+		t.Errorf("recipes in repo = %d, want 1", len(repo.Recipes))
+	}
+	// Verify the recipe has canonical link
+	for _, r := range repo.Recipes {
+		if r.CanonicalID == nil {
+			t.Error("expected recipe to have CanonicalID set")
+		}
+		if r.HasDiverged {
+			t.Error("expected recipe HasDiverged to be false")
+		}
+	}
+}
+
+func TestImportFromCanonical_NotFound(t *testing.T) {
+	repo := testutil.NewMockRecipeRepo()
+	canonicalRepo := &testutil.MockCanonicalRecipeRepo{}
+
+	svc := newTestImportService(repo, nil, nil)
+	svc.CanonicalRepo = canonicalRepo
+	user := testutil.TestUser()
+
+	_, err := svc.ImportFromCanonical(context.Background(), 999, user)
+	if err == nil {
+		t.Fatal("ImportFromCanonical with invalid ID should return error")
 	}
 }
 
@@ -165,7 +252,7 @@ func TestCreateImportedRecipe_CreatesTree(t *testing.T) {
 		ImagePrompt:  "Salty",
 	}
 
-	_, _, err := svc.createImportedRecipe(context.Background(), recipeDef, user, models.RecipeTypeImportCopypasta, "")
+	_, _, err := svc.createImportedRecipe(context.Background(), recipeDef, user, models.RecipeTypeImportCopypasta, "", nil)
 	if err != nil {
 		t.Fatalf("createImportedRecipe error: %v", err)
 	}

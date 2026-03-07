@@ -32,6 +32,17 @@ type RecipeRepo interface {
 	AddNodeToTree(node *models.RecipeNode, setActive bool) error
 	SetActiveNode(treeID uint, nodeID uint) error
 	UpdateRecipeFromNode(recipeID uint, node *models.RecipeNode) error
+	MaterializeRecipeFromCanonical(recipeID uint, data models.RecipeDef) error
+}
+
+// CanonicalRecipeRepo is the interface for canonical recipe repository operations.
+type CanonicalRecipeRepo interface {
+	GetByID(id uint) (*models.CanonicalRecipe, error)
+	GetByNormalizedURL(normalizedURL string) (*models.CanonicalRecipe, error)
+	Upsert(entry *models.CanonicalRecipe) error
+	IncrementHitCount(id uint) error
+	GetHotEntries(minHits int, maxAge, refreshWindow time.Duration) ([]models.CanonicalRecipe, error)
+	DeleteStale(maxAge time.Duration) (int64, error)
 }
 
 // SearchCacheRepo is the interface for search cache repository operations.

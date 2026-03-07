@@ -490,6 +490,17 @@ func (m *MockRecipeRepo) UpdateRecipeFromNode(recipeID uint, node *models.Recipe
 	return nil
 }
 
+func (m *MockRecipeRepo) MaterializeRecipeFromCanonical(recipeID uint, data models.RecipeDef) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if r, ok := m.Recipes[recipeID]; ok {
+		r.RecipeDef = data
+		r.HasDiverged = true
+	}
+	return nil
+}
+
 // --- MockUserRepo ---
 
 // MockUserRepo is an in-memory mock implementation of repository.UserRepo.
@@ -679,6 +690,61 @@ func (m *MockSearchCacheRepo) DeleteStale(maxAge time.Duration) (int64, error) {
 	return 0, nil
 }
 
+// --- MockCanonicalRecipeRepo ---
+
+// MockCanonicalRecipeRepo mocks repository.CanonicalRecipeRepo for testing.
+type MockCanonicalRecipeRepo struct {
+	GetByIDFunc            func(id uint) (*models.CanonicalRecipe, error)
+	GetByNormalizedURLFunc func(normalizedURL string) (*models.CanonicalRecipe, error)
+	UpsertFunc             func(entry *models.CanonicalRecipe) error
+	IncrementHitCountFunc  func(id uint) error
+	GetHotEntriesFunc      func(minHits int, maxAge, refreshWindow time.Duration) ([]models.CanonicalRecipe, error)
+	DeleteStaleFunc        func(maxAge time.Duration) (int64, error)
+}
+
+func (m *MockCanonicalRecipeRepo) GetByID(id uint) (*models.CanonicalRecipe, error) {
+	if m.GetByIDFunc != nil {
+		return m.GetByIDFunc(id)
+	}
+	return nil, fmt.Errorf("not found")
+}
+
+func (m *MockCanonicalRecipeRepo) GetByNormalizedURL(normalizedURL string) (*models.CanonicalRecipe, error) {
+	if m.GetByNormalizedURLFunc != nil {
+		return m.GetByNormalizedURLFunc(normalizedURL)
+	}
+	return nil, fmt.Errorf("not found")
+}
+
+func (m *MockCanonicalRecipeRepo) Upsert(entry *models.CanonicalRecipe) error {
+	if m.UpsertFunc != nil {
+		return m.UpsertFunc(entry)
+	}
+	entry.ID = 1
+	return nil
+}
+
+func (m *MockCanonicalRecipeRepo) IncrementHitCount(id uint) error {
+	if m.IncrementHitCountFunc != nil {
+		return m.IncrementHitCountFunc(id)
+	}
+	return nil
+}
+
+func (m *MockCanonicalRecipeRepo) GetHotEntries(minHits int, maxAge, refreshWindow time.Duration) ([]models.CanonicalRecipe, error) {
+	if m.GetHotEntriesFunc != nil {
+		return m.GetHotEntriesFunc(minHits, maxAge, refreshWindow)
+	}
+	return nil, nil
+}
+
+func (m *MockCanonicalRecipeRepo) DeleteStale(maxAge time.Duration) (int64, error) {
+	if m.DeleteStaleFunc != nil {
+		return m.DeleteStaleFunc(maxAge)
+	}
+	return 0, nil
+}
+
 // Compile-time interface checks.
 var _ ai.TextProvider = (*MockTextProvider)(nil)
 var _ ai.VisionProvider = (*MockVisionProvider)(nil)
@@ -689,3 +755,4 @@ var _ ai.EmbeddingProvider = (*MockEmbeddingProvider)(nil)
 var _ repository.RecipeRepo = (*MockRecipeRepo)(nil)
 var _ repository.UserRepo = (*MockUserRepo)(nil)
 var _ repository.SearchCacheRepo = (*MockSearchCacheRepo)(nil)
+var _ repository.CanonicalRecipeRepo = (*MockCanonicalRecipeRepo)(nil)

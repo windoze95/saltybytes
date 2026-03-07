@@ -32,6 +32,9 @@ type Recipe struct {
 	Tree               *RecipeTree    `gorm:"foreignKey:TreeID"`
 	OriginalImageURL   string         `json:"original_image_url,omitempty"`
 	Embedding          *string        `gorm:"type:vector(1536)" json:"-"`
+	CanonicalID        *uint              `gorm:"index"`
+	Canonical          *CanonicalRecipe   `gorm:"foreignKey:CanonicalID"`
+	HasDiverged        bool               `gorm:"default:false"`
 }
 
 // RecipeHistory is the model for a recipe history and the current entry that is being used to represent the recipe.
