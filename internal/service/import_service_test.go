@@ -185,6 +185,49 @@ func TestPreviewFromURL_CanonicalCacheHit(t *testing.T) {
 	}
 }
 
+func TestPreviewFromURL_StaleCanonicalSkipped(t *testing.T) {
+	repo := testutil.NewMockRecipeRepo()
+	stale := testutil.TestStaleCanonicalRecipe()
+
+	canonicalRepo := &testutil.MockCanonicalRecipeRepo{
+		GetByNormalizedURLFunc: func(normalizedURL string) (*models.CanonicalRecipe, error) {
+			return stale, nil
+		},
+	}
+
+	svc := newTestImportService(repo, nil, nil)
+	svc.CanonicalRepo = canonicalRepo
+
+	// With a stale canonical and no real server to fetch from, this should fail
+	// during extraction — proving the stale cache was skipped.
+	_, _, err := svc.PreviewFromURL(context.Background(), "https://example.com/classic-pancakes", "US customary")
+	if err == nil {
+		t.Fatal("expected error when stale canonical is skipped and extraction fails")
+	}
+}
+
+func TestImportFromURL_StaleCanonicalSkipped(t *testing.T) {
+	repo := testutil.NewMockRecipeRepo()
+	stale := testutil.TestStaleCanonicalRecipe()
+
+	canonicalRepo := &testutil.MockCanonicalRecipeRepo{
+		GetByNormalizedURLFunc: func(normalizedURL string) (*models.CanonicalRecipe, error) {
+			return stale, nil
+		},
+	}
+
+	svc := newTestImportService(repo, nil, nil)
+	svc.CanonicalRepo = canonicalRepo
+	user := testutil.TestUser()
+
+	// With a stale canonical and no real server to fetch from, this should fail
+	// during extraction — proving the stale cache was skipped.
+	_, err := svc.ImportFromURL(context.Background(), "https://example.com/classic-pancakes", user)
+	if err == nil {
+		t.Fatal("expected error when stale canonical is skipped and extraction fails")
+	}
+}
+
 func TestImportFromCanonical_Success(t *testing.T) {
 	repo := testutil.NewMockRecipeRepo()
 	canonical := testutil.TestCanonicalRecipe()

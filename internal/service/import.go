@@ -108,11 +108,13 @@ func (s *ImportService) ImportFromURL(ctx context.Context, rawURL string, user *
 		normalizedURL, normErr := NormalizeURL(rawURL)
 		if normErr == nil {
 			if canonical, err := s.CanonicalRepo.GetByNormalizedURL(normalizedURL); err == nil {
-				log.Info("import from canonical cache hit")
-				go s.CanonicalRepo.IncrementHitCount(canonical.ID)
-				canonicalID := canonical.ID
-				recipeResp, _, createErr := s.createImportedRecipe(ctx, &canonical.RecipeData, user, models.RecipeTypeImportLink, rawURL, &canonicalID)
-				return recipeResp, createErr
+				if time.Since(canonical.FetchedAt) < canonicalTTL {
+					log.Info("import from canonical cache hit")
+					go s.CanonicalRepo.IncrementHitCount(canonical.ID)
+					canonicalID := canonical.ID
+					recipeResp, _, createErr := s.createImportedRecipe(ctx, &canonical.RecipeData, user, models.RecipeTypeImportLink, rawURL, &canonicalID)
+					return recipeResp, createErr
+				}
 			}
 		}
 	}

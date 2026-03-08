@@ -126,6 +126,21 @@ func TestCanonicalLinkedRecipe() *models.Recipe {
 	}
 }
 
+// TestStaleCanonicalRecipe creates a test CanonicalRecipe with FetchedAt older than canonicalTTL.
+func TestStaleCanonicalRecipe() *models.CanonicalRecipe {
+	stale := time.Now().Add(-8 * 24 * time.Hour) // 8 days ago
+	return &models.CanonicalRecipe{
+		Model:            gorm.Model{ID: 101},
+		NormalizedURL:    "https://example.com/classic-pancakes",
+		OriginalURL:      "https://example.com/classic-pancakes",
+		RecipeData:       TestRecipeDef(),
+		ExtractionMethod: models.ExtractionJSONLD,
+		HitCount:         3,
+		LastAccessedAt:   stale,
+		FetchedAt:        stale,
+	}
+}
+
 // TestRecipeResult creates an ai.RecipeResult that matches TestRecipeDef fields.
 func TestRecipeResult() *ai.RecipeResult {
 	return &ai.RecipeResult{
