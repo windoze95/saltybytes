@@ -177,6 +177,7 @@ func (h *ImportHandler) ImportManual(c *gin.Context) {
 		Hashtags:     request.Hashtags,
 		ImagePrompt:  "A photo of " + request.Title,
 		SourceURL:    request.SourceURL,
+		UnitSystem:   user.Personalization.UnitSystem.ToDefString(),
 	}
 
 	recipeType := models.RecipeTypeManualEntry
@@ -196,8 +197,7 @@ func (h *ImportHandler) ImportManual(c *gin.Context) {
 
 // PreviewFromURL handles POST /v1/recipes/preview/url
 func (h *ImportHandler) PreviewFromURL(c *gin.Context) {
-	user, err := util.GetUserFromContext(c)
-	if err != nil {
+	if _, err := util.GetUserFromContext(c); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -216,8 +216,7 @@ func (h *ImportHandler) PreviewFromURL(c *gin.Context) {
 		return
 	}
 
-	unitSystem := user.Personalization.GetUnitSystemText()
-	recipeDef, canonicalID, err := h.Service.PreviewFromURL(c.Request.Context(), url, unitSystem)
+	recipeDef, canonicalID, err := h.Service.PreviewFromURL(c.Request.Context(), url)
 	if err != nil {
 		logger.Get().Error("failed to preview recipe from URL", zap.String("url", url), zap.Error(err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to preview recipe from URL"})
@@ -227,6 +226,9 @@ func (h *ImportHandler) PreviewFromURL(c *gin.Context) {
 	response := gin.H{"recipe": recipeDef}
 	if canonicalID != nil {
 		response["canonical_id"] = *canonicalID
+	}
+	if recipeDef.UnitSystem != "" {
+		response["unit_system"] = recipeDef.UnitSystem
 	}
 	c.JSON(http.StatusOK, response)
 }

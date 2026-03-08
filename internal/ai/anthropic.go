@@ -107,6 +107,11 @@ func createRecipeTool(summaryPrompt string) anthropic.ToolUnionParam {
 						"type":        "string",
 						"description": "Description of a single portion size",
 					},
+					"unit_system": map[string]interface{}{
+						"type":        "string",
+						"description": "The measurement system used in the recipe",
+						"enum":        []string{"us_customary", "metric"},
+					},
 				},
 			},
 		},
@@ -125,6 +130,7 @@ type recipeToolResult struct {
 	RecipeSummary           string              `json:"recipe_summary"`
 	Portions                int                 `json:"portions"`
 	PortionSize             string              `json:"portion_size"`
+	UnitSystem              string              `json:"unit_system"`
 }
 
 type ingredientToolRes struct {
@@ -153,6 +159,7 @@ func toolResultToRecipeResult(tr *recipeToolResult) *RecipeResult {
 		Summary:           tr.RecipeSummary,
 		Portions:          tr.Portions,
 		PortionSize:       tr.PortionSize,
+		UnitSystem:        tr.UnitSystem,
 	}
 }
 
@@ -498,44 +505,6 @@ func (p *AnthropicProvider) ClassifyVoiceIntent(ctx context.Context, transcript 
 	return &intent, nil
 }
 
-// NormalizeMeasurements normalises a list of ingredients to standard units.
-func (p *AnthropicProvider) NormalizeMeasurements(ctx context.Context, ingredients []IngredientInput) ([]NormalizedIngredient, error) {
-	sysPrompt, err := config.RenderPrompt(p.prompts.Normalize.System, nil)
-	if err != nil {
-		return nil, fmt.Errorf("render system prompt: %w", err)
-	}
-
-	ingredientJSON, _ := json.Marshal(ingredients)
-
-	params := anthropic.MessageNewParams{
-		Model:     p.model,
-		MaxTokens: 2048,
-		System: []anthropic.TextBlockParam{
-			{Text: sysPrompt},
-		},
-		Messages: []anthropic.MessageParam{
-			newUserMessage(anthropic.NewTextBlock(string(ingredientJSON))),
-		},
-	}
-
-	resp, err := p.createMessageWithRetry(ctx, params)
-	if err != nil {
-		return nil, err
-	}
-
-	text, err := extractTextContent(resp)
-	if err != nil {
-		return nil, err
-	}
-
-	var normalized []NormalizedIngredient
-	if err := json.Unmarshal([]byte(text), &normalized); err != nil {
-		return nil, fmt.Errorf("failed to parse normalized ingredients: %w", err)
-	}
-
-	return normalized, nil
-}
-
 // EstimatePortions estimates portion count and sizes for a recipe.
 func (p *AnthropicProvider) EstimatePortions(ctx context.Context, recipeDef interface{}) (*PortionEstimate, error) {
 	recipeJSON, err := json.Marshal(recipeDef)
@@ -574,9 +543,22 @@ func (p *AnthropicProvider) EstimatePortions(ctx context.Context, recipeDef inte
 
 // ExtractRecipeFromText extracts a structured recipe from free-form text.
 func (p *AnthropicProvider) ExtractRecipeFromText(ctx context.Context, text string, unitSystem string) (*RecipeResult, error) {
-	sysPrompt, err := config.RenderPrompt(p.prompts.Import.Text.System, map[string]interface{}{
-		"UnitSystem": unitSystem,
-	})
+	var promptTemplate string
+	var templateData map[string]interface{}
+
+	if unitSystem == "preserve source" {
+		promptTemplate = p.prompts.Import.URL.System
+		templateData = map[string]interface{}{
+			"UnitSystem": "the original units from the source text. Do not convert measurements. Report which unit system is used via the unit_system field",
+		}
+	} else {
+		promptTemplate = p.prompts.Import.Text.System
+		templateData = map[string]interface{}{
+			"UnitSystem": unitSystem,
+		}
+	}
+
+	sysPrompt, err := config.RenderPrompt(promptTemplate, templateData)
 	if err != nil {
 		return nil, fmt.Errorf("render system prompt: %w", err)
 	}

@@ -357,7 +357,7 @@ func TestAiResultToRecipeDef_AllFieldsMapped(t *testing.T) {
 	result := &ai.RecipeResult{
 		Title: "Test Recipe",
 		Ingredients: []ai.IngredientResult{
-			{Name: "Flour", Unit: "cups", Amount: 2, OriginalText: "2 cups flour", NormalizedAmount: 240, NormalizedUnit: "g", IsEstimated: false},
+			{Name: "Flour", Unit: "cups", Amount: 2, OriginalText: "2 cups flour"},
 			{Name: "Sugar", Unit: "tbsp", Amount: 1, OriginalText: "1 tbsp sugar"},
 		},
 		Instructions:      []string{"Mix", "Bake"},
@@ -368,6 +368,7 @@ func TestAiResultToRecipeDef_AllFieldsMapped(t *testing.T) {
 		Portions:          8,
 		PortionSize:       "1 slice",
 		SourceURL:         "https://example.com",
+		UnitSystem:        "us_customary",
 	}
 
 	def := aiResultToRecipeDef(result)
@@ -379,12 +380,6 @@ func TestAiResultToRecipeDef_AllFieldsMapped(t *testing.T) {
 	}
 	if def.Ingredients[0].Name != "Flour" {
 		t.Errorf("aiResultToRecipeDef Ingredients[0].Name = %q, want 'Flour'", def.Ingredients[0].Name)
-	}
-	if def.Ingredients[0].NormalizedAmount != 240 {
-		t.Errorf("aiResultToRecipeDef Ingredients[0].NormalizedAmount = %f, want 240", def.Ingredients[0].NormalizedAmount)
-	}
-	if def.Ingredients[0].NormalizedUnit != "g" {
-		t.Errorf("aiResultToRecipeDef Ingredients[0].NormalizedUnit = %q, want 'g'", def.Ingredients[0].NormalizedUnit)
 	}
 	if len(def.Instructions) != 2 {
 		t.Errorf("aiResultToRecipeDef Instructions count = %d, want 2", len(def.Instructions))
@@ -406,6 +401,9 @@ func TestAiResultToRecipeDef_AllFieldsMapped(t *testing.T) {
 	}
 	if def.SourceURL != "https://example.com" {
 		t.Errorf("aiResultToRecipeDef SourceURL = %q", def.SourceURL)
+	}
+	if def.UnitSystem != "us_customary" {
+		t.Errorf("aiResultToRecipeDef UnitSystem = %q, want 'us_customary'", def.UnitSystem)
 	}
 }
 
@@ -608,5 +606,62 @@ func TestNodeHistoryToEntries_Empty(t *testing.T) {
 	entries := NodeHistoryToEntries(nil)
 	if len(entries) != 0 {
 		t.Errorf("NodeHistoryToEntries(nil): got %d entries, want 0", len(entries))
+	}
+}
+
+// --- detectUnitSystem ---
+
+func TestDetectUnitSystem_USCustomary(t *testing.T) {
+	ingredients := []string{"2 cups flour", "1 tbsp butter", "3 oz sugar"}
+	got := detectUnitSystem(ingredients)
+	if got != "us_customary" {
+		t.Errorf("detectUnitSystem US ingredients = %q, want 'us_customary'", got)
+	}
+}
+
+func TestDetectUnitSystem_Metric(t *testing.T) {
+	ingredients := []string{"250 g flour", "100 mL milk", "50 g sugar"}
+	got := detectUnitSystem(ingredients)
+	if got != "metric" {
+		t.Errorf("detectUnitSystem metric ingredients = %q, want 'metric'", got)
+	}
+}
+
+func TestDetectUnitSystem_Mixed(t *testing.T) {
+	ingredients := []string{"2 cups flour", "250 g sugar", "1 cup milk"}
+	got := detectUnitSystem(ingredients)
+	if got != "us_customary" {
+		t.Errorf("detectUnitSystem mixed ingredients = %q, want 'us_customary' (US majority)", got)
+	}
+}
+
+func TestDetectUnitSystem_NoMarkers(t *testing.T) {
+	ingredients := []string{"salt", "pepper", "water"}
+	got := detectUnitSystem(ingredients)
+	if got != "us_customary" {
+		t.Errorf("detectUnitSystem no markers = %q, want 'us_customary' (default)", got)
+	}
+}
+
+func TestDetectUnitSystem_Empty(t *testing.T) {
+	got := detectUnitSystem(nil)
+	if got != "us_customary" {
+		t.Errorf("detectUnitSystem empty = %q, want 'us_customary' (default)", got)
+	}
+}
+
+func TestJsonLDToRecipeDef_DetectsUnitSystem(t *testing.T) {
+	recipe := &jsonLDRecipe{
+		Name:         "Metric Recipe",
+		Ingredients:  []string{"250 g flour", "100 mL milk", "2 eggs"},
+		Instructions: []interface{}{"Mix"},
+	}
+
+	def, err := jsonLDToRecipeDef(recipe)
+	if err != nil {
+		t.Fatalf("jsonLDToRecipeDef: %v", err)
+	}
+	if def.UnitSystem != "metric" {
+		t.Errorf("jsonLDToRecipeDef UnitSystem = %q, want 'metric'", def.UnitSystem)
 	}
 }

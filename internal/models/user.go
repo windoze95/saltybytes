@@ -167,6 +167,16 @@ const (
 	MetricText      = "Metric"              // 1 - Metric
 )
 
+// ToDefString converts the UnitSystem enum to the string used in RecipeDef.
+func (us UnitSystem) ToDefString() string {
+	switch us {
+	case Metric:
+		return "metric"
+	default:
+		return "us_customary"
+	}
+}
+
 // IsValidUnitSystem checks if the UnitSystem is valid.
 func (p *Personalization) IsValidUnitSystem() bool {
 	switch p.UnitSystem {

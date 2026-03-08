@@ -46,6 +46,7 @@ type RecipeResponse struct {
 	SourceURL       string             `json:"sourceUrl,omitempty"`
 	CreatedAt       string             `json:"createdAt"`
 	UpdatedAt       string             `json:"updatedAt"`
+	UnitSystem      string  `json:"unitSystem"`
 	// Additional detail fields
 	ParentRecipeID *string `json:"parentRecipeId,omitempty"`
 }
@@ -201,13 +202,10 @@ func recipeResultToRecipeDef(r *ai.RecipeResult) models.RecipeDef {
 	ingredients := make(models.Ingredients, len(r.Ingredients))
 	for i, ing := range r.Ingredients {
 		ingredients[i] = models.Ingredient{
-			Name:             ing.Name,
-			Unit:             ing.Unit,
-			Amount:           ing.Amount,
-			OriginalText:     ing.OriginalText,
-			NormalizedAmount: ing.NormalizedAmount,
-			NormalizedUnit:   ing.NormalizedUnit,
-			IsEstimated:      ing.IsEstimated,
+			Name:         ing.Name,
+			Unit:         ing.Unit,
+			Amount:       ing.Amount,
+			OriginalText: ing.OriginalText,
 		}
 	}
 	return models.RecipeDef{
@@ -221,6 +219,7 @@ func recipeResultToRecipeDef(r *ai.RecipeResult) models.RecipeDef {
 		Portions:          r.Portions,
 		PortionSize:       r.PortionSize,
 		SourceURL:         r.SourceURL,
+		UnitSystem:        r.UnitSystem,
 	}
 }
 
@@ -303,6 +302,11 @@ func (s *RecipeService) ToRecipeResponse(r *models.Recipe) *RecipeResponse {
 		parentRecipeID = &s
 	}
 
+	unitSystem := effectiveDef.UnitSystem
+	if unitSystem == "" {
+		unitSystem = "us_customary"
+	}
+
 	resp := &RecipeResponse{
 		ID:              fmt.Sprintf("%d", r.ID),
 		Title:           effectiveDef.Title,
@@ -313,6 +317,7 @@ func (s *RecipeService) ToRecipeResponse(r *models.Recipe) *RecipeResponse {
 		Tags:            tags,
 		CookTimeMinutes: effectiveDef.CookTime,
 		SourceURL:       effectiveDef.SourceURL,
+		UnitSystem:      unitSystem,
 		CreatedAt:       r.CreatedAt.Format("2006-01-02T15:04:05Z"),
 		UpdatedAt:       r.UpdatedAt.Format("2006-01-02T15:04:05Z"),
 		ParentRecipeID:  parentRecipeID,
