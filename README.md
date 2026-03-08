@@ -4,6 +4,8 @@ Backend for [SaltyBytes](https://saltybytes.ai) — a recipe app for iOS and And
 
 Built with Go, Gin, PostgreSQL + pgvector, and Claude AI.
 
+> **See also:** [saltybytes-app](https://github.com/windoze95/saltybytes-app) — the Flutter iOS client.
+
 ## Features
 
 **Recipe Search & Discovery** — Search the web for recipes and get clean results — no ads, no SEO spam, no scrolling past someone's vacation story. Multi-tier pipeline: exact-match cache, pgvector semantic similarity, and Brave web search. Import any result directly into your collection.
