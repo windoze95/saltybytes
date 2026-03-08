@@ -409,7 +409,7 @@ func (s *ImportService) createImportedRecipe(ctx context.Context, recipeDef *mod
 	return recipeResponse, recipe.ID, nil
 }
 
-// StartCanonicalBackgroundTasks starts periodic refresh and cleanup goroutines
+// StartCanonicalBackgroundTasks starts periodic refresh goroutines
 // for the canonical recipe cache.
 func (s *ImportService) StartCanonicalBackgroundTasks() {
 	if s.CanonicalRepo == nil {
@@ -420,25 +420,17 @@ func (s *ImportService) StartCanonicalBackgroundTasks() {
 		ticker := time.NewTicker(30 * time.Minute)
 		defer ticker.Stop()
 		for range ticker.C {
-			s.refreshHotCanonicals()
-		}
-	}()
-
-	go func() {
-		ticker := time.NewTicker(24 * time.Hour)
-		defer ticker.Stop()
-		for range ticker.C {
-			s.cleanupStaleCanonicals()
+			s.refreshStaleCanonicals()
 		}
 	}()
 }
 
-func (s *ImportService) refreshHotCanonicals() {
+func (s *ImportService) refreshStaleCanonicals() {
 	log := logger.Get()
 
-	entries, err := s.CanonicalRepo.GetHotEntries(5, canonicalTTL, 2*time.Hour)
+	entries, err := s.CanonicalRepo.GetStaleEntries(canonicalTTL)
 	if err != nil {
-		log.Error("failed to get hot canonical entries", zap.Error(err))
+		log.Error("failed to get stale canonical entries", zap.Error(err))
 		return
 	}
 
@@ -459,17 +451,6 @@ func (s *ImportService) refreshHotCanonicals() {
 		if err := s.CanonicalRepo.Upsert(&entry); err != nil {
 			log.Warn("failed to upsert refreshed canonical", zap.String("url", entry.OriginalURL), zap.Error(err))
 		}
-	}
-}
-
-func (s *ImportService) cleanupStaleCanonicals() {
-	deleted, err := s.CanonicalRepo.DeleteStale(90 * 24 * time.Hour)
-	if err != nil {
-		logger.Get().Error("failed to cleanup stale canonicals", zap.Error(err))
-		return
-	}
-	if deleted > 0 {
-		logger.Get().Info("cleaned up stale canonical entries", zap.Int64("deleted", deleted))
 	}
 }
 

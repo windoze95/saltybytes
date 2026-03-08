@@ -57,25 +57,13 @@ func (r *CanonicalRecipeRepository) IncrementHitCount(id uint) error {
 		}).Error
 }
 
-// GetHotEntries returns frequently accessed entries that are approaching staleness.
-func (r *CanonicalRecipeRepository) GetHotEntries(minHits int, maxAge, refreshWindow time.Duration) ([]models.CanonicalRecipe, error) {
-	now := time.Now()
-	staleAt := now.Add(-maxAge)
-	refreshAt := now.Add(-maxAge + refreshWindow)
-
+// GetStaleEntries returns canonical entries whose FetchedAt is older than maxAge.
+func (r *CanonicalRecipeRepository) GetStaleEntries(maxAge time.Duration) ([]models.CanonicalRecipe, error) {
+	cutoff := time.Now().Add(-maxAge)
 	var entries []models.CanonicalRecipe
-	err := r.DB.
-		Where("hit_count >= ? AND fetched_at > ? AND fetched_at < ?", minHits, staleAt, refreshAt).
-		Find(&entries).Error
+	err := r.DB.Where("fetched_at < ?", cutoff).Find(&entries).Error
 	if err != nil {
-		return nil, fmt.Errorf("failed to get hot canonical entries: %w", err)
+		return nil, fmt.Errorf("failed to get stale canonical entries: %w", err)
 	}
 	return entries, nil
-}
-
-// DeleteStale removes entries that haven't been accessed within maxAge.
-func (r *CanonicalRecipeRepository) DeleteStale(maxAge time.Duration) (int64, error) {
-	cutoff := time.Now().Add(-maxAge)
-	result := r.DB.Where("last_accessed_at < ?", cutoff).Delete(&models.CanonicalRecipe{})
-	return result.RowsAffected, result.Error
 }

@@ -698,8 +698,7 @@ type MockCanonicalRecipeRepo struct {
 	GetByNormalizedURLFunc func(normalizedURL string) (*models.CanonicalRecipe, error)
 	UpsertFunc             func(entry *models.CanonicalRecipe) error
 	IncrementHitCountFunc  func(id uint) error
-	GetHotEntriesFunc      func(minHits int, maxAge, refreshWindow time.Duration) ([]models.CanonicalRecipe, error)
-	DeleteStaleFunc        func(maxAge time.Duration) (int64, error)
+	GetStaleEntriesFunc    func(maxAge time.Duration) ([]models.CanonicalRecipe, error)
 }
 
 func (m *MockCanonicalRecipeRepo) GetByID(id uint) (*models.CanonicalRecipe, error) {
@@ -731,18 +730,11 @@ func (m *MockCanonicalRecipeRepo) IncrementHitCount(id uint) error {
 	return nil
 }
 
-func (m *MockCanonicalRecipeRepo) GetHotEntries(minHits int, maxAge, refreshWindow time.Duration) ([]models.CanonicalRecipe, error) {
-	if m.GetHotEntriesFunc != nil {
-		return m.GetHotEntriesFunc(minHits, maxAge, refreshWindow)
+func (m *MockCanonicalRecipeRepo) GetStaleEntries(maxAge time.Duration) ([]models.CanonicalRecipe, error) {
+	if m.GetStaleEntriesFunc != nil {
+		return m.GetStaleEntriesFunc(maxAge)
 	}
 	return nil, nil
-}
-
-func (m *MockCanonicalRecipeRepo) DeleteStale(maxAge time.Duration) (int64, error) {
-	if m.DeleteStaleFunc != nil {
-		return m.DeleteStaleFunc(maxAge)
-	}
-	return 0, nil
 }
 
 // Compile-time interface checks.
