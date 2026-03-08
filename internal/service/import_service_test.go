@@ -65,7 +65,7 @@ func TestImportFromText_MetricUser(t *testing.T) {
 
 	svc := newTestImportService(repo, mockText, nil)
 	user := testutil.TestUser()
-	user.Personalization.UnitSystem = models.Metric
+	user.Personalization.UnitSystem = "metric"
 
 	resp, err := svc.ImportFromText(context.Background(), "Some recipe text", user)
 	if err != nil {
@@ -90,7 +90,7 @@ func TestImportManual_Success(t *testing.T) {
 		ImagePrompt:  "A photo of pancakes",
 	}
 
-	resp, err := svc.ImportManual(context.Background(), recipeDef, user, models.RecipeTypeManualEntry)
+	resp, err := svc.ImportManual(context.Background(), recipeDef, user, models.RecipeTypeManualEntry, nil)
 	if err != nil {
 		t.Fatalf("ImportManual error: %v", err)
 	}
@@ -112,7 +112,7 @@ func TestImportManual_EmptyTitle(t *testing.T) {
 		Ingredients: models.Ingredients{{Name: "Flour"}},
 	}
 
-	_, err := svc.ImportManual(context.Background(), recipeDef, user, models.RecipeTypeManualEntry)
+	_, err := svc.ImportManual(context.Background(), recipeDef, user, models.RecipeTypeManualEntry, nil)
 	if err == nil {
 		t.Fatal("ImportManual with empty title should return error")
 	}
@@ -131,7 +131,7 @@ func TestImportManual_WithSourceURL(t *testing.T) {
 		SourceURL:    "https://example.com/recipe",
 	}
 
-	resp, err := svc.ImportManual(context.Background(), recipeDef, user, models.RecipeTypeImportLink)
+	resp, err := svc.ImportManual(context.Background(), recipeDef, user, models.RecipeTypeImportLink, nil)
 	if err != nil {
 		t.Fatalf("ImportManual with source URL error: %v", err)
 	}
@@ -161,10 +161,9 @@ func TestCreateImportedRecipe_AssociatesTags(t *testing.T) {
 		Ingredients:  models.Ingredients{{Name: "Flour"}},
 		Instructions: []string{"Bake"},
 		ImagePrompt:  "A baked thing",
-		Hashtags:     []string{"baking", "easy"},
 	}
 
-	resp, _, err := svc.createImportedRecipe(context.Background(), recipeDef, user, models.RecipeTypeManualEntry, "", nil)
+	resp, _, err := svc.createImportedRecipe(context.Background(), recipeDef, user, models.RecipeTypeManualEntry, "", nil, []string{"baking", "easy"})
 	if err != nil {
 		t.Fatalf("createImportedRecipe error: %v", err)
 	}
@@ -319,7 +318,7 @@ func TestCreateImportedRecipe_CreatesTree(t *testing.T) {
 		ImagePrompt:  "Salty",
 	}
 
-	_, _, err := svc.createImportedRecipe(context.Background(), recipeDef, user, models.RecipeTypeImportCopypasta, "", nil)
+	_, _, err := svc.createImportedRecipe(context.Background(), recipeDef, user, models.RecipeTypeImportCopypasta, "", nil, nil)
 	if err != nil {
 		t.Fatalf("createImportedRecipe error: %v", err)
 	}

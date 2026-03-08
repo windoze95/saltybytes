@@ -23,9 +23,7 @@ func (s *RecipeService) InitGenerateRecipe(user *models.User, userPrompt string,
 	recipe := &models.Recipe{
 		CreatedBy:          user,
 		PersonalizationUID: user.Personalization.UID,
-		History: &models.RecipeHistory{
-			Entries: []models.RecipeHistoryEntry{},
-		},
+		Status:             "generating",
 	}
 
 	// Create a Recipe with the basic Recipe details
@@ -51,7 +49,7 @@ func (s *RecipeService) FinishGenerateRecipe(recipe *models.Recipe, user *models
 
 	req := ai.RecipeRequest{
 		UserPrompt:   userPrompt,
-		UnitSystem:   user.Personalization.GetUnitSystemText(),
+		UnitSystem:   user.Personalization.UnitSystemText(),
 		Requirements: user.Personalization.Requirements,
 	}
 
@@ -64,9 +62,15 @@ func (s *RecipeService) FinishGenerateRecipe(recipe *models.Recipe, user *models
 		}
 
 		if result.UnitSystem == "" {
-			result.UnitSystem = user.Personalization.UnitSystem.ToDefString()
+			result.UnitSystem = user.Personalization.UnitSystem
 		}
 		recipeDef := recipeResultToRecipeDef(result)
+		recipe.RecipeDef = recipeDef
+
+		if err := validateRecipeCoreFields(recipe); err != nil {
+			recipeErrChan <- err
+			return
+		}
 
 		// Goroutine to handle image generation and upload
 		go func(ctx context.Context, imageErrChan chan<- error) {
@@ -92,19 +96,7 @@ func (s *RecipeService) FinishGenerateRecipe(recipe *models.Recipe, user *models
 			imageErrChan <- nil
 		}(ctx, imageErrChan)
 
-		historyEntry := models.RecipeHistoryEntry{
-			Prompt:   userPrompt,
-			Response: &recipeDef,
-			Summary:  result.Summary,
-			Type:     models.RecipeTypeChat,
-		}
-
-		if err := populateRecipeCoreFields(recipe, result, historyEntry); err != nil {
-			recipeErrChan <- err
-			return
-		}
-
-		if err := s.Repo.UpdateRecipeDef(recipe, historyEntry); err != nil {
+		if err := s.Repo.UpdateRecipeDef(recipe); err != nil {
 			recipeErrChan <- err
 			return
 		}
@@ -130,6 +122,8 @@ func (s *RecipeService) FinishGenerateRecipe(recipe *models.Recipe, user *models
 
 		s.generateAndStoreEmbedding(ctx, recipe.ID, &recipeDef)
 
+		s.Repo.UpdateRecipeStatus(recipe.ID, "ready")
+
 		recipeErrChan <- nil
 	}(ctx, recipeErrChan, imageErrChan)
 
@@ -139,6 +133,7 @@ func (s *RecipeService) FinishGenerateRecipe(recipe *models.Recipe, user *models
 		if err != nil {
 			recipeID := recipe.ID
 			logger.Get().Error("failed to finish recipe generation", zap.Uint("recipe_id", recipeID), zap.Error(err))
+			s.Repo.UpdateRecipeStatus(recipeID, "failed")
 			e := s.DeleteRecipe(context.Background(), recipeID)
 			if e != nil {
 				logger.Get().Error("failed to delete recipe after generation error", zap.Uint("recipe_id", recipeID), zap.Error(e))
@@ -151,6 +146,7 @@ func (s *RecipeService) FinishGenerateRecipe(recipe *models.Recipe, user *models
 		err := errors.New("incomplete recipe generation: timed out after 5 minutes")
 		recipeID := recipe.ID
 		logger.Get().Error("recipe generation timed out", zap.Uint("recipe_id", recipeID), zap.Error(err))
+		s.Repo.UpdateRecipeStatus(recipeID, "failed")
 		e := s.DeleteRecipe(context.Background(), recipeID)
 		if e != nil {
 			logger.Get().Error("failed to delete recipe after timeout", zap.Uint("recipe_id", recipeID), zap.Error(e))

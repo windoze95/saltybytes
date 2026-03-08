@@ -41,7 +41,7 @@ type SettingsResponse struct {
 
 // PersonalizationResponse is the response object for user personalization.
 type PersonalizationResponse struct {
-	UnitSystem   int    `json:"unit_system"`
+	UnitSystem   string `json:"unit_system"`
 	Requirements string `json:"requirements"`
 	UID          string `json:"uid"`
 }
@@ -81,7 +81,7 @@ func (s *UserService) CreateUser(username, firstName, email, password string) (*
 			KeepScreenAwake: true, // Default value
 		},
 		Personalization: &models.Personalization{
-			UnitSystem: models.USCustomary, // Default value
+			UnitSystem: "us_customary", // Default value
 			// UID:        uuid.New(),
 		},
 		// CollectedRecipes: []*models.Recipe{},
@@ -126,7 +126,7 @@ func ToUserResponse(user *models.User) *UserResponse {
 	}
 	if user.Personalization != nil {
 		resp.Personalization = PersonalizationResponse{
-			UnitSystem:   int(user.Personalization.UnitSystem),
+			UnitSystem:   user.Personalization.UnitSystem,
 			Requirements: user.Personalization.Requirements,
 			UID:          user.Personalization.UID.String(),
 		}

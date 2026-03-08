@@ -208,26 +208,6 @@ func (m *MockRecipeRepo) GetRecipeByID(recipeID uint) (*models.Recipe, error) {
 	return r, nil
 }
 
-func (m *MockRecipeRepo) GetHistoryByID(historyID uint) (*models.RecipeHistory, error) {
-	return &models.RecipeHistory{}, nil
-}
-
-func (m *MockRecipeRepo) GetRecipeByHistoryID(historyID uint) (*models.Recipe, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	for _, r := range m.Recipes {
-		if r.HistoryID == historyID {
-			return r, nil
-		}
-	}
-	return nil, repository.NotFoundError{}
-}
-
-func (m *MockRecipeRepo) GetRecipeHistoryEntriesAfterID(historyID uint, afterID uint) ([]models.RecipeHistoryEntry, error) {
-	return nil, nil
-}
-
 func (m *MockRecipeRepo) CreateRecipe(recipe *models.Recipe) error {
 	if m.CreateRecipeErr != nil {
 		return m.CreateRecipeErr
@@ -265,6 +245,16 @@ func (m *MockRecipeRepo) UpdateRecipeTitle(recipe *models.Recipe, title string) 
 	return nil
 }
 
+func (m *MockRecipeRepo) UpdateRecipeStatus(recipeID uint, status string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if r, ok := m.Recipes[recipeID]; ok {
+		r.Status = status
+	}
+	return nil
+}
+
 func (m *MockRecipeRepo) UpdateRecipeImageURL(recipeID uint, imageURL string) error {
 	if m.UpdateRecipeImageURLErr != nil {
 		return m.UpdateRecipeImageURLErr
@@ -278,7 +268,7 @@ func (m *MockRecipeRepo) UpdateRecipeImageURL(recipeID uint, imageURL string) er
 	return nil
 }
 
-func (m *MockRecipeRepo) UpdateRecipeDef(recipe *models.Recipe, newRecipeHistoryEntry models.RecipeHistoryEntry) error {
+func (m *MockRecipeRepo) UpdateRecipeDef(recipe *models.Recipe) error {
 	if m.UpdateRecipeDefErr != nil {
 		return m.UpdateRecipeDefErr
 	}
@@ -288,10 +278,6 @@ func (m *MockRecipeRepo) UpdateRecipeDef(recipe *models.Recipe, newRecipeHistory
 	if r, ok := m.Recipes[recipe.ID]; ok {
 		r.RecipeDef = recipe.RecipeDef
 	}
-	return nil
-}
-
-func (m *MockRecipeRepo) UpdateRecipeWithHistoryEntry(recipeID uint, newActiveEntryID uint, updatedResponse models.RecipeDef) error {
 	return nil
 }
 

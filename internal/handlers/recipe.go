@@ -84,47 +84,6 @@ func (h *RecipeHandler) GetRecipe(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"recipe": recipeResponse})
 }
 
-// GetRecipeHistory returns a recipe history by ID.
-func (h *RecipeHandler) GetRecipeHistory(c *gin.Context) {
-	user, err := util.GetUserFromContext(c)
-	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
-		return
-	}
-
-	historyIDStr := c.Param("history_id")
-	historyID, err := parseUintParam(historyIDStr)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid recipe history ID"})
-		return
-	}
-
-	// Verify ownership via the recipe that owns this history
-	recipe, err := h.Service.Repo.GetRecipeByHistoryID(historyID)
-	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Recipe history not found"})
-		return
-	}
-	if recipe.CreatedByID != user.ID {
-		c.JSON(http.StatusForbidden, gin.H{"error": "You can only view your own recipe history"})
-		return
-	}
-
-	history, err := h.Service.GetRecipeHistoryByID(historyID)
-	if err != nil {
-		logger.Get().Error("failed to get recipe history", zap.String("history_id", historyIDStr), zap.Error(err))
-		switch e := err.(type) {
-		case repository.NotFoundError:
-			c.JSON(http.StatusNotFound, gin.H{"error": e.Error()})
-		default:
-			c.JSON(http.StatusInternalServerError, gin.H{"error": e.Error()})
-		}
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{"recipeHistory": history})
-}
-
 // GenerateRecipe generates a new recipe with chat.
 func (h *RecipeHandler) GenerateRecipe(c *gin.Context) {
 	// Retrieve the user from the context

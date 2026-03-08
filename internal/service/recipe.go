@@ -47,13 +47,9 @@ type RecipeResponse struct {
 	CreatedAt       string             `json:"createdAt"`
 	UpdatedAt       string             `json:"updatedAt"`
 	UnitSystem      string  `json:"unitSystem"`
+	Status          string  `json:"status"`
 	// Additional detail fields
 	ParentRecipeID *string `json:"parentRecipeId,omitempty"`
-}
-
-// HistoryResponse is the response object for recipe history-related operations.
-type HistoryResponse struct {
-	Entries []models.RecipeHistoryEntry `json:"entries"`
 }
 
 // RecipeListItem is a lightweight response object for recipe listing.
@@ -65,6 +61,7 @@ type RecipeListItem struct {
 	CookTimeMinutes int      `json:"cookTimeMinutes"`
 	Tags            []string `json:"tags"`
 	SourceURL       string   `json:"sourceUrl,omitempty"`
+	Status          string   `json:"status"`
 	CreatedAt       string   `json:"createdAt"`
 	UpdatedAt       string   `json:"updatedAt"`
 }
@@ -111,14 +108,7 @@ func (s *RecipeService) GetUserRecipes(userID uint, page, pageSize int) ([]Recip
 
 	items := make([]RecipeListItem, len(recipes))
 	for i, r := range recipes {
-		// Resolve effective RecipeDef from canonical when applicable
-		effectiveDef := r.RecipeDef
-		if !r.HasDiverged && r.Canonical != nil {
-			effectiveDef = r.Canonical.RecipeData
-			if effectiveDef.SourceURL == "" {
-				effectiveDef.SourceURL = r.SourceURL
-			}
-		}
+		effectiveDef := effectiveRecipeDef(&r)
 
 		tags := make([]string, 0, len(r.Hashtags))
 		for _, t := range r.Hashtags {
@@ -133,6 +123,7 @@ func (s *RecipeService) GetUserRecipes(userID uint, page, pageSize int) ([]Recip
 			CookTimeMinutes: effectiveDef.CookTime,
 			Tags:            tags,
 			SourceURL:       effectiveDef.SourceURL,
+			Status:          r.Status,
 			CreatedAt:       r.CreatedAt.Format("2006-01-02T15:04:05Z"),
 			UpdatedAt:       r.UpdatedAt.Format("2006-01-02T15:04:05Z"),
 		}
@@ -155,19 +146,6 @@ func (s *RecipeService) GetRecipeByID(recipeID uint) (*RecipeResponse, error) {
 	return recipeResponse, nil
 }
 
-// GetRecipeHistoryByID fetches a recipe history by its ID.
-func (s *RecipeService) GetRecipeHistoryByID(historyID uint) (*HistoryResponse, error) {
-	// Fetch the recipe by its ID from the repository
-	history, err := s.Repo.GetHistoryByID(historyID)
-	if err != nil {
-		return nil, err
-	}
-
-	historyResponse := &HistoryResponse{Entries: history.Entries}
-
-	return historyResponse, nil
-}
-
 // DeleteRecipe deletes a recipe by its ID.
 func (s *RecipeService) DeleteRecipe(ctx context.Context, recipeID uint) error {
 	// Delete the recipe from the database
@@ -184,19 +162,6 @@ func (s *RecipeService) DeleteRecipe(ctx context.Context, recipeID uint) error {
 	return nil
 }
 
-// populateRecipeCoreFields populates the recipe's core fields from an AI result.
-func populateRecipeCoreFields(recipe *models.Recipe, result *ai.RecipeResult, historyEntry models.RecipeHistoryEntry) error {
-	recipe.RecipeDef = recipeResultToRecipeDef(result)
-
-	if recipe.History == nil {
-		return errors.New("recipe history is nil")
-	}
-
-	recipe.History.Entries = append(recipe.History.Entries, historyEntry)
-
-	return validateRecipeCoreFields(recipe)
-}
-
 // recipeResultToRecipeDef converts an ai.RecipeResult to a models.RecipeDef.
 func recipeResultToRecipeDef(r *ai.RecipeResult) models.RecipeDef {
 	ingredients := make(models.Ingredients, len(r.Ingredients))
@@ -205,6 +170,8 @@ func recipeResultToRecipeDef(r *ai.RecipeResult) models.RecipeDef {
 			Name:         ing.Name,
 			Unit:         ing.Unit,
 			Amount:       ing.Amount,
+			MetricUnit:   ing.MetricUnit,
+			MetricAmount: ing.MetricAmount,
 			OriginalText: ing.OriginalText,
 		}
 	}
@@ -214,7 +181,6 @@ func recipeResultToRecipeDef(r *ai.RecipeResult) models.RecipeDef {
 		Instructions:      r.Instructions,
 		CookTime:          r.CookTime,
 		ImagePrompt:       r.ImagePrompt,
-		Hashtags:          r.Hashtags,
 		LinkedSuggestions: r.LinkedSuggestions,
 		Portions:          r.Portions,
 		PortionSize:       r.PortionSize,
@@ -282,14 +248,7 @@ func (s *RecipeService) AssociateTagsWithRecipe(recipe *models.Recipe, tags []st
 // When the recipe has not diverged and references a canonical, the canonical's
 // RecipeData is used instead of the recipe's own fields.
 func (s *RecipeService) ToRecipeResponse(r *models.Recipe) *RecipeResponse {
-	// Resolve effective RecipeDef from canonical when applicable
-	effectiveDef := r.RecipeDef
-	if !r.HasDiverged && r.Canonical != nil {
-		effectiveDef = r.Canonical.RecipeData
-		if effectiveDef.SourceURL == "" {
-			effectiveDef.SourceURL = r.SourceURL
-		}
-	}
+	effectiveDef := effectiveRecipeDef(r)
 
 	tags := make([]string, 0, len(r.Hashtags))
 	for _, t := range r.Hashtags {
@@ -307,6 +266,11 @@ func (s *RecipeService) ToRecipeResponse(r *models.Recipe) *RecipeResponse {
 		unitSystem = "us_customary"
 	}
 
+	status := r.Status
+	if status == "" {
+		status = "ready"
+	}
+
 	resp := &RecipeResponse{
 		ID:              fmt.Sprintf("%d", r.ID),
 		Title:           effectiveDef.Title,
@@ -318,6 +282,7 @@ func (s *RecipeService) ToRecipeResponse(r *models.Recipe) *RecipeResponse {
 		CookTimeMinutes: effectiveDef.CookTime,
 		SourceURL:       effectiveDef.SourceURL,
 		UnitSystem:      unitSystem,
+		Status:          status,
 		CreatedAt:       r.CreatedAt.Format("2006-01-02T15:04:05Z"),
 		UpdatedAt:       r.UpdatedAt.Format("2006-01-02T15:04:05Z"),
 		ParentRecipeID:  parentRecipeID,
@@ -390,29 +355,25 @@ func (s *RecipeService) SwitchToNode(recipeID uint, nodeID uint) error {
 	return nil
 }
 
-// NodeHistoryToEntries converts a chain of tree nodes into RecipeHistoryEntry format
-// for compatibility with ProcessExistingRecipeHistoryEntries. This bridges the tree
-// structure with existing AI generation code.
-func NodeHistoryToEntries(nodes []models.RecipeNode) []models.RecipeHistoryEntry {
-	entries := make([]models.RecipeHistoryEntry, 0, len(nodes))
-	for i, node := range nodes {
-		entries = append(entries, models.RecipeHistoryEntry{
-			Prompt:   node.Prompt,
-			Response: node.Response,
-			Summary:  node.Summary,
-			Type:     node.Type,
-			Order:    i,
-		})
-	}
-	return entries
-}
-
 // TreeResponse is the response object for recipe tree operations.
 type TreeResponse struct {
 	TreeID     uint                `json:"tree_id"`
 	RecipeID   uint                `json:"recipe_id"`
 	RootNodeID *uint               `json:"root_node_id"`
 	Nodes      []models.RecipeNode `json:"nodes"`
+}
+
+// effectiveRecipeDef resolves the effective RecipeDef for a recipe, using the
+// canonical's data when the recipe hasn't diverged.
+func effectiveRecipeDef(r *models.Recipe) models.RecipeDef {
+	if !r.HasDiverged && r.Canonical != nil {
+		def := r.Canonical.RecipeData
+		if def.SourceURL == "" {
+			def.SourceURL = r.SourceURL
+		}
+		return def
+	}
+	return r.RecipeDef
 }
 
 // cleanHashtag formats a hashtag string.

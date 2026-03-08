@@ -65,6 +65,53 @@ func TestRecipeDefScan_InvalidJSON(t *testing.T) {
 	}
 }
 
+func TestIngredientMetricFields_RoundTrip(t *testing.T) {
+	original := Ingredients{
+		{Name: "Flour", Unit: "cups", Amount: 2, MetricUnit: "g", MetricAmount: 240, OriginalText: "2 cups flour"},
+	}
+
+	val, err := original.Value()
+	if err != nil {
+		t.Fatalf("Ingredients.Value() error: %v", err)
+	}
+	bytes := val.([]byte)
+
+	var scanned Ingredients
+	if err := scanned.Scan(bytes); err != nil {
+		t.Fatalf("Ingredients.Scan() error: %v", err)
+	}
+	if scanned[0].MetricUnit != "g" {
+		t.Errorf("MetricUnit: got %q, want 'g'", scanned[0].MetricUnit)
+	}
+	if scanned[0].MetricAmount != 240 {
+		t.Errorf("MetricAmount: got %f, want 240", scanned[0].MetricAmount)
+	}
+}
+
+func TestIngredientMetricFields_OmitEmpty(t *testing.T) {
+	// Legacy ingredient without metric fields should serialize without metric keys
+	original := Ingredients{
+		{Name: "Eggs", Unit: "", Amount: 3},
+	}
+
+	val, err := original.Value()
+	if err != nil {
+		t.Fatalf("Ingredients.Value() error: %v", err)
+	}
+	bytes := val.([]byte)
+
+	var raw []map[string]interface{}
+	if err := json.Unmarshal(bytes, &raw); err != nil {
+		t.Fatalf("json.Unmarshal error: %v", err)
+	}
+	if _, exists := raw[0]["metric_unit"]; exists {
+		t.Error("metric_unit should be omitted for zero-value string")
+	}
+	if _, exists := raw[0]["metric_amount"]; exists {
+		t.Error("metric_amount should be omitted for zero-value float")
+	}
+}
+
 func TestIngredientsScanValue_RoundTrip(t *testing.T) {
 	original := Ingredients{
 		{Name: "Flour", Unit: "cups", Amount: 2, OriginalText: "2 cups flour"},

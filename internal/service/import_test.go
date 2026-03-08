@@ -266,7 +266,7 @@ func TestExtractJSONLD_ValidRecipe(t *testing.T) {
 	</script>
 	</head><body></body></html>`
 
-	def, err := extractJSONLD(html)
+	def, _, err := extractJSONLD(html)
 	if err != nil {
 		t.Fatalf("extractJSONLD valid recipe: unexpected error: %v", err)
 	}
@@ -299,7 +299,7 @@ func TestExtractJSONLD_GraphContainer(t *testing.T) {
 	</script>
 	</head><body></body></html>`
 
-	def, err := extractJSONLD(html)
+	def, _, err := extractJSONLD(html)
 	if err != nil {
 		t.Fatalf("extractJSONLD @graph: unexpected error: %v", err)
 	}
@@ -310,7 +310,7 @@ func TestExtractJSONLD_GraphContainer(t *testing.T) {
 
 func TestExtractJSONLD_NoJSONLD(t *testing.T) {
 	html := `<html><head><title>No JSON-LD</title></head><body></body></html>`
-	_, err := extractJSONLD(html)
+	_, _, err := extractJSONLD(html)
 	if err == nil {
 		t.Error("extractJSONLD with no JSON-LD should return error")
 	}
@@ -323,7 +323,7 @@ func TestExtractJSONLD_NonRecipeType(t *testing.T) {
 	</script>
 	</head><body></body></html>`
 
-	_, err := extractJSONLD(html)
+	_, _, err := extractJSONLD(html)
 	if err == nil {
 		t.Error("extractJSONLD with non-Recipe type should return error")
 	}
@@ -342,7 +342,7 @@ func TestExtractJSONLD_UsesTotalTimeAsFallback(t *testing.T) {
 	</script>
 	</head><body></body></html>`
 
-	def, err := extractJSONLD(html)
+	def, _, err := extractJSONLD(html)
 	if err != nil {
 		t.Fatalf("extractJSONLD totalTime fallback: unexpected error: %v", err)
 	}
@@ -351,9 +351,9 @@ func TestExtractJSONLD_UsesTotalTimeAsFallback(t *testing.T) {
 	}
 }
 
-// --- aiResultToRecipeDef ---
+// --- recipeResultToRecipeDef (all fields) ---
 
-func TestAiResultToRecipeDef_AllFieldsMapped(t *testing.T) {
+func TestRecipeResultToRecipeDef_AllFieldsMapped(t *testing.T) {
 	result := &ai.RecipeResult{
 		Title: "Test Recipe",
 		Ingredients: []ai.IngredientResult{
@@ -371,52 +371,49 @@ func TestAiResultToRecipeDef_AllFieldsMapped(t *testing.T) {
 		UnitSystem:        "us_customary",
 	}
 
-	def := aiResultToRecipeDef(result)
+	def := recipeResultToRecipeDef(result)
 	if def.Title != "Test Recipe" {
-		t.Errorf("aiResultToRecipeDef Title = %q, want 'Test Recipe'", def.Title)
+		t.Errorf("recipeResultToRecipeDef Title = %q, want 'Test Recipe'", def.Title)
 	}
 	if len(def.Ingredients) != 2 {
-		t.Errorf("aiResultToRecipeDef Ingredients count = %d, want 2", len(def.Ingredients))
+		t.Errorf("recipeResultToRecipeDef Ingredients count = %d, want 2", len(def.Ingredients))
 	}
 	if def.Ingredients[0].Name != "Flour" {
-		t.Errorf("aiResultToRecipeDef Ingredients[0].Name = %q, want 'Flour'", def.Ingredients[0].Name)
+		t.Errorf("recipeResultToRecipeDef Ingredients[0].Name = %q, want 'Flour'", def.Ingredients[0].Name)
 	}
 	if len(def.Instructions) != 2 {
-		t.Errorf("aiResultToRecipeDef Instructions count = %d, want 2", len(def.Instructions))
+		t.Errorf("recipeResultToRecipeDef Instructions count = %d, want 2", len(def.Instructions))
 	}
 	if def.CookTime != 30 {
-		t.Errorf("aiResultToRecipeDef CookTime = %d, want 30", def.CookTime)
+		t.Errorf("recipeResultToRecipeDef CookTime = %d, want 30", def.CookTime)
 	}
 	if def.ImagePrompt != "A baked item" {
-		t.Errorf("aiResultToRecipeDef ImagePrompt = %q", def.ImagePrompt)
-	}
-	if len(def.Hashtags) != 1 || def.Hashtags[0] != "baking" {
-		t.Errorf("aiResultToRecipeDef Hashtags = %v", def.Hashtags)
+		t.Errorf("recipeResultToRecipeDef ImagePrompt = %q", def.ImagePrompt)
 	}
 	if def.Portions != 8 {
-		t.Errorf("aiResultToRecipeDef Portions = %d, want 8", def.Portions)
+		t.Errorf("recipeResultToRecipeDef Portions = %d, want 8", def.Portions)
 	}
 	if def.PortionSize != "1 slice" {
-		t.Errorf("aiResultToRecipeDef PortionSize = %q", def.PortionSize)
+		t.Errorf("recipeResultToRecipeDef PortionSize = %q", def.PortionSize)
 	}
 	if def.SourceURL != "https://example.com" {
-		t.Errorf("aiResultToRecipeDef SourceURL = %q", def.SourceURL)
+		t.Errorf("recipeResultToRecipeDef SourceURL = %q", def.SourceURL)
 	}
 	if def.UnitSystem != "us_customary" {
-		t.Errorf("aiResultToRecipeDef UnitSystem = %q, want 'us_customary'", def.UnitSystem)
+		t.Errorf("recipeResultToRecipeDef UnitSystem = %q, want 'us_customary'", def.UnitSystem)
 	}
 }
 
-func TestAiResultToRecipeDef_EmptyIngredients(t *testing.T) {
+func TestRecipeResultToRecipeDef_EmptyIngredients(t *testing.T) {
 	result := &ai.RecipeResult{
 		Title:        "Empty Ingredients",
 		Ingredients:  nil,
 		Instructions: []string{"Do nothing"},
 		CookTime:     0,
 	}
-	def := aiResultToRecipeDef(result)
+	def := recipeResultToRecipeDef(result)
 	if len(def.Ingredients) != 0 {
-		t.Errorf("aiResultToRecipeDef with nil ingredients = %d, want 0", len(def.Ingredients))
+		t.Errorf("recipeResultToRecipeDef with nil ingredients = %d, want 0", len(def.Ingredients))
 	}
 }
 
@@ -432,7 +429,7 @@ func TestJsonLDToRecipeDef_Valid(t *testing.T) {
 		Keywords:     "italian, pasta, easy",
 	}
 
-	def, err := jsonLDToRecipeDef(recipe)
+	def, hashtags, err := jsonLDToRecipeDef(recipe)
 	if err != nil {
 		t.Fatalf("jsonLDToRecipeDef valid: %v", err)
 	}
@@ -452,8 +449,8 @@ func TestJsonLDToRecipeDef_Valid(t *testing.T) {
 	if def.Portions != 4 {
 		t.Errorf("portions = %d, want 4", def.Portions)
 	}
-	if len(def.Hashtags) != 3 {
-		t.Errorf("hashtags count = %d, want 3", len(def.Hashtags))
+	if len(hashtags) != 3 {
+		t.Errorf("hashtags count = %d, want 3", len(hashtags))
 	}
 	if def.ImagePrompt == "" {
 		t.Error("imagePrompt should be auto-generated from recipe name")
@@ -465,7 +462,7 @@ func TestJsonLDToRecipeDef_EmptyName(t *testing.T) {
 		Name:        "",
 		Ingredients: []string{"flour"},
 	}
-	_, err := jsonLDToRecipeDef(recipe)
+	_, _, err := jsonLDToRecipeDef(recipe)
 	if err == nil {
 		t.Error("jsonLDToRecipeDef with empty name should return error")
 	}
@@ -477,7 +474,7 @@ func TestJsonLDToRecipeDef_TotalTimeFallback(t *testing.T) {
 		TotalTime:   "PT1H",
 		Ingredients: []string{"water"},
 	}
-	def, err := jsonLDToRecipeDef(recipe)
+	def, _, err := jsonLDToRecipeDef(recipe)
 	if err != nil {
 		t.Fatalf("jsonLDToRecipeDef totalTime fallback: %v", err)
 	}
@@ -579,36 +576,6 @@ func TestValidateRecipeCoreFields_MissingImagePrompt(t *testing.T) {
 	}
 }
 
-// --- NodeHistoryToEntries ---
-
-func TestNodeHistoryToEntries(t *testing.T) {
-	def := models.RecipeDef{Title: "Test"}
-	nodes := []models.RecipeNode{
-		{Prompt: "Make a cake", Response: &def, Summary: "Cake", Type: models.RecipeTypeChat},
-		{Prompt: "Add chocolate", Response: &def, Summary: "Chocolate cake", Type: models.RecipeTypeRegenChat},
-	}
-	entries := NodeHistoryToEntries(nodes)
-	if len(entries) != 2 {
-		t.Fatalf("NodeHistoryToEntries: got %d entries, want 2", len(entries))
-	}
-	if entries[0].Order != 0 || entries[1].Order != 1 {
-		t.Errorf("NodeHistoryToEntries order: [%d, %d], want [0, 1]", entries[0].Order, entries[1].Order)
-	}
-	if entries[0].Prompt != "Make a cake" {
-		t.Errorf("NodeHistoryToEntries[0].Prompt = %q", entries[0].Prompt)
-	}
-	if entries[1].Type != models.RecipeTypeRegenChat {
-		t.Errorf("NodeHistoryToEntries[1].Type = %q", entries[1].Type)
-	}
-}
-
-func TestNodeHistoryToEntries_Empty(t *testing.T) {
-	entries := NodeHistoryToEntries(nil)
-	if len(entries) != 0 {
-		t.Errorf("NodeHistoryToEntries(nil): got %d entries, want 0", len(entries))
-	}
-}
-
 // --- detectUnitSystem ---
 
 func TestDetectUnitSystem_USCustomary(t *testing.T) {
@@ -681,7 +648,7 @@ func TestJsonLDToRecipeDef_DetectsUnitSystem(t *testing.T) {
 		Instructions: []interface{}{"Mix"},
 	}
 
-	def, err := jsonLDToRecipeDef(recipe)
+	def, _, err := jsonLDToRecipeDef(recipe)
 	if err != nil {
 		t.Fatalf("jsonLDToRecipeDef: %v", err)
 	}
@@ -697,7 +664,7 @@ func TestJsonLDToRecipeDef_DetectsCompactMetric(t *testing.T) {
 		Instructions: []interface{}{"Mix"},
 	}
 
-	def, err := jsonLDToRecipeDef(recipe)
+	def, _, err := jsonLDToRecipeDef(recipe)
 	if err != nil {
 		t.Fatalf("jsonLDToRecipeDef compact metric: %v", err)
 	}

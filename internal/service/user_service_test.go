@@ -48,8 +48,8 @@ func TestCreateUser_Success(t *testing.T) {
 	if user.Settings == nil || !user.Settings.KeepScreenAwake {
 		t.Error("Default KeepScreenAwake should be true")
 	}
-	if user.Personalization == nil || user.Personalization.UnitSystem != models.USCustomary {
-		t.Error("Default UnitSystem should be USCustomary")
+	if user.Personalization == nil || user.Personalization.UnitSystem != "us_customary" {
+		t.Error("Default UnitSystem should be us_customary")
 	}
 }
 
@@ -77,7 +77,7 @@ func TestLoginUser_Success(t *testing.T) {
 			AuthType:       models.Standard,
 		},
 		Settings:        &models.UserSettings{KeepScreenAwake: true},
-		Personalization: &models.Personalization{UnitSystem: models.USCustomary},
+		Personalization: &models.Personalization{UnitSystem: "us_customary"},
 	}
 	repo.CreateUser(user)
 
@@ -253,8 +253,8 @@ func TestToUserResponse(t *testing.T) {
 	if !resp.Settings.KeepScreenAwake {
 		t.Error("KeepScreenAwake should be true")
 	}
-	if resp.Personalization.UnitSystem != 0 {
-		t.Errorf("UnitSystem = %d, want 0", resp.Personalization.UnitSystem)
+	if resp.Personalization.UnitSystem != "us_customary" {
+		t.Errorf("UnitSystem = %q, want 'us_customary'", resp.Personalization.UnitSystem)
 	}
 	if resp.Personalization.Requirements != "No peanuts" {
 		t.Errorf("Requirements = %q", resp.Personalization.Requirements)

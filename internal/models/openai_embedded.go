@@ -16,7 +16,6 @@ type RecipeDef struct {
 	Instructions      pq.StringArray `json:"instructions" gorm:"type:text[];column:instructions"`
 	CookTime          int            `json:"cook_time" gorm:"column:cook_time"`
 	ImagePrompt       string         `json:"image_prompt" gorm:"column:image_prompt"`
-	Hashtags          []string       `json:"hashtags"` // Raw hashtag strings from AI responses; Recipe model has a separate Hashtags field for the Tag DB relationship
 	LinkedSuggestions pq.StringArray `json:"linked_recipe_suggestions" gorm:"type:text[];column:linked_recipe_suggestions"`
 	Portions         int            `json:"portions,omitempty" gorm:"column:portions"`
 	PortionSize      string         `json:"portion_size,omitempty" gorm:"column:portion_size"`
@@ -48,6 +47,8 @@ type Ingredient struct {
 	Name         string  `json:"name"`
 	Unit         string  `json:"unit"`
 	Amount       float64 `json:"amount"`
+	MetricUnit   string  `json:"metric_unit,omitempty"`
+	MetricAmount float64 `json:"metric_amount,omitempty"`
 	OriginalText string  `json:"original_text,omitempty"`
 }
 

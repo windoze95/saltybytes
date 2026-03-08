@@ -150,71 +150,34 @@ type UserSettings struct {
 // Personalization is the model for a user's personalization settings.
 type Personalization struct {
 	gorm.Model
-	UserID       uint       `gorm:"unique;index"`
-	UnitSystem   UnitSystem `gorm:"type:int"`
-	Requirements string     // Additional instructions or guidelines
+	UserID       uint      `gorm:"unique;index"`
+	UnitSystem   string    `gorm:"type:text;default:'us_customary'"`
+	Requirements string    // Additional instructions or guidelines
 	UID          uuid.UUID
 }
 
-// UnitSystem is the type for the UnitSystem enum.
-type UnitSystem int
-
-// UnitSystem enum values.
-const (
-	USCustomary     UnitSystem       = iota // 0 - US Customary
-	Metric                                  // 1 - Metric
-	USCustomaryText = "US Customary"        // 0 - US Customary
-	MetricText      = "Metric"              // 1 - Metric
-)
-
-// ToDefString converts the UnitSystem enum to the string used in RecipeDef.
-func (us UnitSystem) ToDefString() string {
-	switch us {
-	case Metric:
-		return "metric"
-	default:
-		return "us_customary"
-	}
-}
-
-// IsValidUnitSystem checks if the UnitSystem is valid.
-func (p *Personalization) IsValidUnitSystem() bool {
+// UnitSystemText returns the display text for the current UnitSystem.
+func (p *Personalization) UnitSystemText() string {
 	switch p.UnitSystem {
-	case USCustomary, Metric:
-		return true
+	case "metric":
+		return "Metric"
 	default:
-		return false
-	}
-}
-
-// GetUnitSystemText returns the text representation of the UnitSystem.
-func (p *Personalization) GetUnitSystemText() string {
-	switch p.UnitSystem {
-	case USCustomary:
-		return USCustomaryText
-	case Metric:
-		return MetricText
-	default:
-		return USCustomaryText
+		return "US Customary"
 	}
 }
 
 // BeforeCreate is a GORM hook that runs before creating a new user Personalization.
 func (p *Personalization) BeforeCreate(tx *gorm.DB) (err error) {
-	if !p.IsValidUnitSystem() {
-		// Set default
-		p.UnitSystem = USCustomary
+	if p.UnitSystem != "us_customary" && p.UnitSystem != "metric" {
+		p.UnitSystem = "us_customary"
 	}
-
 	return nil
 }
 
 // BeforeUpdate is a GORM hook that runs before updating a user Personalization.
 func (p *Personalization) BeforeUpdate(tx *gorm.DB) (err error) {
-	if !p.IsValidUnitSystem() {
-		// Set default
-		p.UnitSystem = USCustomary
+	if p.UnitSystem != "us_customary" && p.UnitSystem != "metric" {
+		p.UnitSystem = "us_customary"
 	}
-
 	return nil
 }
