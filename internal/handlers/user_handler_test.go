@@ -111,7 +111,7 @@ func TestLoginUser_Handler_Success(t *testing.T) {
 			AuthType:       models.Standard,
 		},
 		Settings:        &models.UserSettings{KeepScreenAwake: true},
-		Personalization: &models.Personalization{UnitSystem: models.USCustomary},
+		Personalization: &models.Personalization{UnitSystem: "us_customary"},
 	})
 
 	r := gin.New()

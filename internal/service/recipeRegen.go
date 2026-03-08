@@ -47,20 +47,22 @@ func (s *RecipeService) FinishRegenerateRecipe(recipe *models.Recipe, user *mode
 	recipeErrChan := make(chan error)
 	imageErrChan := make(chan error, 1) // buffered to prevent goroutine leak when genImage is false
 
-	// Load recipe history for AI conversation context (GetRecipeByID doesn't preload it)
+	// Load conversation context from tree nodes
 	var existingHistory []ai.Message
-	if recipe.HistoryID != 0 {
-		if history, err := s.Repo.GetHistoryByID(recipe.HistoryID); err == nil {
-			existingHistory = historyEntriesToMessages(history.Entries, &recipe.RecipeDef)
-		} else {
-			logger.Get().Warn("failed to load recipe history for regen", zap.Uint("recipe_id", recipe.ID), zap.Error(err))
+	if tree, treeErr := s.Repo.GetTreeByRecipeID(recipe.ID); treeErr == nil {
+		if activeNode, nodeErr := s.Repo.GetActiveNode(tree.ID); nodeErr == nil {
+			if ancestors, ancestorErr := s.Repo.GetNodeAncestors(activeNode.ID); ancestorErr == nil {
+				existingHistory = nodeChainToMessages(ancestors, &recipe.RecipeDef)
+			} else {
+				logger.Get().Warn("failed to load node ancestors for regen", zap.Uint("recipe_id", recipe.ID), zap.Error(ancestorErr))
+			}
 		}
 	}
 
 	req := ai.RegenerateRequest{
 		RecipeRequest: ai.RecipeRequest{
 			UserPrompt:   userPrompt,
-			UnitSystem:   user.Personalization.GetUnitSystemText(),
+			UnitSystem:   user.Personalization.UnitSystemText(),
 			Requirements: user.Personalization.Requirements,
 		},
 		ExistingHistory: existingHistory,
@@ -75,9 +77,15 @@ func (s *RecipeService) FinishRegenerateRecipe(recipe *models.Recipe, user *mode
 		}
 
 		if result.UnitSystem == "" {
-			result.UnitSystem = user.Personalization.UnitSystem.ToDefString()
+			result.UnitSystem = user.Personalization.UnitSystem
 		}
 		recipeDef := recipeResultToRecipeDef(result)
+		recipe.RecipeDef = recipeDef
+
+		if err := validateRecipeCoreFields(recipe); err != nil {
+			recipeErrChan <- err
+			return
+		}
 
 		// Goroutine to handle image generation and upload
 		go func(ctx context.Context, imageErrChan chan<- error) {
@@ -103,19 +111,7 @@ func (s *RecipeService) FinishRegenerateRecipe(recipe *models.Recipe, user *mode
 			imageErrChan <- nil
 		}(ctx, imageErrChan)
 
-		historyEntry := models.RecipeHistoryEntry{
-			Prompt:   userPrompt,
-			Response: &recipeDef,
-			Summary:  result.Summary,
-			Type:     models.RecipeTypeChat,
-		}
-
-		if err := populateRecipeCoreFields(recipe, result, historyEntry); err != nil {
-			recipeErrChan <- err
-			return
-		}
-
-		if err := s.Repo.UpdateRecipeDef(recipe, historyEntry); err != nil {
+		if err := s.Repo.UpdateRecipeDef(recipe); err != nil {
 			recipeErrChan <- err
 			return
 		}
@@ -182,18 +178,18 @@ func (s *RecipeService) FinishRegenerateRecipe(recipe *models.Recipe, user *mode
 	}
 }
 
-// historyEntriesToMessages converts recipe history entries into ai.Message slices
-// for use as conversation context in regen/fork flows. The last entry's response
-// is serialized from the current RecipeDef; earlier entries use summaries.
-func historyEntriesToMessages(entries []models.RecipeHistoryEntry, currentDef *models.RecipeDef) []ai.Message {
+// nodeChainToMessages converts a chain of tree nodes into ai.Message slices
+// for use as conversation context in regen/fork flows. The last node's response
+// is serialized from the current RecipeDef; earlier nodes use summaries.
+func nodeChainToMessages(nodes []models.RecipeNode, currentDef *models.RecipeDef) []ai.Message {
 	var messages []ai.Message
-	length := len(entries)
+	length := len(nodes)
 
-	for i, entry := range entries {
+	for i, node := range nodes {
 		var userContent string
 		var assistantContent string
 
-		switch entry.Type {
+		switch node.Type {
 		case models.RecipeTypeManualEntry:
 			if i == length-1 {
 				userContent = "The following response from you is the current revision of the recipe."
@@ -203,12 +199,12 @@ func historyEntriesToMessages(entries []models.RecipeHistoryEntry, currentDef *m
 				continue
 			}
 		default:
-			userContent = entry.Prompt
+			userContent = node.Prompt
 			if i == length-1 {
 				defJSON, _ := json.Marshal(currentDef)
 				assistantContent = string(defJSON)
 			} else {
-				assistantContent = entry.Summary
+				assistantContent = node.Summary
 			}
 		}
 

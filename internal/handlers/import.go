@@ -174,10 +174,9 @@ func (h *ImportHandler) ImportManual(c *gin.Context) {
 		CookTime:     request.CookTime,
 		Portions:     request.Portions,
 		PortionSize:  request.PortionSize,
-		Hashtags:     request.Hashtags,
 		ImagePrompt:  "A photo of " + request.Title,
 		SourceURL:    request.SourceURL,
-		UnitSystem:   user.Personalization.UnitSystem.ToDefString(),
+		UnitSystem:   user.Personalization.UnitSystem,
 	}
 
 	recipeType := models.RecipeTypeManualEntry
@@ -185,7 +184,7 @@ func (h *ImportHandler) ImportManual(c *gin.Context) {
 		recipeType = models.RecipeTypeImportLink
 	}
 
-	recipeResponse, err := h.Service.ImportManual(c.Request.Context(), recipeDef, user, recipeType)
+	recipeResponse, err := h.Service.ImportManual(c.Request.Context(), recipeDef, user, recipeType, request.Hashtags)
 	if err != nil {
 		logger.Get().Error("failed to import recipe manually", zap.Error(err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create recipe"})

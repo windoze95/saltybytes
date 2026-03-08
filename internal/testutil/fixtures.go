@@ -31,7 +31,7 @@ func TestUser() *models.User {
 		Personalization: &models.Personalization{
 			Model:        gorm.Model{ID: 1},
 			UserID:       1,
-			UnitSystem:   models.USCustomary,
+			UnitSystem:   "us_customary",
 			Requirements: "No peanuts",
 			UID:          uuid.MustParse("11111111-1111-1111-1111-111111111111"),
 		},
@@ -51,7 +51,6 @@ func TestRecipeDef() models.RecipeDef {
 		Instructions:      pq.StringArray{"Mix dry ingredients", "Whisk wet ingredients", "Combine and cook on griddle"},
 		CookTime:          20,
 		ImagePrompt:       "A stack of fluffy golden pancakes with butter and maple syrup",
-		Hashtags:          []string{"breakfast", "pancakes", "easy"},
 		LinkedSuggestions: pq.StringArray{"Blueberry Pancakes", "Banana Pancakes"},
 		Portions:          4,
 		PortionSize:       "3 pancakes",
@@ -71,21 +70,6 @@ func TestRecipe() *models.Recipe {
 		},
 		CreatedByID:        1,
 		PersonalizationUID: uuid.MustParse("11111111-1111-1111-1111-111111111111"),
-		UnitSystem:         models.USCustomary,
-		HistoryID:          1,
-		History: &models.RecipeHistory{
-			Model: gorm.Model{ID: 1},
-			Entries: []models.RecipeHistoryEntry{
-				{
-					Model:    gorm.Model{ID: 1},
-					Prompt:   "Make pancakes",
-					Response: &recipeDef,
-					Summary:  "Classic pancake recipe",
-					Type:     models.RecipeTypeChat,
-					Order:    0,
-				},
-			},
-		},
 	}
 }
 
@@ -115,14 +99,9 @@ func TestCanonicalLinkedRecipe() *models.Recipe {
 		ImageURL:           "https://example.com/pancakes.jpg",
 		CreatedByID:        1,
 		PersonalizationUID: uuid.MustParse("11111111-1111-1111-1111-111111111111"),
-		UnitSystem:         models.USCustomary,
 		CanonicalID:        &canonicalID,
 		Canonical:          canonical,
 		HasDiverged:        false,
-		HistoryID:          10,
-		History: &models.RecipeHistory{
-			Model: gorm.Model{ID: 10},
-		},
 	}
 }
 

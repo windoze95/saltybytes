@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/windoze95/saltybytes-api/internal/config"
-	"github.com/windoze95/saltybytes-api/internal/db/migrations"
 	"github.com/windoze95/saltybytes-api/internal/logger"
 	"github.com/windoze95/saltybytes-api/internal/models"
 	"go.uber.org/zap"
@@ -50,8 +49,6 @@ func connectToDatabaseWithRetry(databaseURL string) (*gorm.DB, error) {
 		&models.UserSettings{},
 		&models.Personalization{},
 		&models.Tag{},
-		&models.RecipeHistory{},
-		&models.RecipeHistoryEntry{},
 		&models.Family{},
 		&models.FamilyMember{},
 		&models.DietaryProfile{},
@@ -69,16 +66,13 @@ func connectToDatabaseWithRetry(databaseURL string) (*gorm.DB, error) {
 	// HNSW index for vector similarity on canonical recipe embeddings
 	database.Exec(`CREATE INDEX IF NOT EXISTS idx_canonical_recipes_embedding ON canonical_recipes USING hnsw (embedding vector_cosine_ops)`)
 
+	// Composite index for GetUserRecipes query (created_by_id, created_at DESC)
+	database.Exec(`CREATE INDEX IF NOT EXISTS idx_recipes_user_created ON recipes (created_by_id, created_at DESC)`)
+
 	// Add the FK from recipe_nodes.tree_id → recipe_trees.id that gorm:"-" skipped.
 	database.Exec(`ALTER TABLE recipe_nodes ADD CONSTRAINT IF NOT EXISTS fk_recipe_nodes_tree
 		FOREIGN KEY (tree_id) REFERENCES recipe_trees(id)
 		ON UPDATE CASCADE ON DELETE CASCADE`)
-
-	// Backfill tree structures for any recipes that have history but no tree.
-	// Idempotent: skips recipes that already have a tree_id.
-	if err := migrations.MigrateRecipeHistoryToTree(database); err != nil {
-		logger.Get().Error("recipe tree backfill failed", zap.Error(err))
-	}
 
 	return database, err
 }

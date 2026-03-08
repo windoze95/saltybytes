@@ -293,7 +293,7 @@ func (h *UserHandler) UpdatePersonalization(c *gin.Context) {
 	}
 
 	var req struct {
-		UnitSystem   int    `json:"unit_system"`
+		UnitSystem   string `json:"unit_system"`
 		Requirements string `json:"requirements"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -302,7 +302,7 @@ func (h *UserHandler) UpdatePersonalization(c *gin.Context) {
 	}
 
 	updatedPersonalization := &models.Personalization{
-		UnitSystem:   models.UnitSystem(req.UnitSystem),
+		UnitSystem:   req.UnitSystem,
 		Requirements: req.Requirements,
 		UID:          user.Personalization.UID,
 	}

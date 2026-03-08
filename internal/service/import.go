@@ -112,14 +112,14 @@ func (s *ImportService) ImportFromURL(ctx context.Context, rawURL string, user *
 					log.Info("import from canonical cache hit")
 					go s.CanonicalRepo.IncrementHitCount(canonical.ID)
 					canonicalID := canonical.ID
-					recipeResp, _, createErr := s.createImportedRecipe(ctx, &canonical.RecipeData, user, models.RecipeTypeImportLink, rawURL, &canonicalID)
+					recipeResp, _, createErr := s.createImportedRecipe(ctx, &canonical.RecipeData, user, models.RecipeTypeImportLink, rawURL, &canonicalID, nil)
 					return recipeResp, createErr
 				}
 			}
 		}
 	}
 
-	recipeDef, method, err := s.extractFromURL(ctx, rawURL)
+	recipeDef, hashtags, method, err := s.extractFromURL(ctx, rawURL)
 	if err != nil {
 		log.Error("extraction failed", zap.Error(err))
 		return nil, err
@@ -146,7 +146,7 @@ func (s *ImportService) ImportFromURL(ctx context.Context, rawURL string, user *
 		}
 	}
 
-	recipeResp, _, createErr := s.createImportedRecipe(ctx, recipeDef, user, models.RecipeTypeImportLink, rawURL, canonicalID)
+	recipeResp, _, createErr := s.createImportedRecipe(ctx, recipeDef, user, models.RecipeTypeImportLink, rawURL, canonicalID, hashtags)
 	return recipeResp, createErr
 }
 
@@ -164,38 +164,39 @@ func (s *ImportService) ImportFromCanonical(ctx context.Context, canonicalID uin
 	go s.CanonicalRepo.IncrementHitCount(canonical.ID)
 
 	cID := canonical.ID
-	resp, _, createErr := s.createImportedRecipe(ctx, &canonical.RecipeData, user, models.RecipeTypeImportLink, canonical.OriginalURL, &cID)
+	resp, _, createErr := s.createImportedRecipe(ctx, &canonical.RecipeData, user, models.RecipeTypeImportLink, canonical.OriginalURL, &cID, nil)
 	return resp, createErr
 }
 
 // extractFromURL fetches a URL and extracts recipe data via JSON-LD or AI fallback.
+// Returns the recipe definition, raw hashtag strings, and the extraction method used.
 // Shared by PreviewFromURL, ImportFromURL, and background refresh.
-func (s *ImportService) extractFromURL(ctx context.Context, rawURL string) (*models.RecipeDef, models.ExtractionMethod, error) {
+func (s *ImportService) extractFromURL(ctx context.Context, rawURL string) (*models.RecipeDef, []string, models.ExtractionMethod, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
-		return nil, "", fmt.Errorf("failed to create request: %w", err)
+		return nil, nil, "", fmt.Errorf("failed to create request: %w", err)
 	}
 	resp, err := safeHTTPClient.Do(req)
 	if err != nil {
-		return nil, "", fmt.Errorf("failed to fetch URL: %w", err)
+		return nil, nil, "", fmt.Errorf("failed to fetch URL: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, "", fmt.Errorf("URL returned status %d", resp.StatusCode)
+		return nil, nil, "", fmt.Errorf("URL returned status %d", resp.StatusCode)
 	}
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 2*1024*1024))
 	if err != nil {
-		return nil, "", fmt.Errorf("failed to read URL body: %w", err)
+		return nil, nil, "", fmt.Errorf("failed to read URL body: %w", err)
 	}
 	html := string(body)
 
 	// Try JSON-LD extraction first (free)
-	recipeDef, jsonLDErr := extractJSONLD(html)
+	recipeDef, hashtags, jsonLDErr := extractJSONLD(html)
 	if jsonLDErr == nil && recipeDef != nil {
 		recipeDef.SourceURL = rawURL
-		return recipeDef, models.ExtractionJSONLD, nil
+		return recipeDef, hashtags, models.ExtractionJSONLD, nil
 	}
 
 	// Fall back to AI extraction
@@ -204,17 +205,17 @@ func (s *ImportService) extractFromURL(ctx context.Context, rawURL string) (*mod
 		provider = s.TextProvider
 	}
 	if provider == nil {
-		return nil, "", fmt.Errorf("no AI text provider configured for fallback extraction")
+		return nil, nil, "", fmt.Errorf("no AI text provider configured for fallback extraction")
 	}
 
 	result, err := provider.ExtractRecipeFromText(ctx, html, "preserve source")
 	if err != nil {
-		return nil, "", fmt.Errorf("failed to extract recipe from URL: %w", err)
+		return nil, nil, "", fmt.Errorf("failed to extract recipe from URL: %w", err)
 	}
 
-	recipeDef = aiResultToRecipeDef(result)
-	recipeDef.SourceURL = rawURL
-	return recipeDef, models.ExtractionHaiku, nil
+	def := recipeResultToRecipeDef(result)
+	def.SourceURL = rawURL
+	return &def, result.Hashtags, models.ExtractionHaiku, nil
 }
 
 // ImportFromPhoto sends an image to the VisionProvider for recipe extraction.
@@ -225,7 +226,7 @@ func (s *ImportService) ImportFromPhoto(ctx context.Context, imageData []byte, u
 		return nil, fmt.Errorf("no vision provider configured")
 	}
 
-	unitSystem := user.Personalization.GetUnitSystemText()
+	unitSystem := user.Personalization.UnitSystemText()
 	requirements := user.Personalization.Requirements
 
 	result, err := s.VisionProvider.ExtractRecipeFromImage(ctx, imageData, unitSystem, requirements)
@@ -234,13 +235,13 @@ func (s *ImportService) ImportFromPhoto(ctx context.Context, imageData []byte, u
 		return nil, fmt.Errorf("failed to extract recipe from image: %w", err)
 	}
 
-	recipeDef := aiResultToRecipeDef(result)
-	if recipeDef.UnitSystem == "" {
-		recipeDef.UnitSystem = user.Personalization.UnitSystem.ToDefString()
+	def := recipeResultToRecipeDef(result)
+	if def.UnitSystem == "" {
+		def.UnitSystem = user.Personalization.UnitSystem
 	}
 
 	// Create the recipe first to get an ID for S3 upload
-	recipeResponse, recipeID, err := s.createImportedRecipe(ctx, recipeDef, user, models.RecipeTypeImportVision, "", nil)
+	recipeResponse, recipeID, err := s.createImportedRecipe(ctx, &def, user, models.RecipeTypeImportVision, "", nil, result.Hashtags)
 	if err != nil {
 		return nil, err
 	}
@@ -270,24 +271,24 @@ func (s *ImportService) ImportFromText(ctx context.Context, text string, user *m
 		return nil, fmt.Errorf("no AI text provider configured")
 	}
 
-	unitSystem := user.Personalization.GetUnitSystemText()
+	unitSystem := user.Personalization.UnitSystemText()
 	result, err := s.TextProvider.ExtractRecipeFromText(ctx, text, unitSystem)
 	if err != nil {
 		log.Error("text extraction failed", zap.Error(err))
 		return nil, fmt.Errorf("failed to extract recipe from text: %w", err)
 	}
 
-	recipeDef := aiResultToRecipeDef(result)
-	if recipeDef.UnitSystem == "" {
-		recipeDef.UnitSystem = user.Personalization.UnitSystem.ToDefString()
+	def := recipeResultToRecipeDef(result)
+	if def.UnitSystem == "" {
+		def.UnitSystem = user.Personalization.UnitSystem
 	}
-	resp, _, err := s.createImportedRecipe(ctx, recipeDef, user, models.RecipeTypeImportCopypasta, "", nil)
+	resp, _, err := s.createImportedRecipe(ctx, &def, user, models.RecipeTypeImportCopypasta, "", nil, result.Hashtags)
 	return resp, err
 }
 
 // ImportManual creates a recipe from structured form input.
-func (s *ImportService) ImportManual(ctx context.Context, recipeDef *models.RecipeDef, user *models.User, recipeType models.RecipeType) (*RecipeResponse, error) {
-	resp, _, err := s.createImportedRecipe(ctx, recipeDef, user, recipeType, "", nil)
+func (s *ImportService) ImportManual(ctx context.Context, recipeDef *models.RecipeDef, user *models.User, recipeType models.RecipeType, hashtags []string) (*RecipeResponse, error) {
+	resp, _, err := s.createImportedRecipe(ctx, recipeDef, user, recipeType, "", nil, hashtags)
 	return resp, err
 }
 
@@ -320,7 +321,7 @@ func (s *ImportService) PreviewFromURL(ctx context.Context, rawURL string) (*mod
 		}
 	}
 
-	recipeDef, method, err := s.extractFromURL(ctx, rawURL)
+	recipeDef, _, method, err := s.extractFromURL(ctx, rawURL)
 	if err != nil {
 		log.Error("preview extraction failed", zap.Error(err))
 		return nil, nil, err
@@ -353,31 +354,20 @@ func (s *ImportService) PreviewFromURL(ctx context.Context, rawURL string) (*mod
 // createImportedRecipe creates a recipe in the DB from a RecipeDef.
 // Returns the RecipeResponse and the raw DB recipe ID.
 // canonicalID links the recipe to a canonical entry; nil for non-URL imports.
-func (s *ImportService) createImportedRecipe(ctx context.Context, recipeDef *models.RecipeDef, user *models.User, recipeType models.RecipeType, sourcePrompt string, canonicalID *uint) (*RecipeResponse, uint, error) {
+// hashtags are raw tag strings to associate with the recipe.
+func (s *ImportService) createImportedRecipe(ctx context.Context, recipeDef *models.RecipeDef, user *models.User, recipeType models.RecipeType, sourcePrompt string, canonicalID *uint, hashtags []string) (*RecipeResponse, uint, error) {
 	log := logger.Get().With(zap.Uint("user_id", user.ID), zap.String("type", string(recipeType)))
 
 	if recipeDef.Title == "" {
 		return nil, 0, fmt.Errorf("recipe title is required")
 	}
 
-	historyEntry := models.RecipeHistoryEntry{
-		Prompt:   sourcePrompt,
-		Response: recipeDef,
-		Summary:  fmt.Sprintf("Imported: %s", recipeDef.Title),
-		Type:     recipeType,
-		Order:    0,
-	}
-
 	recipe := &models.Recipe{
 		RecipeDef:          *recipeDef,
-		UnitSystem:         user.Personalization.UnitSystem,
 		CreatedBy:          user,
 		PersonalizationUID: user.Personalization.UID,
 		CanonicalID:        canonicalID,
 		HasDiverged:        canonicalID == nil,
-		History: &models.RecipeHistory{
-			Entries: []models.RecipeHistoryEntry{historyEntry},
-		},
 	}
 
 	if err := s.RecipeRepo.CreateRecipe(recipe); err != nil {
@@ -386,8 +376,8 @@ func (s *ImportService) createImportedRecipe(ctx context.Context, recipeDef *mod
 	}
 
 	// Associate tags if present
-	if len(recipeDef.Hashtags) > 0 {
-		if err := s.RecipeService.AssociateTagsWithRecipe(recipe, recipeDef.Hashtags); err != nil {
+	if len(hashtags) > 0 {
+		if err := s.RecipeService.AssociateTagsWithRecipe(recipe, hashtags); err != nil {
 			log.Error("failed to associate tags with imported recipe", zap.Uint("recipe_id", recipe.ID), zap.Error(err))
 		}
 	}
@@ -442,7 +432,7 @@ func (s *ImportService) refreshStaleCanonicals() {
 
 	for _, entry := range entries {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		recipeDef, method, err := s.extractFromURL(ctx, entry.OriginalURL)
+		recipeDef, _, method, err := s.extractFromURL(ctx, entry.OriginalURL)
 		cancel()
 		if err != nil {
 			log.Warn("failed to refresh canonical entry", zap.String("url", entry.OriginalURL), zap.Error(err))
@@ -460,32 +450,6 @@ func (s *ImportService) refreshStaleCanonicals() {
 	}
 }
 
-// aiResultToRecipeDef converts an ai.RecipeResult to a models.RecipeDef.
-func aiResultToRecipeDef(result *ai.RecipeResult) *models.RecipeDef {
-	ingredients := make(models.Ingredients, len(result.Ingredients))
-	for i, ing := range result.Ingredients {
-		ingredients[i] = models.Ingredient{
-			Name:         ing.Name,
-			Unit:         ing.Unit,
-			Amount:       ing.Amount,
-			OriginalText: ing.OriginalText,
-		}
-	}
-
-	return &models.RecipeDef{
-		Title:             result.Title,
-		Ingredients:       ingredients,
-		Instructions:      result.Instructions,
-		CookTime:          result.CookTime,
-		ImagePrompt:       result.ImagePrompt,
-		Hashtags:          result.Hashtags,
-		LinkedSuggestions: result.LinkedSuggestions,
-		Portions:          result.Portions,
-		PortionSize:       result.PortionSize,
-		SourceURL:         result.SourceURL,
-		UnitSystem:        result.UnitSystem,
-	}
-}
 
 // jsonLDRecipe represents the JSON-LD Recipe schema (subset of fields we care about).
 type jsonLDRecipe struct {
@@ -502,7 +466,8 @@ type jsonLDRecipe struct {
 }
 
 // extractJSONLD tries to find and parse JSON-LD recipe data from HTML.
-func extractJSONLD(html string) (*models.RecipeDef, error) {
+// Returns the recipe definition and raw hashtag strings separately.
+func extractJSONLD(html string) (*models.RecipeDef, []string, error) {
 	re := regexp.MustCompile(`(?s)<script[^>]*type=["']application/ld\+json["'][^>]*>(.*?)</script>`)
 	matches := re.FindAllStringSubmatch(html, -1)
 
@@ -514,31 +479,31 @@ func extractJSONLD(html string) (*models.RecipeDef, error) {
 		jsonStr := strings.TrimSpace(match[1])
 
 		// Try parsing as a single object
-		recipeDef, err := tryParseJSONLDObject(jsonStr)
+		recipeDef, hashtags, err := tryParseJSONLDObject(jsonStr)
 		if err == nil && recipeDef != nil {
-			return recipeDef, nil
+			return recipeDef, hashtags, nil
 		}
 
 		// Try parsing as an array
 		var arr []json.RawMessage
 		if err := json.Unmarshal([]byte(jsonStr), &arr); err == nil {
 			for _, item := range arr {
-				recipeDef, err := tryParseJSONLDObject(string(item))
+				recipeDef, hashtags, err := tryParseJSONLDObject(string(item))
 				if err == nil && recipeDef != nil {
-					return recipeDef, nil
+					return recipeDef, hashtags, nil
 				}
 			}
 		}
 	}
 
-	return nil, fmt.Errorf("no JSON-LD recipe found")
+	return nil, nil, fmt.Errorf("no JSON-LD recipe found")
 }
 
 // tryParseJSONLDObject attempts to parse a JSON string as a JSON-LD Recipe.
-func tryParseJSONLDObject(jsonStr string) (*models.RecipeDef, error) {
+func tryParseJSONLDObject(jsonStr string) (*models.RecipeDef, []string, error) {
 	var obj map[string]interface{}
 	if err := json.Unmarshal([]byte(jsonStr), &obj); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// Check if this is a @graph container
@@ -549,23 +514,23 @@ func tryParseJSONLDObject(jsonStr string) (*models.RecipeDef, error) {
 				if err != nil {
 					continue
 				}
-				recipeDef, err := tryParseJSONLDObject(string(itemBytes))
+				recipeDef, hashtags, err := tryParseJSONLDObject(string(itemBytes))
 				if err == nil && recipeDef != nil {
-					return recipeDef, nil
+					return recipeDef, hashtags, nil
 				}
 			}
 		}
-		return nil, fmt.Errorf("no recipe found in @graph")
+		return nil, nil, fmt.Errorf("no recipe found in @graph")
 	}
 
 	// Check @type
 	if !isRecipeType(obj["@type"]) {
-		return nil, fmt.Errorf("not a Recipe type")
+		return nil, nil, fmt.Errorf("not a Recipe type")
 	}
 
 	var recipe jsonLDRecipe
 	if err := json.Unmarshal([]byte(jsonStr), &recipe); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	return jsonLDToRecipeDef(&recipe)
@@ -589,9 +554,10 @@ func isRecipeType(typeField interface{}) bool {
 }
 
 // jsonLDToRecipeDef converts a parsed JSON-LD recipe to a RecipeDef.
-func jsonLDToRecipeDef(recipe *jsonLDRecipe) (*models.RecipeDef, error) {
+// Returns the recipe definition and raw hashtag strings separately.
+func jsonLDToRecipeDef(recipe *jsonLDRecipe) (*models.RecipeDef, []string, error) {
 	if recipe.Name == "" {
-		return nil, fmt.Errorf("recipe name is empty")
+		return nil, nil, fmt.Errorf("recipe name is empty")
 	}
 
 	// Parse ingredients
@@ -626,10 +592,9 @@ func jsonLDToRecipeDef(recipe *jsonLDRecipe) (*models.RecipeDef, error) {
 		Instructions: instructions,
 		CookTime:     cookTime,
 		Portions:     portions,
-		Hashtags:     hashtags,
 		ImagePrompt:  fmt.Sprintf("A photo of %s", recipe.Name),
 		UnitSystem:   unitSystem,
-	}, nil
+	}, hashtags, nil
 }
 
 // Compiled regexes for unit system detection.

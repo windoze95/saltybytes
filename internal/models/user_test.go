@@ -113,51 +113,28 @@ func TestIsValidSubscriptionTier_Invalid(t *testing.T) {
 	}
 }
 
-// --- IsValidUnitSystem ---
+// --- UnitSystemText ---
 
-func TestIsValidUnitSystem_USCustomary(t *testing.T) {
-	p := &Personalization{UnitSystem: USCustomary}
-	if !p.IsValidUnitSystem() {
-		t.Error("IsValidUnitSystem(USCustomary) should be true")
+func TestUnitSystemText_USCustomary(t *testing.T) {
+	p := &Personalization{UnitSystem: "us_customary"}
+	got := p.UnitSystemText()
+	if got != "US Customary" {
+		t.Errorf("UnitSystemText(us_customary) = %q, want 'US Customary'", got)
 	}
 }
 
-func TestIsValidUnitSystem_Metric(t *testing.T) {
-	p := &Personalization{UnitSystem: Metric}
-	if !p.IsValidUnitSystem() {
-		t.Error("IsValidUnitSystem(Metric) should be true")
+func TestUnitSystemText_Metric(t *testing.T) {
+	p := &Personalization{UnitSystem: "metric"}
+	got := p.UnitSystemText()
+	if got != "Metric" {
+		t.Errorf("UnitSystemText(metric) = %q, want 'Metric'", got)
 	}
 }
 
-func TestIsValidUnitSystem_Invalid(t *testing.T) {
-	p := &Personalization{UnitSystem: UnitSystem(99)}
-	if p.IsValidUnitSystem() {
-		t.Error("IsValidUnitSystem(99) should be false")
-	}
-}
-
-// --- GetUnitSystemText ---
-
-func TestGetUnitSystemText_USCustomary(t *testing.T) {
-	p := &Personalization{UnitSystem: USCustomary}
-	got := p.GetUnitSystemText()
-	if got != USCustomaryText {
-		t.Errorf("GetUnitSystemText(USCustomary) = %q, want %q", got, USCustomaryText)
-	}
-}
-
-func TestGetUnitSystemText_Metric(t *testing.T) {
-	p := &Personalization{UnitSystem: Metric}
-	got := p.GetUnitSystemText()
-	if got != MetricText {
-		t.Errorf("GetUnitSystemText(Metric) = %q, want %q", got, MetricText)
-	}
-}
-
-func TestGetUnitSystemText_Invalid(t *testing.T) {
-	p := &Personalization{UnitSystem: UnitSystem(99)}
-	got := p.GetUnitSystemText()
-	if got != USCustomaryText {
-		t.Errorf("GetUnitSystemText(99) = %q, want %q (default)", got, USCustomaryText)
+func TestUnitSystemText_Invalid(t *testing.T) {
+	p := &Personalization{UnitSystem: "invalid"}
+	got := p.UnitSystemText()
+	if got != "US Customary" {
+		t.Errorf("UnitSystemText(invalid) = %q, want 'US Customary' (default)", got)
 	}
 }

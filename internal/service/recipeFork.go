@@ -29,9 +29,7 @@ func (s *RecipeService) InitGenerateRecipeWithFork(user *models.User, forkedReci
 		CreatedBy:          user,
 		ForkedFrom:         forkedRecipe,
 		PersonalizationUID: user.Personalization.UID,
-		History: &models.RecipeHistory{
-			Entries: []models.RecipeHistoryEntry{},
-		},
+		Status:             "generating",
 	}
 
 	// Create a Recipe with the basic Recipe details
@@ -57,28 +55,24 @@ func (s *RecipeService) FinishGenerateRecipeWithFork(recipe *models.Recipe, sour
 	imageErrChan := make(chan error, 1) // buffered to prevent goroutine leak when genImage is false
 
 	// Resolve effective RecipeDef from canonical for fork context (read-only)
-	effectiveDef := sourceRecipe.RecipeDef
-	if !sourceRecipe.HasDiverged && sourceRecipe.Canonical != nil {
-		effectiveDef = sourceRecipe.Canonical.RecipeData
-		if effectiveDef.SourceURL == "" {
-			effectiveDef.SourceURL = sourceRecipe.SourceURL
-		}
-	}
+	effectiveDef := effectiveRecipeDef(sourceRecipe)
 
-	// Load the source recipe's history for AI conversation context
+	// Load conversation context from source recipe's tree nodes
 	var existingHistory []ai.Message
-	if sourceRecipe.HistoryID != 0 {
-		if history, err := s.Repo.GetHistoryByID(sourceRecipe.HistoryID); err == nil {
-			existingHistory = historyEntriesToMessages(history.Entries, &effectiveDef)
-		} else {
-			logger.Get().Warn("failed to load source recipe history for fork", zap.Uint("recipe_id", sourceRecipe.ID), zap.Error(err))
+	if tree, treeErr := s.Repo.GetTreeByRecipeID(sourceRecipe.ID); treeErr == nil {
+		if activeNode, nodeErr := s.Repo.GetActiveNode(tree.ID); nodeErr == nil {
+			if ancestors, ancestorErr := s.Repo.GetNodeAncestors(activeNode.ID); ancestorErr == nil {
+				existingHistory = nodeChainToMessages(ancestors, &effectiveDef)
+			} else {
+				logger.Get().Warn("failed to load node ancestors for fork", zap.Uint("recipe_id", sourceRecipe.ID), zap.Error(ancestorErr))
+			}
 		}
 	}
 
 	req := ai.ForkRequest{
 		RecipeRequest: ai.RecipeRequest{
 			UserPrompt:   userPrompt,
-			UnitSystem:   user.Personalization.GetUnitSystemText(),
+			UnitSystem:   user.Personalization.UnitSystemText(),
 			Requirements: user.Personalization.Requirements,
 		},
 		ExistingHistory: existingHistory,
@@ -93,9 +87,15 @@ func (s *RecipeService) FinishGenerateRecipeWithFork(recipe *models.Recipe, sour
 		}
 
 		if result.UnitSystem == "" {
-			result.UnitSystem = user.Personalization.UnitSystem.ToDefString()
+			result.UnitSystem = user.Personalization.UnitSystem
 		}
 		recipeDef := recipeResultToRecipeDef(result)
+		recipe.RecipeDef = recipeDef
+
+		if err := validateRecipeCoreFields(recipe); err != nil {
+			recipeErrChan <- err
+			return
+		}
 
 		// Goroutine to handle image generation and upload
 		go func(ctx context.Context, imageErrChan chan<- error) {
@@ -121,19 +121,7 @@ func (s *RecipeService) FinishGenerateRecipeWithFork(recipe *models.Recipe, sour
 			imageErrChan <- nil
 		}(ctx, imageErrChan)
 
-		historyEntry := models.RecipeHistoryEntry{
-			Prompt:   userPrompt,
-			Response: &recipeDef,
-			Summary:  result.Summary,
-			Type:     models.RecipeTypeChat,
-		}
-
-		if err := populateRecipeCoreFields(recipe, result, historyEntry); err != nil {
-			recipeErrChan <- err
-			return
-		}
-
-		if err := s.Repo.UpdateRecipeDef(recipe, historyEntry); err != nil {
+		if err := s.Repo.UpdateRecipeDef(recipe); err != nil {
 			recipeErrChan <- err
 			return
 		}
@@ -159,6 +147,8 @@ func (s *RecipeService) FinishGenerateRecipeWithFork(recipe *models.Recipe, sour
 
 		s.generateAndStoreEmbedding(ctx, recipe.ID, &recipeDef)
 
+		s.Repo.UpdateRecipeStatus(recipe.ID, "ready")
+
 		recipeErrChan <- nil
 	}(ctx, recipeErrChan, imageErrChan)
 
@@ -168,6 +158,7 @@ func (s *RecipeService) FinishGenerateRecipeWithFork(recipe *models.Recipe, sour
 		if err != nil {
 			recipeID := recipe.ID
 			logger.Get().Error("failed to finish recipe fork generation", zap.Uint("recipe_id", recipeID), zap.Error(err))
+			s.Repo.UpdateRecipeStatus(recipeID, "failed")
 			e := s.DeleteRecipe(context.Background(), recipeID)
 			if e != nil {
 				logger.Get().Error("failed to delete recipe after fork generation error", zap.Uint("recipe_id", recipeID), zap.Error(e))
@@ -180,6 +171,7 @@ func (s *RecipeService) FinishGenerateRecipeWithFork(recipe *models.Recipe, sour
 		err := errors.New("incomplete recipe generation: timed out after 5 minutes")
 		recipeID := recipe.ID
 		logger.Get().Error("recipe fork generation timed out", zap.Uint("recipe_id", recipeID), zap.Error(err))
+		s.Repo.UpdateRecipeStatus(recipeID, "failed")
 		e := s.DeleteRecipe(context.Background(), recipeID)
 		if e != nil {
 			logger.Get().Error("failed to delete recipe after fork timeout", zap.Uint("recipe_id", recipeID), zap.Error(e))
