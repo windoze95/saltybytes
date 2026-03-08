@@ -43,10 +43,10 @@ func TestRecipeDef() models.RecipeDef {
 	return models.RecipeDef{
 		Title: "Classic Pancakes",
 		Ingredients: models.Ingredients{
-			{Name: "All-purpose flour", Unit: "cups", Amount: 1.5, OriginalText: "1.5 cups all-purpose flour"},
-			{Name: "Milk", Unit: "cups", Amount: 1.25, OriginalText: "1 1/4 cups milk"},
+			{Name: "All-purpose flour", Unit: "cups", Amount: 1.5, MetricUnit: "g", MetricAmount: 180, OriginalText: "1.5 cups all-purpose flour"},
+			{Name: "Milk", Unit: "cups", Amount: 1.25, MetricUnit: "mL", MetricAmount: 300, OriginalText: "1 1/4 cups milk"},
 			{Name: "Egg", Unit: "", Amount: 1, OriginalText: "1 egg"},
-			{Name: "Butter", Unit: "tbsp", Amount: 3, OriginalText: "3 tbsp melted butter"},
+			{Name: "Butter", Unit: "tbsp", Amount: 3, MetricUnit: "g", MetricAmount: 43, OriginalText: "3 tbsp melted butter"},
 		},
 		Instructions:      pq.StringArray{"Mix dry ingredients", "Whisk wet ingredients", "Combine and cook on griddle"},
 		CookTime:          20,
@@ -125,10 +125,10 @@ func TestRecipeResult() *ai.RecipeResult {
 	return &ai.RecipeResult{
 		Title: "Classic Pancakes",
 		Ingredients: []ai.IngredientResult{
-			{Name: "All-purpose flour", Unit: "cups", Amount: 1.5, OriginalText: "1.5 cups all-purpose flour"},
-			{Name: "Milk", Unit: "cups", Amount: 1.25, OriginalText: "1 1/4 cups milk"},
+			{Name: "All-purpose flour", Unit: "cups", Amount: 1.5, MetricUnit: "g", MetricAmount: 180, OriginalText: "1.5 cups all-purpose flour"},
+			{Name: "Milk", Unit: "cups", Amount: 1.25, MetricUnit: "mL", MetricAmount: 300, OriginalText: "1 1/4 cups milk"},
 			{Name: "Egg", Unit: "", Amount: 1, OriginalText: "1 egg"},
-			{Name: "Butter", Unit: "tbsp", Amount: 3, OriginalText: "3 tbsp melted butter"},
+			{Name: "Butter", Unit: "tbsp", Amount: 3, MetricUnit: "g", MetricAmount: 43, OriginalText: "3 tbsp melted butter"},
 		},
 		Instructions:      []string{"Mix dry ingredients", "Whisk wet ingredients", "Combine and cook on griddle"},
 		CookTime:          20,

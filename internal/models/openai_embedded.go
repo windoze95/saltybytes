@@ -47,6 +47,8 @@ type Ingredient struct {
 	Name         string  `json:"name"`
 	Unit         string  `json:"unit"`
 	Amount       float64 `json:"amount"`
+	MetricUnit   string  `json:"metric_unit,omitempty"`
+	MetricAmount float64 `json:"metric_amount,omitempty"`
 	OriginalText string  `json:"original_text,omitempty"`
 }
 

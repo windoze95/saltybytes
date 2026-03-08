@@ -138,9 +138,11 @@ type manualImportRequest struct {
 
 // manualIngredientInput represents an ingredient in the manual import request.
 type manualIngredientInput struct {
-	Name   string  `json:"name" binding:"required"`
-	Unit   string  `json:"unit"`
-	Amount float64 `json:"amount"`
+	Name         string  `json:"name" binding:"required"`
+	Unit         string  `json:"unit"`
+	Amount       float64 `json:"amount"`
+	MetricUnit   string  `json:"metric_unit"`
+	MetricAmount float64 `json:"metric_amount"`
 }
 
 // ImportManual handles POST /v1/recipes/import/manual
@@ -161,9 +163,11 @@ func (h *ImportHandler) ImportManual(c *gin.Context) {
 	ingredients := make(models.Ingredients, len(request.Ingredients))
 	for i, ing := range request.Ingredients {
 		ingredients[i] = models.Ingredient{
-			Name:   ing.Name,
-			Unit:   ing.Unit,
-			Amount: ing.Amount,
+			Name:         ing.Name,
+			Unit:         ing.Unit,
+			Amount:       ing.Amount,
+			MetricUnit:   ing.MetricUnit,
+			MetricAmount: ing.MetricAmount,
 		}
 	}
 

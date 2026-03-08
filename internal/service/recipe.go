@@ -170,6 +170,8 @@ func recipeResultToRecipeDef(r *ai.RecipeResult) models.RecipeDef {
 			Name:         ing.Name,
 			Unit:         ing.Unit,
 			Amount:       ing.Amount,
+			MetricUnit:   ing.MetricUnit,
+			MetricAmount: ing.MetricAmount,
 			OriginalText: ing.OriginalText,
 		}
 	}

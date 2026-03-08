@@ -68,7 +68,9 @@ func createRecipeTool(summaryPrompt string) anthropic.ToolUnionParam {
 							"properties": map[string]interface{}{
 								"name":   map[string]interface{}{"type": "string", "description": "Name of the ingredient, do not include unit or amount in this field"},
 								"unit":   map[string]interface{}{"type": "string", "description": "Unit for the ingredient, comply with UnitSystem specified.", "enum": []string{"pieces", "tsp", "tbsp", "fl oz", "cup", "pt", "qt", "gal", "oz", "lb", "mL", "L", "mg", "g", "kg", "pinch", "dash", "drop", "bushel"}},
-								"amount": map[string]interface{}{"type": "number", "description": "Amount of the ingredient"},
+								"amount":        map[string]interface{}{"type": "number", "description": "Amount of the ingredient"},
+								"metric_unit":   map[string]interface{}{"type": "string", "description": "Metric equivalent unit. Always metric (g, kg, mL, L, mg). Duplicate primary if already metric.", "enum": []string{"mg", "g", "kg", "mL", "L"}},
+								"metric_amount": map[string]interface{}{"type": "number", "description": "Metric equivalent amount. Use accurate cooking conversions (1 cup flour=120g, 1 cup butter=227g, 1 cup water=240mL). Round to practical amounts."},
 							},
 						},
 					},
@@ -134,18 +136,22 @@ type recipeToolResult struct {
 }
 
 type ingredientToolRes struct {
-	Name   string  `json:"name"`
-	Unit   string  `json:"unit"`
-	Amount float64 `json:"amount"`
+	Name         string  `json:"name"`
+	Unit         string  `json:"unit"`
+	Amount       float64 `json:"amount"`
+	MetricUnit   string  `json:"metric_unit"`
+	MetricAmount float64 `json:"metric_amount"`
 }
 
 func toolResultToRecipeResult(tr *recipeToolResult) *RecipeResult {
 	ingredients := make([]IngredientResult, len(tr.Ingredients))
 	for i, ing := range tr.Ingredients {
 		ingredients[i] = IngredientResult{
-			Name:   ing.Name,
-			Unit:   ing.Unit,
-			Amount: ing.Amount,
+			Name:         ing.Name,
+			Unit:         ing.Unit,
+			Amount:       ing.Amount,
+			MetricUnit:   ing.MetricUnit,
+			MetricAmount: ing.MetricAmount,
 		}
 	}
 	return &RecipeResult{
