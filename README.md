@@ -1,16 +1,16 @@
 # SaltyBytes API
 
-Backend for [SaltyBytes](https://saltybytes.ai) — an AI-powered recipe app for iOS and Android. Generate recipes through conversation, import from any source, get allergen analysis for your family, and cook hands-free with voice-guided cooking mode.
+Backend for [SaltyBytes](https://saltybytes.ai) — a recipe app for iOS and Android. Search the web for recipes without the ads and life stories, import from any source, generate with AI, and cook hands-free with voice-guided cooking mode.
 
 Built with Go, Gin, PostgreSQL + pgvector, and Claude AI.
 
 ## Features
 
-**AI Recipe Generation** — Create recipes through natural conversation with Claude. Fork existing recipes into new variants, regenerate with feedback, and explore branching version history through a recipe tree.
+**Recipe Search & Discovery** — Search the web for recipes and get clean results — no ads, no SEO spam, no scrolling past someone's vacation story. Multi-tier pipeline: exact-match cache, pgvector semantic similarity, and Brave web search. Import any result directly into your collection.
 
-**Multi-Source Import** — Import recipes from URLs (with JSON-LD extraction), photos (vision-based), freeform text, or manual entry. A canonical recipe cache deduplicates URL imports with automatic background refresh.
+**Multi-Source Import** — Import recipes from URLs (with JSON-LD extraction and Firecrawl fallback), photos (vision-based), freeform text, or manual entry. A canonical recipe cache deduplicates URL imports with automatic background refresh.
 
-**Semantic Search** — Multi-tier search pipeline: exact-match cache, pgvector similarity search, and Brave web search fallback. Powered by OpenAI embeddings.
+**AI Recipe Generation** — Create recipes through conversation with Claude when you can't find what you're looking for. Fork existing recipes into new variants, regenerate with feedback, and explore branching version history through a recipe tree.
 
 **Family Allergen Analysis** — AI-powered ingredient analysis detects common allergens (dairy, nuts, shellfish, wheat, soy, sesame, etc.) with confidence scoring. Cross-reference results against family members' dietary profiles.
 
