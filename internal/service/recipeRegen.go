@@ -39,6 +39,11 @@ func (s *RecipeService) FinishRegenerateRecipe(recipe *models.Recipe, user *mode
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
+	// Materialize from canonical before mutation (copy-on-write)
+	if err := MaterializeCanonical(recipe, s.Repo); err != nil {
+		logger.Get().Error("failed to materialize canonical before regen", zap.Uint("recipe_id", recipe.ID), zap.Error(err))
+	}
+
 	recipeErrChan := make(chan error)
 	imageErrChan := make(chan error, 1) // buffered to prevent goroutine leak when genImage is false
 

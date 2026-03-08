@@ -56,11 +56,20 @@ func (s *RecipeService) FinishGenerateRecipeWithFork(recipe *models.Recipe, sour
 	recipeErrChan := make(chan error)
 	imageErrChan := make(chan error, 1) // buffered to prevent goroutine leak when genImage is false
 
+	// Resolve effective RecipeDef from canonical for fork context (read-only)
+	effectiveDef := sourceRecipe.RecipeDef
+	if !sourceRecipe.HasDiverged && sourceRecipe.Canonical != nil {
+		effectiveDef = sourceRecipe.Canonical.RecipeData
+		if effectiveDef.SourceURL == "" {
+			effectiveDef.SourceURL = sourceRecipe.SourceURL
+		}
+	}
+
 	// Load the source recipe's history for AI conversation context
 	var existingHistory []ai.Message
 	if sourceRecipe.HistoryID != 0 {
 		if history, err := s.Repo.GetHistoryByID(sourceRecipe.HistoryID); err == nil {
-			existingHistory = historyEntriesToMessages(history.Entries, &sourceRecipe.RecipeDef)
+			existingHistory = historyEntriesToMessages(history.Entries, &effectiveDef)
 		} else {
 			logger.Get().Warn("failed to load source recipe history for fork", zap.Uint("recipe_id", sourceRecipe.ID), zap.Error(err))
 		}

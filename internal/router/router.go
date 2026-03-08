@@ -59,7 +59,9 @@ func SetupRouter(cfg *config.Config, database *gorm.DB) *gin.Engine {
 
 	// Import-related routes setup
 	previewProvider := ai.NewAnthropicLightProvider(cfg.EnvVars.AnthropicAPIKey, cfg.Prompts)
+	canonicalRepo := repository.NewCanonicalRecipeRepository(database)
 	importService := service.NewImportService(cfg, recipeRepo, recipeService, textProvider, textProvider, previewProvider)
+	importService.CanonicalRepo = canonicalRepo
 	importHandler := handlers.NewImportHandler(importService)
 
 	// Group for API routes that don't require token verification
@@ -112,6 +114,7 @@ func SetupRouter(cfg *config.Config, database *gorm.DB) *gin.Engine {
 		apiProtected.POST("/recipes/import/photo", middleware.AttachUserToContext(userService), importHandler.ImportFromPhoto)
 		apiProtected.POST("/recipes/import/text", middleware.AttachUserToContext(userService), importHandler.ImportFromText)
 		apiProtected.POST("/recipes/import/manual", middleware.AttachUserToContext(userService), importHandler.ImportManual)
+		apiProtected.POST("/recipes/import/canonical", middleware.AttachUserToContext(userService), importHandler.ImportFromCanonical)
 
 		// Recipe preview route (cheap extraction for pre-import preview)
 		apiProtected.POST("/recipes/preview/url", middleware.AttachUserToContext(userService), importHandler.PreviewFromURL)
@@ -164,6 +167,7 @@ func SetupRouter(cfg *config.Config, database *gorm.DB) *gin.Engine {
 	searchService := service.NewSearchService(cfg, searchProvider, subService, searchCacheRepo)
 	searchService.EmbedProvider = embedProvider
 	searchService.StartBackgroundTasks()
+	importService.StartCanonicalBackgroundTasks()
 	searchHandler := handlers.NewSearchHandler(searchService)
 	apiProtected.GET("/recipes/search", middleware.AttachUserToContext(userService), searchHandler.SearchRecipes)
 

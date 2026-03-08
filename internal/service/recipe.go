@@ -110,6 +110,15 @@ func (s *RecipeService) GetUserRecipes(userID uint, page, pageSize int) ([]Recip
 
 	items := make([]RecipeListItem, len(recipes))
 	for i, r := range recipes {
+		// Resolve effective RecipeDef from canonical when applicable
+		effectiveDef := r.RecipeDef
+		if !r.HasDiverged && r.Canonical != nil {
+			effectiveDef = r.Canonical.RecipeData
+			if effectiveDef.SourceURL == "" {
+				effectiveDef.SourceURL = r.SourceURL
+			}
+		}
+
 		tags := make([]string, 0, len(r.Hashtags))
 		for _, t := range r.Hashtags {
 			tags = append(tags, t.Hashtag)
@@ -117,12 +126,12 @@ func (s *RecipeService) GetUserRecipes(userID uint, page, pageSize int) ([]Recip
 
 		items[i] = RecipeListItem{
 			ID:              fmt.Sprintf("%d", r.ID),
-			Title:           r.Title,
+			Title:           effectiveDef.Title,
 			OwnerID:         fmt.Sprintf("%d", r.CreatedByID),
 			ImageURL:        r.ImageURL,
-			CookTimeMinutes: r.CookTime,
+			CookTimeMinutes: effectiveDef.CookTime,
 			Tags:            tags,
-			SourceURL:       r.SourceURL,
+			SourceURL:       effectiveDef.SourceURL,
 			CreatedAt:       r.CreatedAt.Format("2006-01-02T15:04:05Z"),
 			UpdatedAt:       r.UpdatedAt.Format("2006-01-02T15:04:05Z"),
 		}
@@ -271,7 +280,18 @@ func (s *RecipeService) AssociateTagsWithRecipe(recipe *models.Recipe, tags []st
 
 // ToRecipeResponse converts a Recipe to a RecipeResponse.
 // Field names match RecipeListItem / Flutter Recipe model.
+// When the recipe has not diverged and references a canonical, the canonical's
+// RecipeData is used instead of the recipe's own fields.
 func (s *RecipeService) ToRecipeResponse(r *models.Recipe) *RecipeResponse {
+	// Resolve effective RecipeDef from canonical when applicable
+	effectiveDef := r.RecipeDef
+	if !r.HasDiverged && r.Canonical != nil {
+		effectiveDef = r.Canonical.RecipeData
+		if effectiveDef.SourceURL == "" {
+			effectiveDef.SourceURL = r.SourceURL
+		}
+	}
+
 	tags := make([]string, 0, len(r.Hashtags))
 	for _, t := range r.Hashtags {
 		tags = append(tags, t.Hashtag)
@@ -285,14 +305,14 @@ func (s *RecipeService) ToRecipeResponse(r *models.Recipe) *RecipeResponse {
 
 	resp := &RecipeResponse{
 		ID:              fmt.Sprintf("%d", r.ID),
-		Title:           r.Title,
+		Title:           effectiveDef.Title,
 		OwnerID:         fmt.Sprintf("%d", r.CreatedByID),
 		ImageURL:        r.ImageURL,
-		Ingredients:     r.Ingredients,
-		Instructions:    r.Instructions,
+		Ingredients:     effectiveDef.Ingredients,
+		Instructions:    effectiveDef.Instructions,
 		Tags:            tags,
-		CookTimeMinutes: r.CookTime,
-		SourceURL:       r.SourceURL,
+		CookTimeMinutes: effectiveDef.CookTime,
+		SourceURL:       effectiveDef.SourceURL,
 		CreatedAt:       r.CreatedAt.Format("2006-01-02T15:04:05Z"),
 		UpdatedAt:       r.UpdatedAt.Format("2006-01-02T15:04:05Z"),
 		ParentRecipeID:  parentRecipeID,

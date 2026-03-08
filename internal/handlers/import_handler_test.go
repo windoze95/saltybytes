@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/windoze95/saltybytes-api/internal/ai"
 	"github.com/windoze95/saltybytes-api/internal/config"
+	"github.com/windoze95/saltybytes-api/internal/models"
 	"github.com/windoze95/saltybytes-api/internal/service"
 	"github.com/windoze95/saltybytes-api/internal/testutil"
 )
@@ -110,6 +112,64 @@ func TestImportManual_Handler_MissingTitle(t *testing.T) {
 		"instructions": ["Mix"]
 	}`
 	req := httptest.NewRequest("POST", "/recipes/import/manual", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusBadRequest)
+	}
+}
+
+func TestImportFromCanonical_Handler_Success(t *testing.T) {
+	repo := testutil.NewMockRecipeRepo()
+	canonical := testutil.TestCanonicalRecipe()
+
+	canonicalRepo := &testutil.MockCanonicalRecipeRepo{
+		GetByIDFunc: func(id uint) (*models.CanonicalRecipe, error) {
+			if id == canonical.ID {
+				return canonical, nil
+			}
+			return nil, fmt.Errorf("not found")
+		},
+	}
+
+	importSvc := newImportService(repo, nil)
+	importSvc.CanonicalRepo = canonicalRepo
+	handler := NewImportHandler(importSvc)
+
+	user := testutil.TestUser()
+	r := gin.New()
+	r.POST("/recipes/import/canonical", setUser(user), handler.ImportFromCanonical)
+
+	body := fmt.Sprintf(`{"canonical_id": %d}`, canonical.ID)
+	req := httptest.NewRequest("POST", "/recipes/import/canonical", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d. body: %s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	var resp map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp["recipe"] == nil {
+		t.Error("response should contain 'recipe' field")
+	}
+}
+
+func TestImportFromCanonical_Handler_MissingID(t *testing.T) {
+	repo := testutil.NewMockRecipeRepo()
+	importSvc := newImportService(repo, nil)
+	handler := NewImportHandler(importSvc)
+
+	user := testutil.TestUser()
+	r := gin.New()
+	r.POST("/recipes/import/canonical", setUser(user), handler.ImportFromCanonical)
+
+	body := `{}`
+	req := httptest.NewRequest("POST", "/recipes/import/canonical", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)

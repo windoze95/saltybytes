@@ -217,12 +217,47 @@ func (h *ImportHandler) PreviewFromURL(c *gin.Context) {
 	}
 
 	unitSystem := user.Personalization.GetUnitSystemText()
-	recipeDef, err := h.Service.PreviewFromURL(c.Request.Context(), url, unitSystem)
+	recipeDef, canonicalID, err := h.Service.PreviewFromURL(c.Request.Context(), url, unitSystem)
 	if err != nil {
 		logger.Get().Error("failed to preview recipe from URL", zap.String("url", url), zap.Error(err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to preview recipe from URL"})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"recipe": recipeDef})
+	response := gin.H{"recipe": recipeDef}
+	if canonicalID != nil {
+		response["canonical_id"] = *canonicalID
+	}
+	c.JSON(http.StatusOK, response)
+}
+
+// ImportFromCanonical handles POST /v1/recipes/import/canonical
+func (h *ImportHandler) ImportFromCanonical(c *gin.Context) {
+	user, err := util.GetUserFromContext(c)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	var request struct {
+		CanonicalID uint `json:"canonical_id" binding:"required"`
+	}
+	if err := c.BindJSON(&request); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request: " + err.Error()})
+		return
+	}
+
+	if request.CanonicalID == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "canonical_id is required"})
+		return
+	}
+
+	recipeResponse, err := h.Service.ImportFromCanonical(c.Request.Context(), request.CanonicalID, user)
+	if err != nil {
+		logger.Get().Error("failed to import recipe from canonical", zap.Uint("canonical_id", request.CanonicalID), zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to import recipe"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"recipe": recipeResponse})
 }

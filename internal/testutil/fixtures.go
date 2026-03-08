@@ -1,6 +1,8 @@
 package testutil
 
 import (
+	"time"
+
 	"github.com/google/uuid"
 	"github.com/lib/pq"
 	"github.com/windoze95/saltybytes-api/internal/ai"
@@ -84,6 +86,58 @@ func TestRecipe() *models.Recipe {
 				},
 			},
 		},
+	}
+}
+
+// TestCanonicalRecipe creates a test CanonicalRecipe with realistic fields.
+func TestCanonicalRecipe() *models.CanonicalRecipe {
+	now := time.Now()
+	return &models.CanonicalRecipe{
+		Model:            gorm.Model{ID: 100},
+		NormalizedURL:    "https://example.com/classic-pancakes",
+		OriginalURL:      "https://example.com/classic-pancakes",
+		RecipeData:       TestRecipeDef(),
+		ExtractionMethod: models.ExtractionJSONLD,
+		HitCount:         3,
+		LastAccessedAt:   now,
+		FetchedAt:        now,
+	}
+}
+
+// TestCanonicalLinkedRecipe creates a test Recipe linked to a canonical entry
+// with HasDiverged=false (thin reference).
+func TestCanonicalLinkedRecipe() *models.Recipe {
+	canonical := TestCanonicalRecipe()
+	canonicalID := canonical.ID
+	return &models.Recipe{
+		Model:              gorm.Model{ID: 10},
+		RecipeDef:          models.RecipeDef{Title: "placeholder"},
+		ImageURL:           "https://example.com/pancakes.jpg",
+		CreatedByID:        1,
+		PersonalizationUID: uuid.MustParse("11111111-1111-1111-1111-111111111111"),
+		UnitSystem:         models.USCustomary,
+		CanonicalID:        &canonicalID,
+		Canonical:          canonical,
+		HasDiverged:        false,
+		HistoryID:          10,
+		History: &models.RecipeHistory{
+			Model: gorm.Model{ID: 10},
+		},
+	}
+}
+
+// TestStaleCanonicalRecipe creates a test CanonicalRecipe with FetchedAt older than canonicalTTL.
+func TestStaleCanonicalRecipe() *models.CanonicalRecipe {
+	stale := time.Now().Add(-8 * 24 * time.Hour) // 8 days ago
+	return &models.CanonicalRecipe{
+		Model:            gorm.Model{ID: 101},
+		NormalizedURL:    "https://example.com/classic-pancakes",
+		OriginalURL:      "https://example.com/classic-pancakes",
+		RecipeData:       TestRecipeDef(),
+		ExtractionMethod: models.ExtractionJSONLD,
+		HitCount:         3,
+		LastAccessedAt:   stale,
+		FetchedAt:        stale,
 	}
 }
 
