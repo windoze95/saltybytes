@@ -55,7 +55,7 @@ func (h *ImportHandler) ImportFromURL(c *gin.Context) {
 			status := http.StatusInternalServerError
 			switch extractErr.Code {
 			case "site_blocked", "fetch_failed":
-				status = http.StatusBadGateway
+				status = http.StatusUnprocessableEntity
 			case "not_found":
 				status = http.StatusNotFound
 			}
@@ -240,7 +240,7 @@ func (h *ImportHandler) PreviewFromURL(c *gin.Context) {
 			status := http.StatusInternalServerError
 			switch extractErr.Code {
 			case "site_blocked", "fetch_failed":
-				status = http.StatusBadGateway
+				status = http.StatusUnprocessableEntity
 			case "not_found":
 				status = http.StatusNotFound
 			}

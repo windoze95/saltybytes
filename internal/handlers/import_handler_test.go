@@ -217,8 +217,8 @@ func TestPreviewFromURL_Handler_SiteBlocked(t *testing.T) {
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusBadGateway {
-		t.Errorf("status = %d, want %d. body: %s", w.Code, http.StatusBadGateway, w.Body.String())
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Errorf("status = %d, want %d. body: %s", w.Code, http.StatusUnprocessableEntity, w.Body.String())
 	}
 
 	var resp map[string]interface{}

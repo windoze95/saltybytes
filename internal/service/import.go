@@ -282,6 +282,7 @@ func (s *ImportService) extractFromURL(ctx context.Context, rawURL string) (*mod
 			log.Info("direct fetch blocked, trying firecrawl", zap.Int("status", statusCode))
 			fcHTML, fcErr := s.fetchViaFirecrawl(ctx, rawURL)
 			if fcErr != nil {
+				log.Warn("firecrawl fallback failed", zap.Error(fcErr))
 				return nil, nil, "", &ExtractionError{Code: "site_blocked", Message: "this website blocks automated access"}
 			}
 			html = fcHTML
@@ -317,6 +318,7 @@ func (s *ImportService) extractFromURL(ctx context.Context, rawURL string) (*mod
 			log.Info("direct fetch blocked, trying firecrawl", zap.Int("status", resp.StatusCode))
 			fcHTML, fcErr := s.fetchViaFirecrawl(ctx, rawURL)
 			if fcErr != nil {
+				log.Warn("firecrawl fallback failed", zap.Error(fcErr))
 				return nil, nil, "", &ExtractionError{Code: "site_blocked", Message: "this website blocks automated access"}
 			}
 			html = fcHTML
