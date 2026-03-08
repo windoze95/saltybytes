@@ -185,6 +185,13 @@ func (s *ImportService) ImportFromCanonical(ctx context.Context, canonicalID uin
 	return resp, createErr
 }
 
+// isBotBlockStatus returns true for HTTP status codes that indicate bot protection.
+func isBotBlockStatus(code int) bool {
+	return code == http.StatusPaymentRequired || // 402
+		code == http.StatusForbidden || // 403
+		code == http.StatusServiceUnavailable // 503
+}
+
 // isCloudflareChallenge checks if HTML content is a Cloudflare challenge page.
 func isCloudflareChallenge(body []byte) bool {
 	s := string(body)
@@ -271,7 +278,7 @@ func (s *ImportService) extractFromURL(ctx context.Context, rawURL string) (*mod
 		if statusCode == http.StatusNotFound {
 			return nil, nil, "", &ExtractionError{Code: "not_found", Message: "recipe page not found"}
 		}
-		if statusCode != http.StatusOK || isCloudflareChallenge(body) {
+		if isBotBlockStatus(statusCode) || isCloudflareChallenge(body) {
 			log.Info("direct fetch blocked, trying firecrawl", zap.Int("status", statusCode))
 			fcHTML, fcErr := s.fetchViaFirecrawl(ctx, rawURL)
 			if fcErr != nil {
@@ -279,6 +286,8 @@ func (s *ImportService) extractFromURL(ctx context.Context, rawURL string) (*mod
 			}
 			html = fcHTML
 			usedFirecrawl = true
+		} else if statusCode != http.StatusOK {
+			return nil, nil, "", &ExtractionError{Code: "fetch_failed", Message: fmt.Sprintf("URL returned status %d", statusCode)}
 		} else {
 			html = string(body)
 		}
@@ -304,7 +313,7 @@ func (s *ImportService) extractFromURL(ctx context.Context, rawURL string) (*mod
 			return nil, nil, "", &ExtractionError{Code: "not_found", Message: "recipe page not found"}
 		}
 
-		if resp.StatusCode != http.StatusOK || isCloudflareChallenge(body) {
+		if isBotBlockStatus(resp.StatusCode) || isCloudflareChallenge(body) {
 			log.Info("direct fetch blocked, trying firecrawl", zap.Int("status", resp.StatusCode))
 			fcHTML, fcErr := s.fetchViaFirecrawl(ctx, rawURL)
 			if fcErr != nil {
@@ -312,6 +321,8 @@ func (s *ImportService) extractFromURL(ctx context.Context, rawURL string) (*mod
 			}
 			html = fcHTML
 			usedFirecrawl = true
+		} else if resp.StatusCode != http.StatusOK {
+			return nil, nil, "", &ExtractionError{Code: "fetch_failed", Message: fmt.Sprintf("URL returned status %d", resp.StatusCode)}
 		} else {
 			html = string(body)
 		}

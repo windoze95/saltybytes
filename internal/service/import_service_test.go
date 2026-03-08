@@ -508,6 +508,61 @@ func TestExtractFromURL_CloudflareChallenge(t *testing.T) {
 	}
 }
 
+func TestExtractFromURL_500_NoFirecrawl(t *testing.T) {
+	repo := testutil.NewMockRecipeRepo()
+	svc := newTestImportService(repo, nil, nil)
+	svc.Cfg.EnvVars.FirecrawlAPIKey = "test-key"
+	firecrawlCalled := false
+	svc.HTTPFetchOverride = func(ctx context.Context, url string) ([]byte, int, error) {
+		return []byte("Internal Server Error"), 500, nil
+	}
+	svc.FirecrawlFetchOverride = func(ctx context.Context, url string) (string, error) {
+		firecrawlCalled = true
+		return "", fmt.Errorf("should not be called")
+	}
+
+	_, _, _, err := svc.extractFromURL(context.Background(), "https://example.com/recipe")
+	if err == nil {
+		t.Fatal("expected error on 500")
+	}
+	var extractErr *ExtractionError
+	if !errors.As(err, &extractErr) {
+		t.Fatalf("expected ExtractionError, got %T: %v", err, err)
+	}
+	if extractErr.Code != "fetch_failed" {
+		t.Errorf("code = %q, want 'fetch_failed'", extractErr.Code)
+	}
+	if firecrawlCalled {
+		t.Error("firecrawl should not be called for a 500 response")
+	}
+}
+
+func TestIsBotBlockStatus(t *testing.T) {
+	tests := []struct {
+		code int
+		want bool
+	}{
+		{200, false},
+		{301, false},
+		{400, false},
+		{402, true},
+		{403, true},
+		{404, false},
+		{429, false},
+		{500, false},
+		{502, false},
+		{503, true},
+	}
+	for _, tt := range tests {
+		t.Run(fmt.Sprintf("status_%d", tt.code), func(t *testing.T) {
+			got := isBotBlockStatus(tt.code)
+			if got != tt.want {
+				t.Errorf("isBotBlockStatus(%d) = %v, want %v", tt.code, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestIsCloudflareChallenge(t *testing.T) {
 	tests := []struct {
 		name string
