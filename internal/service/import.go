@@ -632,27 +632,23 @@ func jsonLDToRecipeDef(recipe *jsonLDRecipe) (*models.RecipeDef, error) {
 	}, nil
 }
 
+// Compiled regexes for unit system detection.
+var (
+	// Matches metric units: "250g", "100 mL", "2 kg", "500ml", etc.
+	metricRe = regexp.MustCompile(`(?i)\b\d+\s*(?:g|kg|ml|l)\b|\b(?:gram|kilogram|milliliter|millilitre|liter|litre)s?\b`)
+	// Matches US units: "2 cups", "1 tbsp", "3 oz", etc.
+	usRe = regexp.MustCompile(`(?i)\b(?:cups?|tbsp|tsp|tablespoons?|teaspoons?|fl\s*oz|ounces?|oz|pounds?|lbs?|pints?|quarts?|gallons?)\b`)
+)
+
 // detectUnitSystem scans ingredient strings for US or metric markers.
 func detectUnitSystem(ingredients []string) string {
-	usMarkers := []string{" cup ", " cups ", " tbsp ", " tsp ", " oz ", " lb ", " lbs ",
-		" tablespoon", " teaspoon", " ounce", " pound", " pint", " quart", " gallon"}
-	metricMarkers := []string{" g ", " kg ", " ml ", " mL ", " l ", " L ",
-		" gram", " kilogram", " milliliter", " liter"}
-
 	var usCount, metricCount int
 	for _, ing := range ingredients {
-		lower := " " + strings.ToLower(ing) + " "
-		for _, m := range usMarkers {
-			if strings.Contains(lower, m) {
-				usCount++
-				break
-			}
+		if metricRe.MatchString(ing) {
+			metricCount++
 		}
-		for _, m := range metricMarkers {
-			if strings.Contains(lower, strings.ToLower(m)) {
-				metricCount++
-				break
-			}
+		if usRe.MatchString(ing) {
+			usCount++
 		}
 	}
 

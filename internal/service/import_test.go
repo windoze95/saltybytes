@@ -650,6 +650,30 @@ func TestDetectUnitSystem_Empty(t *testing.T) {
 	}
 }
 
+func TestDetectUnitSystem_CompactMetric(t *testing.T) {
+	ingredients := []string{"250g flour", "100ml milk", "50g sugar"}
+	got := detectUnitSystem(ingredients)
+	if got != "metric" {
+		t.Errorf("detectUnitSystem compact metric = %q, want 'metric'", got)
+	}
+}
+
+func TestDetectUnitSystem_CompactMetricMixedCase(t *testing.T) {
+	ingredients := []string{"250G Flour", "100mL Milk", "2kg Potatoes"}
+	got := detectUnitSystem(ingredients)
+	if got != "metric" {
+		t.Errorf("detectUnitSystem compact metric mixed case = %q, want 'metric'", got)
+	}
+}
+
+func TestDetectUnitSystem_MetricLongForm(t *testing.T) {
+	ingredients := []string{"250 grams flour", "1 liter milk", "500 milliliters water"}
+	got := detectUnitSystem(ingredients)
+	if got != "metric" {
+		t.Errorf("detectUnitSystem metric long form = %q, want 'metric'", got)
+	}
+}
+
 func TestJsonLDToRecipeDef_DetectsUnitSystem(t *testing.T) {
 	recipe := &jsonLDRecipe{
 		Name:         "Metric Recipe",
@@ -663,5 +687,21 @@ func TestJsonLDToRecipeDef_DetectsUnitSystem(t *testing.T) {
 	}
 	if def.UnitSystem != "metric" {
 		t.Errorf("jsonLDToRecipeDef UnitSystem = %q, want 'metric'", def.UnitSystem)
+	}
+}
+
+func TestJsonLDToRecipeDef_DetectsCompactMetric(t *testing.T) {
+	recipe := &jsonLDRecipe{
+		Name:         "European Recipe",
+		Ingredients:  []string{"250g flour", "100ml milk", "50g sugar", "2 eggs"},
+		Instructions: []interface{}{"Mix"},
+	}
+
+	def, err := jsonLDToRecipeDef(recipe)
+	if err != nil {
+		t.Fatalf("jsonLDToRecipeDef compact metric: %v", err)
+	}
+	if def.UnitSystem != "metric" {
+		t.Errorf("jsonLDToRecipeDef compact metric UnitSystem = %q, want 'metric'", def.UnitSystem)
 	}
 }

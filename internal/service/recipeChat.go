@@ -63,10 +63,10 @@ func (s *RecipeService) FinishGenerateRecipe(recipe *models.Recipe, user *models
 			return
 		}
 
-		recipeDef := recipeResultToRecipeDef(result)
-		if recipeDef.UnitSystem == "" {
-			recipeDef.UnitSystem = user.Personalization.UnitSystem.ToDefString()
+		if result.UnitSystem == "" {
+			result.UnitSystem = user.Personalization.UnitSystem.ToDefString()
 		}
+		recipeDef := recipeResultToRecipeDef(result)
 
 		// Goroutine to handle image generation and upload
 		go func(ctx context.Context, imageErrChan chan<- error) {
