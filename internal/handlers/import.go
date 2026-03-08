@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -49,6 +50,18 @@ func (h *ImportHandler) ImportFromURL(c *gin.Context) {
 	recipeResponse, err := h.Service.ImportFromURL(c.Request.Context(), url, user)
 	if err != nil {
 		logger.Get().Error("failed to import recipe from URL", zap.String("url", url), zap.Error(err))
+		var extractErr *service.ExtractionError
+		if errors.As(err, &extractErr) {
+			status := http.StatusInternalServerError
+			switch extractErr.Code {
+			case "site_blocked", "fetch_failed":
+				status = http.StatusBadGateway
+			case "not_found":
+				status = http.StatusNotFound
+			}
+			c.JSON(status, gin.H{"error": extractErr.Message, "code": extractErr.Code})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to import recipe from URL"})
 		return
 	}
@@ -222,6 +235,18 @@ func (h *ImportHandler) PreviewFromURL(c *gin.Context) {
 	recipeDef, canonicalID, err := h.Service.PreviewFromURL(c.Request.Context(), url)
 	if err != nil {
 		logger.Get().Error("failed to preview recipe from URL", zap.String("url", url), zap.Error(err))
+		var extractErr *service.ExtractionError
+		if errors.As(err, &extractErr) {
+			status := http.StatusInternalServerError
+			switch extractErr.Code {
+			case "site_blocked", "fetch_failed":
+				status = http.StatusBadGateway
+			case "not_found":
+				status = http.StatusNotFound
+			}
+			c.JSON(status, gin.H{"error": extractErr.Message, "code": extractErr.Code})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to preview recipe from URL"})
 		return
 	}

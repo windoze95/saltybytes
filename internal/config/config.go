@@ -29,6 +29,7 @@ type EnvVars struct {
 	GoogleSearchKey    string `env:"GOOGLE_SEARCH_KEY" optional:"true"`
 	GoogleSearchCX     string `env:"GOOGLE_SEARCH_CX" optional:"true"`
 	BraveSearchKey     string `env:"BRAVE_SEARCH_KEY" optional:"true"`
+	FirecrawlAPIKey    string `env:"FIRECRAWL_API_KEY" optional:"true"`
 }
 
 // LoadConfig parses environment variables into the Config struct.
