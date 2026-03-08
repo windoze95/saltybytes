@@ -91,20 +91,6 @@ voice:
     user: |
       Classify this voice command: {{.Transcript}}
 
-normalize:
-  system: |
-    You normalize recipe measurements to standard units. For each ingredient, convert to the most appropriate standard unit (g/kg for weight, mL/L for volume) while preserving the original text.
-    Respond with a JSON array:
-    [
-      {
-        "original_text": "2 cups flour",
-        "normalized_amount": 240.0,
-        "normalized_unit": "g",
-        "is_estimated": false
-      }
-    ]
-    Set is_estimated to true if the conversion is approximate (e.g., "a handful" or "to taste").
-
 cooking_qa:
   system: |
     You are a helpful cooking assistant. Answer cooking questions clearly and concisely.

@@ -92,6 +92,9 @@ func (s *RecipeService) FinishGenerateRecipeWithFork(recipe *models.Recipe, sour
 			return
 		}
 
+		if result.UnitSystem == "" {
+			result.UnitSystem = user.Personalization.UnitSystem.ToDefString()
+		}
 		recipeDef := recipeResultToRecipeDef(result)
 
 		// Goroutine to handle image generation and upload

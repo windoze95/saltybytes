@@ -21,7 +21,7 @@ type RecipeDef struct {
 	Portions         int            `json:"portions,omitempty" gorm:"column:portions"`
 	PortionSize      string         `json:"portion_size,omitempty" gorm:"column:portion_size"`
 	SourceURL        string         `json:"source_url,omitempty" gorm:"column:source_url"`
-	// UnitSystem              UnitSystem   `json:"unit_system"`
+	UnitSystem       string         `json:"unit_system,omitempty" gorm:"column:unit_system"`
 }
 
 // Scan is a GORM hook that scans jsonb into a RecipeDef.
@@ -45,13 +45,10 @@ func (j RecipeDef) Value() (driver.Value, error) {
 
 // Ingredient is a struct that represents an ingredient in a recipe.
 type Ingredient struct {
-	Name             string  `json:"name"`
-	Unit             string  `json:"unit"`
-	Amount           float64 `json:"amount"`
-	OriginalText     string  `json:"original_text,omitempty"`
-	NormalizedAmount float64 `json:"normalized_amount,omitempty"`
-	NormalizedUnit   string  `json:"normalized_unit,omitempty"`
-	IsEstimated      bool    `json:"is_estimated,omitempty"`
+	Name         string  `json:"name"`
+	Unit         string  `json:"unit"`
+	Amount       float64 `json:"amount"`
+	OriginalText string  `json:"original_text,omitempty"`
 }
 
 // Ingredients is a slice of Ingredient.

@@ -207,7 +207,7 @@ func (s *ImportService) extractFromURL(ctx context.Context, rawURL string) (*mod
 		return nil, "", fmt.Errorf("no AI text provider configured for fallback extraction")
 	}
 
-	result, err := provider.ExtractRecipeFromText(ctx, html, "US customary")
+	result, err := provider.ExtractRecipeFromText(ctx, html, "preserve source")
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to extract recipe from URL: %w", err)
 	}
@@ -235,6 +235,9 @@ func (s *ImportService) ImportFromPhoto(ctx context.Context, imageData []byte, u
 	}
 
 	recipeDef := aiResultToRecipeDef(result)
+	if recipeDef.UnitSystem == "" {
+		recipeDef.UnitSystem = user.Personalization.UnitSystem.ToDefString()
+	}
 
 	// Create the recipe first to get an ID for S3 upload
 	recipeResponse, recipeID, err := s.createImportedRecipe(ctx, recipeDef, user, models.RecipeTypeImportVision, "", nil)
@@ -275,6 +278,9 @@ func (s *ImportService) ImportFromText(ctx context.Context, text string, user *m
 	}
 
 	recipeDef := aiResultToRecipeDef(result)
+	if recipeDef.UnitSystem == "" {
+		recipeDef.UnitSystem = user.Personalization.UnitSystem.ToDefString()
+	}
 	resp, _, err := s.createImportedRecipe(ctx, recipeDef, user, models.RecipeTypeImportCopypasta, "", nil)
 	return resp, err
 }
@@ -288,7 +294,7 @@ func (s *ImportService) ImportManual(ctx context.Context, recipeDef *models.Reci
 // PreviewFromURL fetches a page and extracts recipe data without saving.
 // When a CanonicalRepo is configured, it checks the cache first and saves
 // extractions for future deduplication. Returns the recipe data and optional canonical ID.
-func (s *ImportService) PreviewFromURL(ctx context.Context, rawURL string, unitSystem string) (*models.RecipeDef, *uint, error) {
+func (s *ImportService) PreviewFromURL(ctx context.Context, rawURL string) (*models.RecipeDef, *uint, error) {
 	log := logger.Get().With(zap.String("source_url", rawURL))
 
 	if err := validateExternalURL(rawURL); err != nil {
@@ -459,13 +465,10 @@ func aiResultToRecipeDef(result *ai.RecipeResult) *models.RecipeDef {
 	ingredients := make(models.Ingredients, len(result.Ingredients))
 	for i, ing := range result.Ingredients {
 		ingredients[i] = models.Ingredient{
-			Name:             ing.Name,
-			Unit:             ing.Unit,
-			Amount:           ing.Amount,
-			OriginalText:     ing.OriginalText,
-			NormalizedAmount: ing.NormalizedAmount,
-			NormalizedUnit:   ing.NormalizedUnit,
-			IsEstimated:      ing.IsEstimated,
+			Name:         ing.Name,
+			Unit:         ing.Unit,
+			Amount:       ing.Amount,
+			OriginalText: ing.OriginalText,
 		}
 	}
 
@@ -480,6 +483,7 @@ func aiResultToRecipeDef(result *ai.RecipeResult) *models.RecipeDef {
 		Portions:          result.Portions,
 		PortionSize:       result.PortionSize,
 		SourceURL:         result.SourceURL,
+		UnitSystem:        result.UnitSystem,
 	}
 }
 
@@ -614,6 +618,8 @@ func jsonLDToRecipeDef(recipe *jsonLDRecipe) (*models.RecipeDef, error) {
 	// Parse keywords into hashtags
 	hashtags := parseKeywords(recipe.Keywords)
 
+	unitSystem := detectUnitSystem(recipe.Ingredients)
+
 	return &models.RecipeDef{
 		Title:        recipe.Name,
 		Ingredients:  ingredients,
@@ -622,7 +628,34 @@ func jsonLDToRecipeDef(recipe *jsonLDRecipe) (*models.RecipeDef, error) {
 		Portions:     portions,
 		Hashtags:     hashtags,
 		ImagePrompt:  fmt.Sprintf("A photo of %s", recipe.Name),
+		UnitSystem:   unitSystem,
 	}, nil
+}
+
+// Compiled regexes for unit system detection.
+var (
+	// Matches metric units: "250g", "100 mL", "2 kg", "500ml", etc.
+	metricRe = regexp.MustCompile(`(?i)\b\d+\s*(?:g|kg|ml|l)\b|\b(?:gram|kilogram|milliliter|millilitre|liter|litre)s?\b`)
+	// Matches US units: "2 cups", "1 tbsp", "3 oz", etc.
+	usRe = regexp.MustCompile(`(?i)\b(?:cups?|tbsp|tsp|tablespoons?|teaspoons?|fl\s*oz|ounces?|oz|pounds?|lbs?|pints?|quarts?|gallons?)\b`)
+)
+
+// detectUnitSystem scans ingredient strings for US or metric markers.
+func detectUnitSystem(ingredients []string) string {
+	var usCount, metricCount int
+	for _, ing := range ingredients {
+		if metricRe.MatchString(ing) {
+			metricCount++
+		}
+		if usRe.MatchString(ing) {
+			usCount++
+		}
+	}
+
+	if metricCount > usCount {
+		return "metric"
+	}
+	return "us_customary"
 }
 
 // parseJSONLDInstructions extracts instruction strings from various JSON-LD formats.

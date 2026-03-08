@@ -9,7 +9,6 @@ type TextProvider interface {
 	ForkRecipe(ctx context.Context, req ForkRequest) (*RecipeResult, error)
 	AnalyzeAllergens(ctx context.Context, req AllergenRequest) (*AllergenResult, error)
 	ClassifyVoiceIntent(ctx context.Context, transcript string) (*VoiceIntent, error)
-	NormalizeMeasurements(ctx context.Context, ingredients []IngredientInput) ([]NormalizedIngredient, error)
 	EstimatePortions(ctx context.Context, recipeDef interface{}) (*PortionEstimate, error)
 	ExtractRecipeFromText(ctx context.Context, text string, unitSystem string) (*RecipeResult, error)
 	CookingQA(ctx context.Context, question string, recipeContext string) (string, error)
@@ -74,17 +73,15 @@ type RecipeResult struct {
 	Portions          int
 	PortionSize       string
 	SourceURL         string
+	UnitSystem        string
 }
 
 // IngredientResult is a single ingredient in the recipe output.
 type IngredientResult struct {
-	Name             string
-	Unit             string
-	Amount           float64
-	OriginalText     string
-	NormalizedAmount float64
-	NormalizedUnit   string
-	IsEstimated      bool
+	Name         string
+	Unit         string
+	Amount       float64
+	OriginalText string
 }
 
 // IngredientInput is an ingredient supplied by the caller.
@@ -92,14 +89,6 @@ type IngredientInput struct {
 	Name   string
 	Unit   string
 	Amount float64
-}
-
-// NormalizedIngredient is the result of measurement normalisation.
-type NormalizedIngredient struct {
-	OriginalText     string
-	NormalizedAmount float64
-	NormalizedUnit   string
-	IsEstimated      bool
 }
 
 // AllergenRequest holds parameters for allergen analysis.

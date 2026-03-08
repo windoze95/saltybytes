@@ -21,7 +21,6 @@ type MockTextProvider struct {
 	ForkRecipeFunc              func(ctx context.Context, req ai.ForkRequest) (*ai.RecipeResult, error)
 	AnalyzeAllergensFunc        func(ctx context.Context, req ai.AllergenRequest) (*ai.AllergenResult, error)
 	ClassifyVoiceIntentFunc     func(ctx context.Context, transcript string) (*ai.VoiceIntent, error)
-	NormalizeMeasurementsFunc   func(ctx context.Context, ingredients []ai.IngredientInput) ([]ai.NormalizedIngredient, error)
 	EstimatePortionsFunc        func(ctx context.Context, recipeDef interface{}) (*ai.PortionEstimate, error)
 	ExtractRecipeFromTextFunc   func(ctx context.Context, text string, unitSystem string) (*ai.RecipeResult, error)
 	CookingQAFunc               func(ctx context.Context, question string, recipeContext string) (string, error)
@@ -61,13 +60,6 @@ func (m *MockTextProvider) ClassifyVoiceIntent(ctx context.Context, transcript s
 		return m.ClassifyVoiceIntentFunc(ctx, transcript)
 	}
 	return nil, fmt.Errorf("ClassifyVoiceIntent not configured")
-}
-
-func (m *MockTextProvider) NormalizeMeasurements(ctx context.Context, ingredients []ai.IngredientInput) ([]ai.NormalizedIngredient, error) {
-	if m.NormalizeMeasurementsFunc != nil {
-		return m.NormalizeMeasurementsFunc(ctx, ingredients)
-	}
-	return nil, fmt.Errorf("NormalizeMeasurements not configured")
 }
 
 func (m *MockTextProvider) EstimatePortions(ctx context.Context, recipeDef interface{}) (*ai.PortionEstimate, error) {

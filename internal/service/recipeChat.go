@@ -63,6 +63,9 @@ func (s *RecipeService) FinishGenerateRecipe(recipe *models.Recipe, user *models
 			return
 		}
 
+		if result.UnitSystem == "" {
+			result.UnitSystem = user.Personalization.UnitSystem.ToDefString()
+		}
 		recipeDef := recipeResultToRecipeDef(result)
 
 		// Goroutine to handle image generation and upload

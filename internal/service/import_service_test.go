@@ -50,6 +50,30 @@ func TestImportFromText_Success(t *testing.T) {
 	if len(repo.Recipes) != 1 {
 		t.Errorf("ImportFromText recipes in repo = %d, want 1", len(repo.Recipes))
 	}
+	if resp.UnitSystem != "us_customary" {
+		t.Errorf("ImportFromText UnitSystem = %q, want 'us_customary'", resp.UnitSystem)
+	}
+}
+
+func TestImportFromText_MetricUser(t *testing.T) {
+	repo := testutil.NewMockRecipeRepo()
+	mockText := &testutil.MockTextProvider{
+		ExtractRecipeFromTextFunc: func(ctx context.Context, text string, unitSystem string) (*ai.RecipeResult, error) {
+			return testutil.TestRecipeResult(), nil
+		},
+	}
+
+	svc := newTestImportService(repo, mockText, nil)
+	user := testutil.TestUser()
+	user.Personalization.UnitSystem = models.Metric
+
+	resp, err := svc.ImportFromText(context.Background(), "Some recipe text", user)
+	if err != nil {
+		t.Fatalf("ImportFromText error: %v", err)
+	}
+	if resp.UnitSystem != "metric" {
+		t.Errorf("ImportFromText UnitSystem = %q, want 'metric'", resp.UnitSystem)
+	}
 }
 
 func TestImportManual_Success(t *testing.T) {
@@ -167,7 +191,7 @@ func TestPreviewFromURL_CanonicalCacheHit(t *testing.T) {
 	svc := newTestImportService(repo, nil, nil)
 	svc.CanonicalRepo = canonicalRepo
 
-	recipeDef, canonicalID, err := svc.PreviewFromURL(context.Background(), "https://example.com/classic-pancakes", "US customary")
+	recipeDef, canonicalID, err := svc.PreviewFromURL(context.Background(), "https://example.com/classic-pancakes")
 	if err != nil {
 		t.Fatalf("PreviewFromURL error: %v", err)
 	}
@@ -200,7 +224,7 @@ func TestPreviewFromURL_StaleCanonicalSkipped(t *testing.T) {
 
 	// With a stale canonical and no real server to fetch from, this should fail
 	// during extraction — proving the stale cache was skipped.
-	_, _, err := svc.PreviewFromURL(context.Background(), "https://example.com/classic-pancakes", "US customary")
+	_, _, err := svc.PreviewFromURL(context.Background(), "https://example.com/classic-pancakes")
 	if err == nil {
 		t.Fatal("expected error when stale canonical is skipped and extraction fails")
 	}

@@ -58,7 +58,6 @@ type Prompts struct {
 	Recipe           RecipePrompts   `yaml:"recipe"`
 	Allergen         AllergenPrompts `yaml:"allergen"`
 	Voice            VoicePrompts    `yaml:"voice"`
-	Normalize        SinglePrompt    `yaml:"normalize"`
 	CookingQA        SinglePrompt    `yaml:"cooking_qa"`
 	DietaryInterview SinglePrompt    `yaml:"dietary_interview"`
 	Import           ImportPrompts   `yaml:"import"`
