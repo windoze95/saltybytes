@@ -198,3 +198,61 @@ func TestImportURL_Handler_MissingURL(t *testing.T) {
 		t.Errorf("status = %d, want %d", w.Code, http.StatusBadRequest)
 	}
 }
+
+func TestPreviewFromURL_Handler_SiteBlocked(t *testing.T) {
+	repo := testutil.NewMockRecipeRepo()
+	importSvc := newImportService(repo, nil)
+	importSvc.HTTPFetchOverride = func(ctx context.Context, url string) ([]byte, int, error) {
+		return []byte("Forbidden"), 403, nil
+	}
+	handler := NewImportHandler(importSvc)
+
+	user := testutil.TestUser()
+	r := gin.New()
+	r.POST("/recipes/preview/url", setUser(user), handler.PreviewFromURL)
+
+	body := `{"url": "https://example.com/recipe"}`
+	req := httptest.NewRequest("POST", "/recipes/preview/url", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadGateway {
+		t.Errorf("status = %d, want %d. body: %s", w.Code, http.StatusBadGateway, w.Body.String())
+	}
+
+	var resp map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp["code"] != "site_blocked" {
+		t.Errorf("code = %v, want 'site_blocked'", resp["code"])
+	}
+}
+
+func TestPreviewFromURL_Handler_NotFound(t *testing.T) {
+	repo := testutil.NewMockRecipeRepo()
+	importSvc := newImportService(repo, nil)
+	importSvc.HTTPFetchOverride = func(ctx context.Context, url string) ([]byte, int, error) {
+		return []byte("Not Found"), 404, nil
+	}
+	handler := NewImportHandler(importSvc)
+
+	user := testutil.TestUser()
+	r := gin.New()
+	r.POST("/recipes/preview/url", setUser(user), handler.PreviewFromURL)
+
+	body := `{"url": "https://example.com/missing-recipe"}`
+	req := httptest.NewRequest("POST", "/recipes/preview/url", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want %d. body: %s", w.Code, http.StatusNotFound, w.Body.String())
+	}
+
+	var resp map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp["code"] != "not_found" {
+		t.Errorf("code = %v, want 'not_found'", resp["code"])
+	}
+}

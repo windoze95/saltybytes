@@ -21,6 +21,19 @@ import (
 	"go.uber.org/zap"
 )
 
+// ExtractionError is a typed error returned by extraction functions.
+// Code is a machine-readable identifier for the failure reason.
+type ExtractionError struct {
+	Code    string // e.g. "site_blocked", "not_found", "extraction_failed"
+	Message string
+}
+
+func (e *ExtractionError) Error() string {
+	return e.Message
+}
+
+const defaultUserAgent = "Mozilla/5.0 (compatible; SaltyBytesBot/1.0; +https://saltybytes.ai)"
+
 // ImportService handles recipe import from various sources.
 type ImportService struct {
 	Cfg             *config.Config
@@ -30,6 +43,10 @@ type ImportService struct {
 	VisionProvider  ai.VisionProvider
 	PreviewProvider ai.TextProvider
 	CanonicalRepo   repository.CanonicalRecipeRepo
+
+	// Test seams — nil in production, set in tests to bypass real HTTP/Firecrawl calls
+	HTTPFetchOverride      func(ctx context.Context, url string) (body []byte, statusCode int, err error)
+	FirecrawlFetchOverride func(ctx context.Context, url string) (html string, err error)
 }
 
 // NewImportService creates a new ImportService.
@@ -168,35 +185,158 @@ func (s *ImportService) ImportFromCanonical(ctx context.Context, canonicalID uin
 	return resp, createErr
 }
 
+// isBotBlockStatus returns true for HTTP status codes that indicate bot protection.
+func isBotBlockStatus(code int) bool {
+	return code == http.StatusPaymentRequired || // 402
+		code == http.StatusForbidden || // 403
+		code == http.StatusServiceUnavailable // 503
+}
+
+// isCloudflareChallenge checks if HTML content is a Cloudflare challenge page.
+func isCloudflareChallenge(body []byte) bool {
+	s := string(body)
+	return strings.Contains(s, "<title>Just a moment...</title>") ||
+		strings.Contains(s, "challenge-platform")
+}
+
+// fetchViaFirecrawl scrapes a URL using the Firecrawl API as a fallback
+// when direct HTTP fetch is blocked by bot protection.
+func (s *ImportService) fetchViaFirecrawl(ctx context.Context, rawURL string) (string, error) {
+	if s.FirecrawlFetchOverride != nil {
+		return s.FirecrawlFetchOverride(ctx, rawURL)
+	}
+
+	apiKey := s.Cfg.EnvVars.FirecrawlAPIKey
+	if apiKey == "" {
+		return "", fmt.Errorf("firecrawl API key not configured")
+	}
+
+	payload, err := json.Marshal(map[string]interface{}{
+		"url":     rawURL,
+		"formats": []string{"html"},
+	})
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal firecrawl request: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.firecrawl.dev/v1/scrape", strings.NewReader(string(payload)))
+	if err != nil {
+		return "", fmt.Errorf("failed to create firecrawl request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("firecrawl request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 2*1024*1024))
+	if err != nil {
+		return "", fmt.Errorf("failed to read firecrawl response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("firecrawl returned status %d", resp.StatusCode)
+	}
+
+	var result struct {
+		Success bool `json:"success"`
+		Data    struct {
+			HTML string `json:"html"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return "", fmt.Errorf("failed to parse firecrawl response: %w", err)
+	}
+	if !result.Success || result.Data.HTML == "" {
+		return "", fmt.Errorf("firecrawl returned no HTML")
+	}
+
+	return result.Data.HTML, nil
+}
+
 // extractFromURL fetches a URL and extracts recipe data via JSON-LD or AI fallback.
 // Returns the recipe definition, raw hashtag strings, and the extraction method used.
 // Shared by PreviewFromURL, ImportFromURL, and background refresh.
 func (s *ImportService) extractFromURL(ctx context.Context, rawURL string) (*models.RecipeDef, []string, models.ExtractionMethod, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
-	if err != nil {
-		return nil, nil, "", fmt.Errorf("failed to create request: %w", err)
-	}
-	resp, err := safeHTTPClient.Do(req)
-	if err != nil {
-		return nil, nil, "", fmt.Errorf("failed to fetch URL: %w", err)
-	}
-	defer resp.Body.Close()
+	log := logger.Get().With(zap.String("url", rawURL))
 
-	if resp.StatusCode != http.StatusOK {
-		return nil, nil, "", fmt.Errorf("URL returned status %d", resp.StatusCode)
+	// Phase 1: Fetch HTML (with Firecrawl fallback for blocked sites)
+	var html string
+	var usedFirecrawl bool
+
+	if s.HTTPFetchOverride != nil {
+		body, statusCode, err := s.HTTPFetchOverride(ctx, rawURL)
+		if err != nil {
+			return nil, nil, "", &ExtractionError{Code: "fetch_failed", Message: fmt.Sprintf("failed to fetch URL: %v", err)}
+		}
+		if statusCode == http.StatusNotFound {
+			return nil, nil, "", &ExtractionError{Code: "not_found", Message: "recipe page not found"}
+		}
+		if isBotBlockStatus(statusCode) || isCloudflareChallenge(body) {
+			log.Info("direct fetch blocked, trying firecrawl", zap.Int("status", statusCode))
+			fcHTML, fcErr := s.fetchViaFirecrawl(ctx, rawURL)
+			if fcErr != nil {
+				return nil, nil, "", &ExtractionError{Code: "site_blocked", Message: "this website blocks automated access"}
+			}
+			html = fcHTML
+			usedFirecrawl = true
+		} else if statusCode != http.StatusOK {
+			return nil, nil, "", &ExtractionError{Code: "fetch_failed", Message: fmt.Sprintf("URL returned status %d", statusCode)}
+		} else {
+			html = string(body)
+		}
+	} else {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+		if err != nil {
+			return nil, nil, "", &ExtractionError{Code: "fetch_failed", Message: fmt.Sprintf("failed to create request: %v", err)}
+		}
+		req.Header.Set("User-Agent", defaultUserAgent)
+
+		resp, err := safeHTTPClient.Do(req)
+		if err != nil {
+			return nil, nil, "", &ExtractionError{Code: "fetch_failed", Message: fmt.Sprintf("failed to fetch URL: %v", err)}
+		}
+		defer resp.Body.Close()
+
+		body, err := io.ReadAll(io.LimitReader(resp.Body, 2*1024*1024))
+		if err != nil {
+			return nil, nil, "", &ExtractionError{Code: "fetch_failed", Message: fmt.Sprintf("failed to read URL body: %v", err)}
+		}
+
+		if resp.StatusCode == http.StatusNotFound {
+			return nil, nil, "", &ExtractionError{Code: "not_found", Message: "recipe page not found"}
+		}
+
+		if isBotBlockStatus(resp.StatusCode) || isCloudflareChallenge(body) {
+			log.Info("direct fetch blocked, trying firecrawl", zap.Int("status", resp.StatusCode))
+			fcHTML, fcErr := s.fetchViaFirecrawl(ctx, rawURL)
+			if fcErr != nil {
+				return nil, nil, "", &ExtractionError{Code: "site_blocked", Message: "this website blocks automated access"}
+			}
+			html = fcHTML
+			usedFirecrawl = true
+		} else if resp.StatusCode != http.StatusOK {
+			return nil, nil, "", &ExtractionError{Code: "fetch_failed", Message: fmt.Sprintf("URL returned status %d", resp.StatusCode)}
+		} else {
+			html = string(body)
+		}
 	}
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 2*1024*1024))
-	if err != nil {
-		return nil, nil, "", fmt.Errorf("failed to read URL body: %w", err)
-	}
-	html := string(body)
-
-	// Try JSON-LD extraction first (free)
+	// Phase 2: Extract recipe from HTML
 	recipeDef, hashtags, jsonLDErr := extractJSONLD(html)
 	if jsonLDErr == nil && recipeDef != nil {
 		recipeDef.SourceURL = rawURL
-		return recipeDef, hashtags, models.ExtractionJSONLD, nil
+		method := models.ExtractionJSONLD
+		if usedFirecrawl {
+			method = models.ExtractionFirecrawlJSONLD
+		}
+		return recipeDef, hashtags, method, nil
 	}
 
 	// Fall back to AI extraction
@@ -215,7 +355,11 @@ func (s *ImportService) extractFromURL(ctx context.Context, rawURL string) (*mod
 
 	def := recipeResultToRecipeDef(result)
 	def.SourceURL = rawURL
-	return &def, result.Hashtags, models.ExtractionHaiku, nil
+	method := models.ExtractionHaiku
+	if usedFirecrawl {
+		method = models.ExtractionFirecrawlHaiku
+	}
+	return &def, result.Hashtags, method, nil
 }
 
 // ImportFromPhoto sends an image to the VisionProvider for recipe extraction.

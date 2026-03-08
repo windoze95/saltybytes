@@ -10,8 +10,10 @@ import (
 type ExtractionMethod string
 
 const (
-	ExtractionJSONLD ExtractionMethod = "json_ld"
-	ExtractionHaiku  ExtractionMethod = "haiku"
+	ExtractionJSONLD          ExtractionMethod = "json_ld"
+	ExtractionHaiku           ExtractionMethod = "haiku"
+	ExtractionFirecrawlJSONLD ExtractionMethod = "firecrawl_json_ld"
+	ExtractionFirecrawlHaiku  ExtractionMethod = "firecrawl_haiku"
 )
 
 // CanonicalRecipe is the URL-keyed master copy of an extracted recipe.
