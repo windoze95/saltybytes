@@ -4,7 +4,7 @@ Backend for [SaltyBytes](https://saltybytes.ai) — a recipe app for iOS and And
 
 Built with Go, Gin, PostgreSQL + pgvector, and Claude AI.
 
-> **See also:** [saltybytes-app](https://github.com/windoze95/saltybytes-app) — the Flutter iOS client.
+> **See also:** [saltybytes-app](https://github.com/windoze95/saltybytes-app) — the Flutter iOS client | [saltybytes-dashboard](https://github.com/windoze95/saltybytes-dashboard) — the operational metrics dashboard.
 
 ## Features
 
