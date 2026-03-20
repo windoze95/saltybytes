@@ -193,4 +193,7 @@ The Dockerfile uses a multi-stage build (Go 1.24 builder → distroless runtime)
 
 ## License
 
-Licensed under the [Business Source License 1.1](LICENSE). You may use, modify, and contribute to this code, but you may not offer it as a competing commercial product. The license converts to Apache 2.0 on the change date specified in the LICENSE file.
+This project is dual-licensed:
+
+- **Open Source**: [GNU Affero General Public License v3.0 (AGPL-3.0)](LICENSE) — you are free to use, modify, and distribute this software, provided that any derivative work or network service built with it is also released under the AGPL-3.0.
+- **Commercial**: If you wish to use this software in proprietary/closed-source applications without the AGPL-3.0 obligations, a commercial license is available. Contact the maintainer for details.
