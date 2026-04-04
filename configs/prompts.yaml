@@ -6,6 +6,10 @@ recipe:
       For EVERY ingredient, you must ALSO provide the metric equivalent in the metric_unit and metric_amount fields.
       Use accurate cooking-specific conversions (e.g., 1 cup all-purpose flour = 120g, 1 cup granulated sugar = 200g, 1 cup butter = 227g, 1 cup water/milk = 240mL).
       If the primary unit system is already Metric, duplicate the values into metric_unit and metric_amount.
+      Example of ideal output quality:
+      - recipe_summary should be specific and appealing: "A fragrant 20-minute weeknight curry with fresh Thai basil and coconut milk, naturally gluten-free" — not generic like "A curry recipe"
+      - hashtags should be specific and varied: ["thaiGreenCurry", "weeknightDinner", "coconutMilk", "freshBasil", "glutenFree", "dairyFree", "20MinuteMeal", "spicyFood", "southeastAsian", "onePotMeal"] — not generic like ["curry", "dinner", "food"]
+      - linked_recipe_suggestions should be actionable: ["Homemade Coconut Milk", "Jasmine Rice", "Thai Mango Sticky Rice"] — not vague like ["Side dish", "Dessert"]
       {{if .Requirements}}The user has the following dietary requirements and preferences: {{.Requirements}}{{end}}
     user: |
       Create a recipe for {{.Prompt}}
@@ -31,9 +35,9 @@ recipe:
       {{.Prompt}}
   summarize:
     recipe: |
-      Summarize this recipe in 1-2 sentences. Focus on the key ingredients and cooking method. Be concise.
+      Summarize this recipe in 1-2 sentences. Include the cuisine type, approximate cook time, and what makes it distinctive. Example: "A quick Thai green curry ready in 20 minutes, featuring fresh basil and homemade curry paste for bold, authentic flavor."
     changes: |
-      Summarize the changes made to this recipe in 1-2 sentences. Focus on what was added, removed, or modified. Be concise.
+      Summarize the changes made to this recipe in 1-2 sentences. Focus on what was added, removed, or modified and why it matters. Example: "Swapped butter for olive oil and added roasted garlic, making the dish dairy-free while adding depth of flavor."
   import:
     vision:
       system: |
@@ -42,6 +46,7 @@ recipe:
         For EVERY ingredient, you must ALSO provide the metric equivalent in the metric_unit and metric_amount fields.
         Use accurate cooking-specific conversions (e.g., 1 cup all-purpose flour = 120g, 1 cup granulated sugar = 200g, 1 cup butter = 227g, 1 cup water/milk = 240mL).
         If the primary unit system is already Metric, duplicate the values into metric_unit and metric_amount.
+        If the image shows a prepared dish without a visible recipe, infer the recipe based on the dish's appearance. Estimate ingredient quantities based on visual portion size.
         {{if .Requirements}}The user has the following dietary requirements and preferences: {{.Requirements}}{{end}}
       user: |
         {{.Prompt}}
@@ -58,6 +63,8 @@ recipe:
     url:
       system: |
         You extract structured recipe data from HTML content. Parse the page to identify the title, ingredients with quantities and units, step-by-step instructions, and estimated cook time. Ignore ads, navigation, and non-recipe content.
+        When quantities are missing, use reasonable defaults (e.g., "salt" → "1 pinch salt", "oil for frying" → "2 tbsp oil").
+        When units are ambiguous, prefer the most common cooking interpretation (e.g., "1 tomato" → pieces, not weight).
         You must use the {{.UnitSystem}} unit system for the primary measurements (unit and amount fields).
         For EVERY ingredient, you must ALSO provide the metric equivalent in the metric_unit and metric_amount fields.
         Use accurate cooking-specific conversions (e.g., 1 cup all-purpose flour = 120g, 1 cup granulated sugar = 200g, 1 cup butter = 227g, 1 cup water/milk = 240mL).
@@ -86,6 +93,10 @@ allergen:
         "confidence": 0.9,
         "requires_review": false
       }
+      Example analysis for "all-purpose flour":
+      {"ingredient_name": "all-purpose flour", "common_allergens": ["wheat"], "possible_allergens": [], "sub_ingredients": ["wheat flour", "malted barley flour", "niacin", "reduced iron", "thiamine mononitrate", "riboflavin", "folic acid"], "seed_oil_risk": false, "confidence": 0.98}
+      Example analysis for "vegetable oil":
+      {"ingredient_name": "vegetable oil", "common_allergens": ["soybeans"], "possible_allergens": [], "sub_ingredients": ["soybean oil"], "seed_oil_risk": true, "confidence": 0.85}
     user: |
       Analyze the following ingredients for allergens and seed oil risks:
       {{.Ingredients}}
@@ -106,6 +117,12 @@ voice:
       - "navigate": user wants to go to a specific section
       - "question": user is asking a cooking-related question
       - "ignore": not a valid command or unrelated speech
+      Examples:
+      - "scroll down" → {"type": "scroll_down", "amount": "small", "target": "", "text": ""}
+      - "go to ingredients" → {"type": "navigate", "amount": "", "target": "ingredients", "text": ""}
+      - "how long do I bake this for" → {"type": "question", "amount": "", "target": "", "text": "how long do I bake this for"}
+      - "hey honey what do you want for dinner" → {"type": "ignore", "amount": "", "target": "", "text": ""}
+      - "scroll way down" → {"type": "scroll_down", "amount": "large", "target": "", "text": ""}
     user: |
       Classify this voice command: {{.Transcript}}
 
@@ -135,6 +152,8 @@ import:
   url:
     system: |
       You extract structured recipe data from HTML content. Parse the page to identify the title, ingredients with quantities and units, step-by-step instructions, and estimated cook time. Ignore ads, navigation, and non-recipe content.
+      When quantities are missing, use reasonable defaults (e.g., "salt" → "1 pinch salt", "oil for frying" → "2 tbsp oil").
+      When units are ambiguous, prefer the most common cooking interpretation (e.g., "1 tomato" → pieces, not weight).
       Use the original units from the source text as the primary measurements.
       For EVERY ingredient, also provide the metric equivalent in metric_unit and metric_amount.
       Use accurate cooking-specific conversions (e.g., 1 cup all-purpose flour = 120g, 1 cup granulated sugar = 200g, 1 cup butter = 227g, 1 cup water/milk = 240mL).
