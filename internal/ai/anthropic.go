@@ -28,7 +28,7 @@ type AnthropicProvider struct {
 func NewAnthropicProvider(apiKey string, prompts *config.Prompts) *AnthropicProvider {
 	client := anthropic.NewClient(option.WithAPIKey(apiKey))
 	return &AnthropicProvider{
-		client: client,
+		client:  client,
 		model:   anthropic.ModelClaude3_5Sonnet20241022,
 		prompts: prompts,
 	}
@@ -212,7 +212,7 @@ func newUserMessage(blocks ...anthropic.ContentBlockParamUnion) anthropic.Messag
 // createMessageWithRetry wraps the Claude API call with exponential backoff.
 func (p *AnthropicProvider) createMessageWithRetry(ctx context.Context, params anthropic.MessageNewParams) (*anthropic.Message, error) {
 	const maxRetries = 5
-	var lastErr error
+	var lastErr *AIError
 
 	for i := 0; i < maxRetries; i++ {
 		resp, err := p.client.Messages.New(ctx, params)
@@ -220,18 +220,21 @@ func (p *AnthropicProvider) createMessageWithRetry(ctx context.Context, params a
 			return resp, nil
 		}
 
-		lastErr = err
-		shouldRetry, waitTime := classifyAnthropicError(err)
-		if !shouldRetry {
-			return nil, fmt.Errorf("claude API error: %w", err)
-		}
+		aiErr := classifyAnthropicError(err)
+		lastErr = aiErr
 
-		logger.Get().Warn("claude API error, retrying",
-			zap.Error(err),
+		logger.Get().Warn("AI operation failed",
+			zap.String("kind", aiErr.kindString()),
+			zap.String("detail", aiErr.Detail),
+			zap.Error(aiErr.Err),
 			zap.Int("attempt", i+1),
 		)
 
-		backoff := waitTime * time.Duration(i+1)
+		if !aiErr.Retryable {
+			return nil, aiErr
+		}
+
+		backoff := 2 * time.Second * time.Duration(i+1)
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
@@ -242,22 +245,20 @@ func (p *AnthropicProvider) createMessageWithRetry(ctx context.Context, params a
 	return nil, fmt.Errorf("claude API: exhausted %d retries: %w", maxRetries, lastErr)
 }
 
-// classifyAnthropicError determines whether to retry and the base wait duration.
-func classifyAnthropicError(err error) (shouldRetry bool, waitTime time.Duration) {
+// classifyAnthropicError classifies an API error into the AI failure taxonomy.
+func classifyAnthropicError(err error) *AIError {
 	var apiErr *anthropic.Error
 	if errors.As(err, &apiErr) {
 		switch apiErr.StatusCode {
 		case http.StatusTooManyRequests:
-			return true, 2 * time.Second
+			return NewAIError(FailureTransient, err, "rate limited")
 		case http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable:
-			return true, 2 * time.Second
+			return NewAIError(FailureTransient, err, "server error")
 		case http.StatusUnauthorized:
-			return false, 0
-		default:
-			return false, 0
+			return NewAIError(FailureAuth, err, "unauthorized")
 		}
 	}
-	return false, 0
+	return NewAIError(FailureTransient, err, "unknown API error")
 }
 
 // extractRecipeFromToolUse parses the tool-use content block returned by Claude.
@@ -266,16 +267,16 @@ func extractRecipeFromToolUse(msg *anthropic.Message) (*RecipeResult, error) {
 		if block.Type == "tool_use" {
 			raw, err := json.Marshal(block.Input)
 			if err != nil {
-				return nil, fmt.Errorf("failed to marshal tool input: %w", err)
+				return nil, NewAIError(FailureContentParse, fmt.Errorf("failed to marshal tool input: %w", err), "failed to parse recipe tool result")
 			}
 			var tr recipeToolResult
 			if err := json.Unmarshal(raw, &tr); err != nil {
-				return nil, fmt.Errorf("failed to parse recipe tool result: %w", err)
+				return nil, NewAIError(FailureContentParse, fmt.Errorf("failed to unmarshal recipe: %w", err), "failed to parse recipe tool result")
 			}
 			return toolResultToRecipeResult(&tr), nil
 		}
 	}
-	return nil, errors.New("no tool_use block found in Claude response")
+	return nil, NewAIError(FailureContentEmpty, errors.New("no tool_use block found in Claude response"), "no tool_use block in response")
 }
 
 // extractTextContent returns the concatenated text blocks from a Claude response.
@@ -287,9 +288,42 @@ func extractTextContent(msg *anthropic.Message) (string, error) {
 		}
 	}
 	if text == "" {
-		return "", errors.New("no text content in Claude response")
+		return "", NewAIError(FailureContentEmpty, errors.New("no text content in Claude response"), "no text content in response")
 	}
 	return text, nil
+}
+
+// validateRecipeResult checks that a recipe has minimum required fields.
+func validateRecipeResult(r *RecipeResult) error {
+	if r.Title == "" {
+		return NewAIError(FailureContentQuality, fmt.Errorf("recipe missing title"), "recipe quality check failed")
+	}
+	if len(r.Ingredients) == 0 {
+		return NewAIError(FailureContentQuality, fmt.Errorf("recipe has no ingredients"), "recipe quality check failed")
+	}
+	if len(r.Instructions) == 0 {
+		return NewAIError(FailureContentQuality, fmt.Errorf("recipe has no instructions"), "recipe quality check failed")
+	}
+	return nil
+}
+
+// extractAndValidateRecipe is a helper that extracts a recipe from a tool-use
+// response and validates that it has the minimum required fields.
+func extractAndValidateRecipe(msg *anthropic.Message) (*RecipeResult, error) {
+	result, err := extractRecipeFromToolUse(msg)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateRecipeResult(result); err != nil {
+		aiErr := err.(*AIError)
+		logger.Get().Warn("AI operation failed",
+			zap.String("kind", aiErr.kindString()),
+			zap.String("detail", aiErr.Detail),
+			zap.Error(aiErr.Err),
+		)
+		return nil, err
+	}
+	return result, nil
 }
 
 // --- TextProvider implementation ---
@@ -336,7 +370,7 @@ func (p *AnthropicProvider) GenerateRecipe(ctx context.Context, req RecipeReques
 		return nil, err
 	}
 
-	return extractRecipeFromToolUse(resp)
+	return extractAndValidateRecipe(resp)
 }
 
 // RegenerateRecipe revises an existing recipe based on conversation history.
@@ -382,7 +416,7 @@ func (p *AnthropicProvider) RegenerateRecipe(ctx context.Context, req Regenerate
 		return nil, err
 	}
 
-	return extractRecipeFromToolUse(resp)
+	return extractAndValidateRecipe(resp)
 }
 
 // ForkRecipe creates a new recipe branched from an existing one.
@@ -427,7 +461,7 @@ func (p *AnthropicProvider) ForkRecipe(ctx context.Context, req ForkRequest) (*R
 		return nil, err
 	}
 
-	return extractRecipeFromToolUse(resp)
+	return extractAndValidateRecipe(resp)
 }
 
 // AnalyzeAllergens analyses ingredients for allergen risks.
@@ -594,7 +628,7 @@ func (p *AnthropicProvider) ExtractRecipeFromText(ctx context.Context, text stri
 		return nil, err
 	}
 
-	return extractRecipeFromToolUse(resp)
+	return extractAndValidateRecipe(resp)
 }
 
 // CookingQA answers a cooking question with optional recipe context.
@@ -705,7 +739,7 @@ func (p *AnthropicProvider) ExtractRecipeFromImage(ctx context.Context, imageDat
 		return nil, err
 	}
 
-	return extractRecipeFromToolUse(resp)
+	return extractAndValidateRecipe(resp)
 }
 
 // detectImageMediaType returns the MIME type based on magic bytes.
