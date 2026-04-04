@@ -143,6 +143,171 @@ type ingredientToolRes struct {
 	MetricAmount float64 `json:"metric_amount"`
 }
 
+// analyzeAllergensTool builds the Claude tool definition for allergen analysis.
+func analyzeAllergensTool() anthropic.ToolUnionParam {
+	return anthropic.ToolUnionParam{
+		OfTool: &anthropic.ToolParam{
+			Name:        "analyze_allergens",
+			Description: anthropic.String("Analyze ingredients for allergen risks and return structured results."),
+			InputSchema: anthropic.ToolInputSchemaParam{
+				Type: "object",
+				Properties: map[string]interface{}{
+					"ingredient_analyses": map[string]interface{}{
+						"type":        "array",
+						"description": "Analysis of each ingredient for allergens",
+						"items": map[string]interface{}{
+							"type": "object",
+							"properties": map[string]interface{}{
+								"ingredient_name":    map[string]interface{}{"type": "string", "description": "Name of the ingredient"},
+								"common_allergens":   map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Known common allergens in this ingredient"},
+								"possible_allergens": map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Possible allergens that may be present"},
+								"sub_ingredients":    map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Sub-ingredients that may contain allergens"},
+								"seed_oil_risk":      map[string]interface{}{"type": "boolean", "description": "Whether this ingredient has seed oil risk"},
+								"confidence":         map[string]interface{}{"type": "number", "description": "Confidence score from 0 to 1"},
+							},
+						},
+					},
+					"confidence": map[string]interface{}{
+						"type":        "number",
+						"description": "Overall confidence score from 0 to 1",
+					},
+					"requires_review": map[string]interface{}{
+						"type":        "boolean",
+						"description": "Whether the analysis requires human review",
+					},
+				},
+			},
+		},
+	}
+}
+
+// classifyVoiceIntentTool builds the Claude tool definition for voice intent classification.
+func classifyVoiceIntentTool() anthropic.ToolUnionParam {
+	return anthropic.ToolUnionParam{
+		OfTool: &anthropic.ToolParam{
+			Name:        "classify_voice_intent",
+			Description: anthropic.String("Classify a voice transcript into an app intent."),
+			InputSchema: anthropic.ToolInputSchemaParam{
+				Type: "object",
+				Properties: map[string]interface{}{
+					"type": map[string]interface{}{
+						"type":        "string",
+						"description": "The classified intent type",
+						"enum":        []string{"scroll_up", "scroll_down", "navigate", "question", "ignore"},
+					},
+					"amount": map[string]interface{}{
+						"type":        "string",
+						"description": "Scroll amount",
+						"enum":        []string{"small", "large"},
+					},
+					"target": map[string]interface{}{
+						"type":        "string",
+						"description": "Navigation target section",
+					},
+					"text": map[string]interface{}{
+						"type":        "string",
+						"description": "The question text for question intents",
+					},
+				},
+			},
+		},
+	}
+}
+
+// estimatePortionsTool builds the Claude tool definition for portion estimation.
+func estimatePortionsTool() anthropic.ToolUnionParam {
+	return anthropic.ToolUnionParam{
+		OfTool: &anthropic.ToolParam{
+			Name:        "estimate_portions",
+			Description: anthropic.String("Estimate the number of portions and portion size for a recipe."),
+			InputSchema: anthropic.ToolInputSchemaParam{
+				Type: "object",
+				Properties: map[string]interface{}{
+					"portions": map[string]interface{}{
+						"type":        "integer",
+						"description": "Number of portions this recipe makes",
+					},
+					"portion_size": map[string]interface{}{
+						"type":        "string",
+						"description": "Description of a single portion size",
+					},
+					"confidence": map[string]interface{}{
+						"type":        "number",
+						"description": "Confidence score from 0 to 1",
+					},
+				},
+			},
+		},
+	}
+}
+
+// allergenToolResult is the JSON structure returned by the analyze_allergens tool call.
+type allergenToolResult struct {
+	IngredientAnalyses []ingredientAnalysisToolRes `json:"ingredient_analyses"`
+	Confidence         float64                     `json:"confidence"`
+	RequiresReview     bool                        `json:"requires_review"`
+}
+
+type ingredientAnalysisToolRes struct {
+	IngredientName    string   `json:"ingredient_name"`
+	CommonAllergens   []string `json:"common_allergens"`
+	PossibleAllergens []string `json:"possible_allergens"`
+	SubIngredients    []string `json:"sub_ingredients"`
+	SeedOilRisk       bool     `json:"seed_oil_risk"`
+	Confidence        float64  `json:"confidence"`
+}
+
+// voiceIntentToolResult is the JSON structure returned by the classify_voice_intent tool call.
+type voiceIntentToolResult struct {
+	Type   string `json:"type"`
+	Amount string `json:"amount"`
+	Target string `json:"target"`
+	Text   string `json:"text"`
+}
+
+// portionToolResult is the JSON structure returned by the estimate_portions tool call.
+type portionToolResult struct {
+	Portions    int     `json:"portions"`
+	PortionSize string  `json:"portion_size"`
+	Confidence  float64 `json:"confidence"`
+}
+
+func toolResultToAllergenResult(tr *allergenToolResult) *AllergenResult {
+	analyses := make([]IngredientAnalysisResult, len(tr.IngredientAnalyses))
+	for i, a := range tr.IngredientAnalyses {
+		analyses[i] = IngredientAnalysisResult{
+			IngredientName:    a.IngredientName,
+			CommonAllergens:   a.CommonAllergens,
+			PossibleAllergens: a.PossibleAllergens,
+			SubIngredients:    a.SubIngredients,
+			SeedOilRisk:       a.SeedOilRisk,
+			Confidence:        a.Confidence,
+		}
+	}
+	return &AllergenResult{
+		IngredientAnalyses: analyses,
+		Confidence:         tr.Confidence,
+		RequiresReview:     tr.RequiresReview,
+	}
+}
+
+func toolResultToVoiceIntent(tr *voiceIntentToolResult) *VoiceIntent {
+	return &VoiceIntent{
+		Type:   tr.Type,
+		Amount: tr.Amount,
+		Target: tr.Target,
+		Text:   tr.Text,
+	}
+}
+
+func toolResultToPortionEstimate(tr *portionToolResult) *PortionEstimate {
+	return &PortionEstimate{
+		Portions:    tr.Portions,
+		PortionSize: tr.PortionSize,
+		Confidence:  tr.Confidence,
+	}
+}
+
 func toolResultToRecipeResult(tr *recipeToolResult) *RecipeResult {
 	ingredients := make([]IngredientResult, len(tr.Ingredients))
 	for i, ing := range tr.Ingredients {
@@ -273,6 +438,60 @@ func extractRecipeFromToolUse(msg *anthropic.Message) (*RecipeResult, error) {
 				return nil, fmt.Errorf("failed to parse recipe tool result: %w", err)
 			}
 			return toolResultToRecipeResult(&tr), nil
+		}
+	}
+	return nil, errors.New("no tool_use block found in Claude response")
+}
+
+// extractAllergenFromToolUse parses the tool-use content block for allergen analysis.
+func extractAllergenFromToolUse(msg *anthropic.Message) (*AllergenResult, error) {
+	for _, block := range msg.Content {
+		if block.Type == "tool_use" {
+			raw, err := json.Marshal(block.Input)
+			if err != nil {
+				return nil, fmt.Errorf("failed to marshal tool input: %w", err)
+			}
+			var tr allergenToolResult
+			if err := json.Unmarshal(raw, &tr); err != nil {
+				return nil, fmt.Errorf("failed to parse allergen tool result: %w", err)
+			}
+			return toolResultToAllergenResult(&tr), nil
+		}
+	}
+	return nil, errors.New("no tool_use block found in Claude response")
+}
+
+// extractVoiceIntentFromToolUse parses the tool-use content block for voice intent.
+func extractVoiceIntentFromToolUse(msg *anthropic.Message) (*VoiceIntent, error) {
+	for _, block := range msg.Content {
+		if block.Type == "tool_use" {
+			raw, err := json.Marshal(block.Input)
+			if err != nil {
+				return nil, fmt.Errorf("failed to marshal tool input: %w", err)
+			}
+			var tr voiceIntentToolResult
+			if err := json.Unmarshal(raw, &tr); err != nil {
+				return nil, fmt.Errorf("failed to parse voice intent tool result: %w", err)
+			}
+			return toolResultToVoiceIntent(&tr), nil
+		}
+	}
+	return nil, errors.New("no tool_use block found in Claude response")
+}
+
+// extractPortionFromToolUse parses the tool-use content block for portion estimation.
+func extractPortionFromToolUse(msg *anthropic.Message) (*PortionEstimate, error) {
+	for _, block := range msg.Content {
+		if block.Type == "tool_use" {
+			raw, err := json.Marshal(block.Input)
+			if err != nil {
+				return nil, fmt.Errorf("failed to marshal tool input: %w", err)
+			}
+			var tr portionToolResult
+			if err := json.Unmarshal(raw, &tr); err != nil {
+				return nil, fmt.Errorf("failed to parse portion tool result: %w", err)
+			}
+			return toolResultToPortionEstimate(&tr), nil
 		}
 	}
 	return nil, errors.New("no tool_use block found in Claude response")
@@ -446,6 +665,8 @@ func (p *AnthropicProvider) AnalyzeAllergens(ctx context.Context, req AllergenRe
 		return nil, fmt.Errorf("render user prompt: %w", err)
 	}
 
+	tool := analyzeAllergensTool()
+
 	params := anthropic.MessageNewParams{
 		Model:     p.model,
 		MaxTokens: 4096,
@@ -455,6 +676,12 @@ func (p *AnthropicProvider) AnalyzeAllergens(ctx context.Context, req AllergenRe
 		Messages: []anthropic.MessageParam{
 			newUserMessage(anthropic.NewTextBlock(userPrompt)),
 		},
+		Tools: []anthropic.ToolUnionParam{tool},
+		ToolChoice: anthropic.ToolChoiceUnionParam{
+			OfToolChoiceTool: &anthropic.ToolChoiceToolParam{
+				Name: "analyze_allergens",
+			},
+		},
 	}
 
 	resp, err := p.createMessageWithRetry(ctx, params)
@@ -462,17 +689,7 @@ func (p *AnthropicProvider) AnalyzeAllergens(ctx context.Context, req AllergenRe
 		return nil, err
 	}
 
-	text, err := extractTextContent(resp)
-	if err != nil {
-		return nil, err
-	}
-
-	var result AllergenResult
-	if err := json.Unmarshal([]byte(text), &result); err != nil {
-		return nil, fmt.Errorf("failed to parse allergen response: %w", err)
-	}
-
-	return &result, nil
+	return extractAllergenFromToolUse(resp)
 }
 
 // ClassifyVoiceIntent classifies a voice transcript into an app intent.
@@ -481,6 +698,8 @@ func (p *AnthropicProvider) ClassifyVoiceIntent(ctx context.Context, transcript 
 	if err != nil {
 		return nil, fmt.Errorf("render system prompt: %w", err)
 	}
+
+	tool := classifyVoiceIntentTool()
 
 	params := anthropic.MessageNewParams{
 		Model:     p.model,
@@ -491,6 +710,12 @@ func (p *AnthropicProvider) ClassifyVoiceIntent(ctx context.Context, transcript 
 		Messages: []anthropic.MessageParam{
 			newUserMessage(anthropic.NewTextBlock(transcript)),
 		},
+		Tools: []anthropic.ToolUnionParam{tool},
+		ToolChoice: anthropic.ToolChoiceUnionParam{
+			OfToolChoiceTool: &anthropic.ToolChoiceToolParam{
+				Name: "classify_voice_intent",
+			},
+		},
 	}
 
 	resp, err := p.createMessageWithRetry(ctx, params)
@@ -498,17 +723,7 @@ func (p *AnthropicProvider) ClassifyVoiceIntent(ctx context.Context, transcript 
 		return nil, err
 	}
 
-	text, err := extractTextContent(resp)
-	if err != nil {
-		return nil, err
-	}
-
-	var intent VoiceIntent
-	if err := json.Unmarshal([]byte(text), &intent); err != nil {
-		return nil, fmt.Errorf("failed to parse voice intent: %w", err)
-	}
-
-	return &intent, nil
+	return extractVoiceIntentFromToolUse(resp)
 }
 
 // EstimatePortions estimates portion count and sizes for a recipe.
@@ -518,14 +733,22 @@ func (p *AnthropicProvider) EstimatePortions(ctx context.Context, recipeDef inte
 		return nil, fmt.Errorf("failed to marshal recipe: %w", err)
 	}
 
+	tool := estimatePortionsTool()
+
 	params := anthropic.MessageNewParams{
 		Model:     p.model,
 		MaxTokens: 256,
 		System: []anthropic.TextBlockParam{
-			{Text: "You are a culinary expert. Estimate the number of portions and portion size for the given recipe. Respond with JSON: {\"portions\": <int>, \"portion_size\": \"<string>\", \"confidence\": <float>}"},
+			{Text: "You are a culinary expert. Estimate the number of portions and portion size for the given recipe."},
 		},
 		Messages: []anthropic.MessageParam{
 			newUserMessage(anthropic.NewTextBlock(string(recipeJSON))),
+		},
+		Tools: []anthropic.ToolUnionParam{tool},
+		ToolChoice: anthropic.ToolChoiceUnionParam{
+			OfToolChoiceTool: &anthropic.ToolChoiceToolParam{
+				Name: "estimate_portions",
+			},
 		},
 	}
 
@@ -534,17 +757,7 @@ func (p *AnthropicProvider) EstimatePortions(ctx context.Context, recipeDef inte
 		return nil, err
 	}
 
-	text, err := extractTextContent(resp)
-	if err != nil {
-		return nil, err
-	}
-
-	var estimate PortionEstimate
-	if err := json.Unmarshal([]byte(text), &estimate); err != nil {
-		return nil, fmt.Errorf("failed to parse portion estimate: %w", err)
-	}
-
-	return &estimate, nil
+	return extractPortionFromToolUse(resp)
 }
 
 // ExtractRecipeFromText extracts a structured recipe from free-form text.
