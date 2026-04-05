@@ -11,14 +11,6 @@ import (
 	"go.uber.org/zap"
 )
 
-// ExtractionOutcome records the result of an extraction attempt for a domain.
-type ExtractionOutcome struct {
-	Domain    string
-	Method    models.ExtractionMethod
-	Success   bool
-	Timestamp time.Time
-}
-
 // DomainStats tracks extraction success/failure rates for a domain.
 type DomainStats struct {
 	Domain              string
@@ -36,16 +28,14 @@ type DomainStats struct {
 
 // ImportPolicy tracks per-domain extraction outcomes and recommends strategies.
 type ImportPolicy struct {
-	mu       sync.RWMutex
-	outcomes map[string][]ExtractionOutcome // keyed by domain
-	stats    map[string]*DomainStats        // keyed by domain
+	mu    sync.RWMutex
+	stats map[string]*DomainStats // keyed by domain
 }
 
 // NewImportPolicy creates a new ImportPolicy.
 func NewImportPolicy() *ImportPolicy {
 	return &ImportPolicy{
-		outcomes: make(map[string][]ExtractionOutcome),
-		stats:    make(map[string]*DomainStats),
+		stats: make(map[string]*DomainStats),
 	}
 }
 
@@ -67,19 +57,11 @@ func (p *ImportPolicy) RecordOutcome(rawURL string, method models.ExtractionMeth
 		return
 	}
 
-	outcome := ExtractionOutcome{
-		Domain:    domain,
-		Method:    method,
-		Success:   success,
-		Timestamp: time.Now(),
-	}
+	now := time.Now()
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	p.outcomes[domain] = append(p.outcomes[domain], outcome)
-
-	// Update stats
 	stats, ok := p.stats[domain]
 	if !ok {
 		stats = &DomainStats{Domain: domain}
@@ -87,9 +69,9 @@ func (p *ImportPolicy) RecordOutcome(rawURL string, method models.ExtractionMeth
 	}
 
 	stats.TotalAttempts++
-	stats.LastAttempt = outcome.Timestamp
+	stats.LastAttempt = now
 	if success {
-		stats.LastSuccess = outcome.Timestamp
+		stats.LastSuccess = now
 	}
 
 	switch method {

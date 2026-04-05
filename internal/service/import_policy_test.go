@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/windoze95/saltybytes-api/internal/config"
@@ -236,8 +237,8 @@ func TestExtractFromURL_PolicyRecordsBlocked(t *testing.T) {
 	svc.HTTPFetchOverride = func(ctx context.Context, url string) ([]byte, int, error) {
 		return []byte("Forbidden"), 403, nil
 	}
-	svc.FirecrawlFetchOverride = func(ctx context.Context, url string) (string, error) {
-		return jsonLDHTML(), nil
+	svc.FirecrawlFetchOverride = func(ctx context.Context, url string) (string, int, error) {
+		return jsonLDHTML(), 200, nil
 	}
 
 	_, _, _, err := svc.extractFromURL(context.Background(), "https://blocked.com/recipe")
@@ -272,8 +273,8 @@ func TestExtractFromURL_PolicySkipsDirectFetch(t *testing.T) {
 		directFetchCalled = true
 		return []byte("Forbidden"), 403, nil
 	}
-	svc.FirecrawlFetchOverride = func(ctx context.Context, url string) (string, error) {
-		return jsonLDHTML(), nil
+	svc.FirecrawlFetchOverride = func(ctx context.Context, url string) (string, int, error) {
+		return jsonLDHTML(), 200, nil
 	}
 
 	def, _, method, err := svc.extractFromURL(context.Background(), "https://blocked.com/new-recipe")
@@ -288,6 +289,37 @@ func TestExtractFromURL_PolicySkipsDirectFetch(t *testing.T) {
 	}
 	if method != models.ExtractionFirecrawlJSONLD {
 		t.Errorf("method = %q, want %q", method, models.ExtractionFirecrawlJSONLD)
+	}
+}
+
+func TestExtractFromURL_PolicySkipsDirectFetch_404(t *testing.T) {
+	svc := newPolicyTestService()
+	svc.Cfg.EnvVars.FirecrawlAPIKey = "test-key"
+
+	// Pre-populate policy: 3 blocks + firecrawl success
+	for i := 0; i < 3; i++ {
+		svc.Policy.RecordDirectFetchBlocked("https://blocked.com/recipe")
+	}
+	svc.Policy.RecordOutcome("https://blocked.com/recipe", models.ExtractionFirecrawlJSONLD, true)
+
+	svc.HTTPFetchOverride = func(ctx context.Context, url string) ([]byte, int, error) {
+		t.Error("direct fetch should not be called for known-blocking domain")
+		return nil, 0, nil
+	}
+	svc.FirecrawlFetchOverride = func(ctx context.Context, url string) (string, int, error) {
+		return "<html>Not Found</html>", 404, nil
+	}
+
+	_, _, _, err := svc.extractFromURL(context.Background(), "https://blocked.com/deleted-recipe")
+	if err == nil {
+		t.Fatal("expected error for 404 on skip-direct domain")
+	}
+	var extractErr *ExtractionError
+	if !errors.As(err, &extractErr) {
+		t.Fatalf("expected ExtractionError, got %T: %v", err, err)
+	}
+	if extractErr.Code != "not_found" {
+		t.Errorf("code = %q, want 'not_found'", extractErr.Code)
 	}
 }
 

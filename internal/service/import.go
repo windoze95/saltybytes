@@ -47,7 +47,7 @@ type ImportService struct {
 
 	// Test seams — nil in production, set in tests to bypass real HTTP/Firecrawl calls
 	HTTPFetchOverride      func(ctx context.Context, url string) (body []byte, statusCode int, err error)
-	FirecrawlFetchOverride func(ctx context.Context, url string) (html string, err error)
+	FirecrawlFetchOverride func(ctx context.Context, url string) (html string, statusCode int, err error)
 }
 
 // NewImportService creates a new ImportService.
@@ -203,14 +203,14 @@ func isCloudflareChallenge(body []byte) bool {
 
 // fetchViaFirecrawl scrapes a URL using the Firecrawl API as a fallback
 // when direct HTTP fetch is blocked by bot protection.
-func (s *ImportService) fetchViaFirecrawl(ctx context.Context, rawURL string) (string, error) {
+func (s *ImportService) fetchViaFirecrawl(ctx context.Context, rawURL string) (string, int, error) {
 	if s.FirecrawlFetchOverride != nil {
 		return s.FirecrawlFetchOverride(ctx, rawURL)
 	}
 
 	apiKey := s.Cfg.EnvVars.FirecrawlAPIKey
 	if apiKey == "" {
-		return "", fmt.Errorf("firecrawl API key not configured")
+		return "", 0, fmt.Errorf("firecrawl API key not configured")
 	}
 
 	payload, err := json.Marshal(map[string]interface{}{
@@ -218,7 +218,7 @@ func (s *ImportService) fetchViaFirecrawl(ctx context.Context, rawURL string) (s
 		"formats": []string{"html"},
 	})
 	if err != nil {
-		return "", fmt.Errorf("failed to marshal firecrawl request: %w", err)
+		return "", 0, fmt.Errorf("failed to marshal firecrawl request: %w", err)
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
@@ -226,40 +226,43 @@ func (s *ImportService) fetchViaFirecrawl(ctx context.Context, rawURL string) (s
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.firecrawl.dev/v1/scrape", strings.NewReader(string(payload)))
 	if err != nil {
-		return "", fmt.Errorf("failed to create firecrawl request: %w", err)
+		return "", 0, fmt.Errorf("failed to create firecrawl request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("firecrawl request failed: %w", err)
+		return "", 0, fmt.Errorf("firecrawl request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 2*1024*1024))
 	if err != nil {
-		return "", fmt.Errorf("failed to read firecrawl response: %w", err)
+		return "", 0, fmt.Errorf("failed to read firecrawl response: %w", err)
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("firecrawl returned status %d", resp.StatusCode)
+		return "", 0, fmt.Errorf("firecrawl returned status %d", resp.StatusCode)
 	}
 
 	var result struct {
 		Success bool `json:"success"`
 		Data    struct {
-			HTML string `json:"html"`
+			HTML     string `json:"html"`
+			Metadata struct {
+				StatusCode int `json:"statusCode"`
+			} `json:"metadata"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(respBody, &result); err != nil {
-		return "", fmt.Errorf("failed to parse firecrawl response: %w", err)
+		return "", 0, fmt.Errorf("failed to parse firecrawl response: %w", err)
 	}
 	if !result.Success || result.Data.HTML == "" {
-		return "", fmt.Errorf("firecrawl returned no HTML")
+		return "", 0, fmt.Errorf("firecrawl returned no HTML")
 	}
 
-	return result.Data.HTML, nil
+	return result.Data.HTML, result.Data.Metadata.StatusCode, nil
 }
 
 // extractFromURL fetches a URL and extracts recipe data via JSON-LD or AI fallback.
@@ -277,10 +280,13 @@ func (s *ImportService) extractFromURL(ctx context.Context, rawURL string) (*mod
 
 	if skipDirectFetch {
 		log.Info("skipping direct fetch for known-blocking domain, using firecrawl")
-		fcHTML, fcErr := s.fetchViaFirecrawl(ctx, rawURL)
+		fcHTML, fcStatus, fcErr := s.fetchViaFirecrawl(ctx, rawURL)
 		if fcErr != nil {
 			log.Warn("firecrawl fallback failed for known-blocking domain", zap.Error(fcErr))
 			return nil, nil, "", &ExtractionError{Code: "site_blocked", Message: "this website blocks automated access"}
+		}
+		if fcStatus == http.StatusNotFound {
+			return nil, nil, "", &ExtractionError{Code: "not_found", Message: "recipe page not found"}
 		}
 		html = fcHTML
 		usedFirecrawl = true
@@ -297,7 +303,7 @@ func (s *ImportService) extractFromURL(ctx context.Context, rawURL string) (*mod
 			if s.Policy != nil {
 				s.Policy.RecordDirectFetchBlocked(rawURL)
 			}
-			fcHTML, fcErr := s.fetchViaFirecrawl(ctx, rawURL)
+			fcHTML, _, fcErr := s.fetchViaFirecrawl(ctx, rawURL)
 			if fcErr != nil {
 				log.Warn("firecrawl fallback failed", zap.Error(fcErr))
 				return nil, nil, "", &ExtractionError{Code: "site_blocked", Message: "this website blocks automated access"}
@@ -336,7 +342,7 @@ func (s *ImportService) extractFromURL(ctx context.Context, rawURL string) (*mod
 			if s.Policy != nil {
 				s.Policy.RecordDirectFetchBlocked(rawURL)
 			}
-			fcHTML, fcErr := s.fetchViaFirecrawl(ctx, rawURL)
+			fcHTML, _, fcErr := s.fetchViaFirecrawl(ctx, rawURL)
 			if fcErr != nil {
 				log.Warn("firecrawl fallback failed", zap.Error(fcErr))
 				return nil, nil, "", &ExtractionError{Code: "site_blocked", Message: "this website blocks automated access"}

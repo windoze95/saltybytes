@@ -404,8 +404,8 @@ func TestExtractFromURL_403_FirecrawlSuccess(t *testing.T) {
 	svc.HTTPFetchOverride = func(ctx context.Context, url string) ([]byte, int, error) {
 		return []byte("Forbidden"), 403, nil
 	}
-	svc.FirecrawlFetchOverride = func(ctx context.Context, url string) (string, error) {
-		return jsonLDHTML(), nil
+	svc.FirecrawlFetchOverride = func(ctx context.Context, url string) (string, int, error) {
+		return jsonLDHTML(), 200, nil
 	}
 
 	def, _, method, err := svc.extractFromURL(context.Background(), "https://example.com/recipe")
@@ -427,8 +427,8 @@ func TestExtractFromURL_403_FirecrawlFail(t *testing.T) {
 	svc.HTTPFetchOverride = func(ctx context.Context, url string) ([]byte, int, error) {
 		return []byte("Forbidden"), 403, nil
 	}
-	svc.FirecrawlFetchOverride = func(ctx context.Context, url string) (string, error) {
-		return "", fmt.Errorf("firecrawl error")
+	svc.FirecrawlFetchOverride = func(ctx context.Context, url string) (string, int, error) {
+		return "", 0, fmt.Errorf("firecrawl error")
 	}
 
 	_, _, _, err := svc.extractFromURL(context.Background(), "https://example.com/recipe")
@@ -492,8 +492,8 @@ func TestExtractFromURL_CloudflareChallenge(t *testing.T) {
 	svc.HTTPFetchOverride = func(ctx context.Context, url string) ([]byte, int, error) {
 		return []byte(cloudflareHTML()), 200, nil
 	}
-	svc.FirecrawlFetchOverride = func(ctx context.Context, url string) (string, error) {
-		return jsonLDHTML(), nil
+	svc.FirecrawlFetchOverride = func(ctx context.Context, url string) (string, int, error) {
+		return jsonLDHTML(), 200, nil
 	}
 
 	def, _, method, err := svc.extractFromURL(context.Background(), "https://example.com/recipe")
@@ -516,9 +516,9 @@ func TestExtractFromURL_500_NoFirecrawl(t *testing.T) {
 	svc.HTTPFetchOverride = func(ctx context.Context, url string) ([]byte, int, error) {
 		return []byte("Internal Server Error"), 500, nil
 	}
-	svc.FirecrawlFetchOverride = func(ctx context.Context, url string) (string, error) {
+	svc.FirecrawlFetchOverride = func(ctx context.Context, url string) (string, int, error) {
 		firecrawlCalled = true
-		return "", fmt.Errorf("should not be called")
+		return "", 0, fmt.Errorf("should not be called")
 	}
 
 	_, _, _, err := svc.extractFromURL(context.Background(), "https://example.com/recipe")
