@@ -44,7 +44,7 @@ func staleCacheEntry() *models.SearchCache {
 func TestSearchRecipes_CacheHit(t *testing.T) {
 	searchCalled := false
 	searchProvider := &testutil.MockSearchProvider{
-		SearchRecipesFunc: func(ctx context.Context, query string, count int) ([]ai.SearchResult, error) {
+		SearchRecipesFunc: func(ctx context.Context, query string, count int, offset int) ([]ai.SearchResult, error) {
 			searchCalled = true
 			return testResults(), nil
 		},
@@ -56,7 +56,7 @@ func TestSearchRecipes_CacheHit(t *testing.T) {
 	}
 
 	svc := NewSearchService(&config.Config{}, searchProvider, nil, cacheRepo)
-	result, err := svc.SearchRecipes(context.Background(), "Chicken Parmesan", 10)
+	result, err := svc.SearchRecipes(context.Background(), "Chicken Parmesan", 10, 0)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -74,7 +74,7 @@ func TestSearchRecipes_CacheHit(t *testing.T) {
 func TestSearchRecipes_CacheStale(t *testing.T) {
 	searchCalled := false
 	searchProvider := &testutil.MockSearchProvider{
-		SearchRecipesFunc: func(ctx context.Context, query string, count int) ([]ai.SearchResult, error) {
+		SearchRecipesFunc: func(ctx context.Context, query string, count int, offset int) ([]ai.SearchResult, error) {
 			searchCalled = true
 			return testResults(), nil
 		},
@@ -86,7 +86,7 @@ func TestSearchRecipes_CacheStale(t *testing.T) {
 	}
 
 	svc := NewSearchService(&config.Config{}, searchProvider, nil, cacheRepo)
-	result, err := svc.SearchRecipes(context.Background(), "Chicken Parmesan", 10)
+	result, err := svc.SearchRecipes(context.Background(), "Chicken Parmesan", 10, 0)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -101,7 +101,7 @@ func TestSearchRecipes_CacheStale(t *testing.T) {
 func TestSearchRecipes_CacheMiss(t *testing.T) {
 	searchCalled := false
 	searchProvider := &testutil.MockSearchProvider{
-		SearchRecipesFunc: func(ctx context.Context, query string, count int) ([]ai.SearchResult, error) {
+		SearchRecipesFunc: func(ctx context.Context, query string, count int, offset int) ([]ai.SearchResult, error) {
 			searchCalled = true
 			return testResults(), nil
 		},
@@ -113,7 +113,7 @@ func TestSearchRecipes_CacheMiss(t *testing.T) {
 	}
 
 	svc := NewSearchService(&config.Config{}, searchProvider, nil, cacheRepo)
-	result, err := svc.SearchRecipes(context.Background(), "Chicken Parmesan", 10)
+	result, err := svc.SearchRecipes(context.Background(), "Chicken Parmesan", 10, 0)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -128,14 +128,14 @@ func TestSearchRecipes_CacheMiss(t *testing.T) {
 func TestSearchRecipes_NilCacheRepo(t *testing.T) {
 	searchCalled := false
 	searchProvider := &testutil.MockSearchProvider{
-		SearchRecipesFunc: func(ctx context.Context, query string, count int) ([]ai.SearchResult, error) {
+		SearchRecipesFunc: func(ctx context.Context, query string, count int, offset int) ([]ai.SearchResult, error) {
 			searchCalled = true
 			return testResults(), nil
 		},
 	}
 
 	svc := NewSearchService(&config.Config{}, searchProvider, nil, nil)
-	result, err := svc.SearchRecipes(context.Background(), "Chicken Parmesan", 10)
+	result, err := svc.SearchRecipes(context.Background(), "Chicken Parmesan", 10, 0)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -152,7 +152,7 @@ func TestSearchRecipes_NilCacheRepo(t *testing.T) {
 func TestSearchRecipes_SemanticHit(t *testing.T) {
 	searchCalled := false
 	searchProvider := &testutil.MockSearchProvider{
-		SearchRecipesFunc: func(ctx context.Context, query string, count int) ([]ai.SearchResult, error) {
+		SearchRecipesFunc: func(ctx context.Context, query string, count int, offset int) ([]ai.SearchResult, error) {
 			searchCalled = true
 			return testResults(), nil
 		},
@@ -174,7 +174,7 @@ func TestSearchRecipes_SemanticHit(t *testing.T) {
 	svc := NewSearchService(&config.Config{}, searchProvider, nil, cacheRepo)
 	svc.EmbedProvider = embedProvider
 
-	result, err := svc.SearchRecipes(context.Background(), "chicken parm", 10)
+	result, err := svc.SearchRecipes(context.Background(), "chicken parm", 10, 0)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -189,7 +189,7 @@ func TestSearchRecipes_SemanticHit(t *testing.T) {
 func TestSearchRecipes_SemanticMiss(t *testing.T) {
 	searchCalled := false
 	searchProvider := &testutil.MockSearchProvider{
-		SearchRecipesFunc: func(ctx context.Context, query string, count int) ([]ai.SearchResult, error) {
+		SearchRecipesFunc: func(ctx context.Context, query string, count int, offset int) ([]ai.SearchResult, error) {
 			searchCalled = true
 			return testResults(), nil
 		},
@@ -211,7 +211,7 @@ func TestSearchRecipes_SemanticMiss(t *testing.T) {
 	svc := NewSearchService(&config.Config{}, searchProvider, nil, cacheRepo)
 	svc.EmbedProvider = embedProvider
 
-	result, err := svc.SearchRecipes(context.Background(), "spaghetti bolognese", 10)
+	result, err := svc.SearchRecipes(context.Background(), "spaghetti bolognese", 10, 0)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -226,7 +226,7 @@ func TestSearchRecipes_SemanticMiss(t *testing.T) {
 func TestSearchRecipes_EmbeddingFailure(t *testing.T) {
 	searchCalled := false
 	searchProvider := &testutil.MockSearchProvider{
-		SearchRecipesFunc: func(ctx context.Context, query string, count int) ([]ai.SearchResult, error) {
+		SearchRecipesFunc: func(ctx context.Context, query string, count int, offset int) ([]ai.SearchResult, error) {
 			searchCalled = true
 			return testResults(), nil
 		},
@@ -245,7 +245,7 @@ func TestSearchRecipes_EmbeddingFailure(t *testing.T) {
 	svc := NewSearchService(&config.Config{}, searchProvider, nil, cacheRepo)
 	svc.EmbedProvider = embedProvider
 
-	result, err := svc.SearchRecipes(context.Background(), "chicken parmesan", 10)
+	result, err := svc.SearchRecipes(context.Background(), "chicken parmesan", 10, 0)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -260,7 +260,7 @@ func TestSearchRecipes_EmbeddingFailure(t *testing.T) {
 func TestSearchRecipes_NilEmbedProvider(t *testing.T) {
 	searchCalled := false
 	searchProvider := &testutil.MockSearchProvider{
-		SearchRecipesFunc: func(ctx context.Context, query string, count int) ([]ai.SearchResult, error) {
+		SearchRecipesFunc: func(ctx context.Context, query string, count int, offset int) ([]ai.SearchResult, error) {
 			searchCalled = true
 			return testResults(), nil
 		},
@@ -274,7 +274,7 @@ func TestSearchRecipes_NilEmbedProvider(t *testing.T) {
 	svc := NewSearchService(&config.Config{}, searchProvider, nil, cacheRepo)
 	// EmbedProvider is nil — semantic step should be skipped
 
-	result, err := svc.SearchRecipes(context.Background(), "chicken parmesan", 10)
+	result, err := svc.SearchRecipes(context.Background(), "chicken parmesan", 10, 0)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -283,6 +283,81 @@ func TestSearchRecipes_NilEmbedProvider(t *testing.T) {
 	}
 	if !searchCalled {
 		t.Error("search provider should be called with nil embed provider")
+	}
+}
+
+// --- Pagination / offset tests ---
+
+func TestSearchRecipes_OffsetBypassesCache(t *testing.T) {
+	searchCalled := false
+	var capturedOffset int
+	searchProvider := &testutil.MockSearchProvider{
+		SearchRecipesFunc: func(ctx context.Context, query string, count int, offset int) ([]ai.SearchResult, error) {
+			searchCalled = true
+			capturedOffset = offset
+			return testResults(), nil
+		},
+	}
+	cacheRepo := &testutil.MockSearchCacheRepo{
+		GetByNormalizedQueryFunc: func(query string) (*models.SearchCache, error) {
+			t.Error("cache should not be consulted for offset > 0")
+			return nil, fmt.Errorf("not found")
+		},
+	}
+
+	svc := NewSearchService(&config.Config{}, searchProvider, nil, cacheRepo)
+	result, err := svc.SearchRecipes(context.Background(), "Chicken Parmesan", 10, 10)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.FromCache {
+		t.Error("expected FromCache=false for paginated request")
+	}
+	if !searchCalled {
+		t.Error("search provider should be called for paginated request")
+	}
+	if capturedOffset != 10 {
+		t.Errorf("expected offset=10, got %d", capturedOffset)
+	}
+}
+
+func TestSearchRecipes_HasMoreTrue(t *testing.T) {
+	// Return exactly `count` results → HasMore should be true
+	searchProvider := &testutil.MockSearchProvider{
+		SearchRecipesFunc: func(ctx context.Context, query string, count int, offset int) ([]ai.SearchResult, error) {
+			results := make([]ai.SearchResult, count)
+			for i := range results {
+				results[i] = ai.SearchResult{Title: fmt.Sprintf("Recipe %d", i)}
+			}
+			return results, nil
+		},
+	}
+
+	svc := NewSearchService(&config.Config{}, searchProvider, nil, nil)
+	result, err := svc.SearchRecipes(context.Background(), "chicken", 10, 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.HasMore {
+		t.Error("expected HasMore=true when result count equals requested count")
+	}
+}
+
+func TestSearchRecipes_HasMoreFalse(t *testing.T) {
+	// Return fewer than `count` results → HasMore should be false
+	searchProvider := &testutil.MockSearchProvider{
+		SearchRecipesFunc: func(ctx context.Context, query string, count int, offset int) ([]ai.SearchResult, error) {
+			return []ai.SearchResult{{Title: "Only One"}}, nil
+		},
+	}
+
+	svc := NewSearchService(&config.Config{}, searchProvider, nil, nil)
+	result, err := svc.SearchRecipes(context.Background(), "chicken", 10, 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.HasMore {
+		t.Error("expected HasMore=false when fewer results than requested")
 	}
 }
 
@@ -337,7 +412,7 @@ func TestSearchResultConversion(t *testing.T) {
 func TestRefreshHotQueries(t *testing.T) {
 	searchCalled := 0
 	searchProvider := &testutil.MockSearchProvider{
-		SearchRecipesFunc: func(ctx context.Context, query string, count int) ([]ai.SearchResult, error) {
+		SearchRecipesFunc: func(ctx context.Context, query string, count int, offset int) ([]ai.SearchResult, error) {
 			searchCalled++
 			return testResults(), nil
 		},

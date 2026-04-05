@@ -51,21 +51,34 @@ func (h *SearchHandler) SearchRecipes(c *gin.Context) {
 		}
 	}
 
-	result, err := h.Service.SearchRecipes(c.Request.Context(), query, count)
+	offset := 0
+	if offsetStr := c.Query("offset"); offsetStr != "" {
+		parsed, err := strconv.Atoi(offsetStr)
+		if err != nil || parsed < 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid offset parameter"})
+			return
+		}
+		if parsed > 200 {
+			parsed = 200
+		}
+		offset = parsed
+	}
+
+	result, err := h.Service.SearchRecipes(c.Request.Context(), query, count, offset)
 	if err != nil {
 		logger.Get().Error("failed to search recipes", zap.String("query", query), zap.Error(err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to search recipes"})
 		return
 	}
 
-	// Only increment usage when not served from cache
-	if !result.FromCache && h.Service.SubService != nil {
+	// Only increment usage for fresh searches (not pagination or cache hits)
+	if !result.FromCache && offset == 0 && h.Service.SubService != nil {
 		if err := h.Service.SubService.IncrementUsage(user.ID, "search"); err != nil {
 			logger.Get().Error("failed to increment search usage", zap.Uint("user_id", user.ID), zap.Error(err))
 		}
 	}
 
-	c.JSON(http.StatusOK, gin.H{"results": result.Results})
+	c.JSON(http.StatusOK, gin.H{"results": result.Results, "has_more": result.HasMore})
 }
 
 // ResolveMultiRecipe handles GET /v1/recipes/search/resolve/:multi_id

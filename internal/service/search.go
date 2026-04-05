@@ -20,6 +20,7 @@ const cacheTTL = 24 * time.Hour
 type SearchServiceResult struct {
 	Results   []ai.SearchResult
 	FromCache bool
+	HasMore   bool
 }
 
 // SearchService handles web recipe search with caching.
@@ -42,8 +43,23 @@ func NewSearchService(cfg *config.Config, searchProvider ai.SearchProvider, subS
 }
 
 // SearchRecipes searches for recipes, checking cache first.
-func (s *SearchService) SearchRecipes(ctx context.Context, query string, count int) (*SearchServiceResult, error) {
+// Caching is only used for the first page (offset == 0); subsequent pages
+// go directly to the search provider.
+func (s *SearchService) SearchRecipes(ctx context.Context, query string, count int, offset int) (*SearchServiceResult, error) {
 	normalized := normalizeQuery(query)
+
+	// Paginated requests bypass cache entirely.
+	if offset > 0 {
+		results, err := s.SearchProvider.SearchRecipes(ctx, query, count, offset)
+		if err != nil {
+			return nil, err
+		}
+		return &SearchServiceResult{
+			Results:   results,
+			FromCache: false,
+			HasMore:   len(results) == count,
+		}, nil
+	}
 
 	// Phase 1: exact-match cache lookup
 	if s.CacheRepo != nil {
@@ -54,9 +70,11 @@ func (s *SearchService) SearchRecipes(ctx context.Context, query string, count i
 					logger.Get().Warn("failed to increment cache hit count", zap.Error(err))
 				}
 			}()
+			results := cacheItemsToSearchResults(entry.Results)
 			return &SearchServiceResult{
-				Results:   cacheItemsToSearchResults(entry.Results),
+				Results:   results,
 				FromCache: true,
+				HasMore:   len(results) == count,
 			}, nil
 		}
 	}
@@ -72,9 +90,11 @@ func (s *SearchService) SearchRecipes(ctx context.Context, query string, count i
 						logger.Get().Warn("failed to increment cache hit count", zap.Error(err))
 					}
 				}()
+				results := cacheItemsToSearchResults(similar[0].Results)
 				return &SearchServiceResult{
-					Results:   cacheItemsToSearchResults(similar[0].Results),
+					Results:   results,
 					FromCache: true,
+					HasMore:   len(results) == count,
 				}, nil
 			}
 		} else {
@@ -83,7 +103,7 @@ func (s *SearchService) SearchRecipes(ctx context.Context, query string, count i
 	}
 
 	// Cache miss — call search provider
-	results, err := s.SearchProvider.SearchRecipes(ctx, query, count)
+	results, err := s.SearchProvider.SearchRecipes(ctx, query, count, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -96,6 +116,7 @@ func (s *SearchService) SearchRecipes(ctx context.Context, query string, count i
 	return &SearchServiceResult{
 		Results:   results,
 		FromCache: false,
+		HasMore:   len(results) == count,
 	}, nil
 }
 
@@ -154,7 +175,7 @@ func (s *SearchService) refreshHotQueries() {
 	}
 
 	for _, entry := range entries {
-		results, err := s.SearchProvider.SearchRecipes(context.Background(), entry.NormalizedQuery, entry.ResultCount)
+		results, err := s.SearchProvider.SearchRecipes(context.Background(), entry.NormalizedQuery, entry.ResultCount, 0)
 		if err != nil {
 			logger.Get().Warn("failed to refresh hot query", zap.String("query", entry.NormalizedQuery), zap.Error(err))
 			continue
