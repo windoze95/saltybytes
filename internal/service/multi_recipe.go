@@ -314,12 +314,17 @@ func (r *MultiRecipeResolver) extractAllRecipes(entry *MultiRecipeEntry) {
 	log := logger.Get().With(zap.String("source_url", entry.SourceURL), zap.String("multi_id", entry.ID))
 	log.Info("starting multi-recipe extraction", zap.Int("recipe_count", len(entry.Cards)))
 
+	// Limit concurrent LLM requests to avoid rate limits and cost spikes
+	const maxConcurrent = 3
+	sem := make(chan struct{}, maxConcurrent)
 	var wg sync.WaitGroup
 
 	for i := range entry.Cards {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
+			sem <- struct{}{}        // acquire
+			defer func() { <-sem }() // release
 			r.extractSingleCard(entry, idx)
 		}(i)
 	}
@@ -409,10 +414,10 @@ func (r *MultiRecipeResolver) extractSingleCard(entry *MultiRecipeEntry, idx int
 			}
 			return -1 // drop
 		}, title)
-		// Fallback for non-ASCII titles that produce empty slugs
-		if slug == "" {
-			slug = fmt.Sprintf("card-%d", idx)
-		}
+		// Append card index for collision-proofing — different titles can
+		// collapse to the same slug (punctuation/spacing variants).
+		// Also handles non-ASCII titles that produce empty slugs.
+		slug = fmt.Sprintf("%s-%d", slug, idx)
 		separator := "?"
 		if strings.Contains(sourceURL, "?") {
 			separator = "&"
