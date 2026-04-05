@@ -48,6 +48,10 @@ func SetupRouter(cfg *config.Config, database *gorm.DB) *gin.Engine {
 	textProvider := ai.NewAnthropicProvider(cfg.EnvVars.AnthropicAPIKey, cfg.Prompts)
 	imageProvider := ai.NewDALLEProvider(cfg.EnvVars.OpenAIAPIKey)
 
+	// AI observability middleware
+	aiMW := ai.NewMiddlewareChain(&ai.LoggingMiddleware{})
+	textProvider.WithMiddleware(aiMW)
+
 	// Recipe-related routes setup
 	recipeRepo := repository.NewRecipeRepository(database)
 	vectorRepo := repository.NewVectorRepository(database)
@@ -59,6 +63,7 @@ func SetupRouter(cfg *config.Config, database *gorm.DB) *gin.Engine {
 
 	// Import-related routes setup
 	previewProvider := ai.NewAnthropicLightProvider(cfg.EnvVars.AnthropicAPIKey, cfg.Prompts)
+	previewProvider.WithMiddleware(aiMW)
 	canonicalRepo := repository.NewCanonicalRecipeRepository(database)
 	importService := service.NewImportService(cfg, recipeRepo, recipeService, textProvider, textProvider, previewProvider)
 	importService.CanonicalRepo = canonicalRepo
