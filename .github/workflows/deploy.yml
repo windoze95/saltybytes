@@ -52,6 +52,7 @@ jobs:
         uses: aws-actions/amazon-ecr-login@v2
 
       - name: Build, tag, and push Docker image
+        id: build-image
         run: |
           SHA=${GITHUB_SHA::7}
           docker build --platform linux/amd64 \
@@ -60,6 +61,7 @@ jobs:
             .
           docker push $ECR_REPO:latest
           docker push $ECR_REPO:$SHA
+          echo "image-tag=$SHA" >> "$GITHUB_OUTPUT"
 
       - name: Deploy to ECS
         run: |
@@ -99,3 +101,23 @@ jobs:
 
             sleep 15
           done
+
+      - name: Verify deployed image
+        run: |
+          EXPECTED_TAG="${{ steps.build-image.outputs.image-tag }}"
+          TASK_ARN=$(aws ecs list-tasks \
+            --cluster $ECS_CLUSTER \
+            --service-name $ECS_SERVICE \
+            --query 'taskArns[0]' --output text)
+          RUNNING_IMAGE=$(aws ecs describe-tasks \
+            --cluster $ECS_CLUSTER \
+            --tasks "$TASK_ARN" \
+            --query 'tasks[0].containers[0].image' --output text)
+          echo "Expected tag: $EXPECTED_TAG"
+          echo "Running image: $RUNNING_IMAGE"
+          if echo "$RUNNING_IMAGE" | grep -q "$EXPECTED_TAG"; then
+            echo "Image verification passed."
+          else
+            echo "ERROR: Running image does not match expected tag $EXPECTED_TAG"
+            exit 1
+          fi
