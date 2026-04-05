@@ -298,8 +298,9 @@ func (r *MultiRecipeResolver) ResolveFromURL(ctx context.Context, sourceURL stri
 		return existing
 	}
 
-	// Fetch the page
-	_, _, html, err := r.ImportService.fetchAndExtractWithHTML(ctx, sourceURL)
+	// Fetch only the HTML — skip AI extraction since we only need
+	// the page content for JSON-LD multi-recipe card detection.
+	html, err := r.ImportService.fetchHTML(ctx, sourceURL)
 	if err != nil || html == "" {
 		return nil
 	}

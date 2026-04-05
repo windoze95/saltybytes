@@ -460,8 +460,14 @@ func (s *ImportService) fetchHTML(ctx context.Context, rawURL string) (string, e
 	skipDirectFetch := s.Policy != nil && s.Policy.ShouldSkipDirectFetch(rawURL)
 
 	if skipDirectFetch {
-		html, _, err := s.fetchViaFirecrawl(ctx, rawURL)
-		return html, err
+		html, fcStatus, err := s.fetchViaFirecrawl(ctx, rawURL)
+		if err != nil {
+			return "", &ExtractionError{Code: "site_blocked", Message: "this website blocks automated access"}
+		}
+		if fcStatus == http.StatusNotFound {
+			return "", &ExtractionError{Code: "not_found", Message: "recipe page not found"}
+		}
+		return html, nil
 	}
 
 	if s.HTTPFetchOverride != nil {
@@ -694,8 +700,12 @@ func (s *ImportService) PreviewFromURLWithMultiCheck(ctx context.Context, rawURL
 		}
 	}
 
-	// Check canonical cache first (single-recipe cache hit)
-	if s.CanonicalRepo != nil {
+	// Check canonical cache — but only when multi-recipe detection is
+	// unavailable or the URL has already been checked. Otherwise a
+	// previously-cached listicle URL would always return a single recipe
+	// and never reach multi-recipe detection.
+	canUseCanonicalCache := resolver == nil // no resolver = no multi detection needed
+	if s.CanonicalRepo != nil && canUseCanonicalCache {
 		normalizedURL, normErr := NormalizeURL(rawURL)
 		if normErr == nil {
 			if canonical, err := s.CanonicalRepo.GetByNormalizedURL(normalizedURL); err == nil {
