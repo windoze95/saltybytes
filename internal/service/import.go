@@ -406,26 +406,53 @@ func (s *ImportService) extractFromURL(ctx context.Context, rawURL string) (*mod
 	return &def, result.Hashtags, method, result.PromptVersion, nil
 }
 
-// fetchAndExtractWithHTML is like extractFromURL but also returns the raw HTML.
-// Used by the multi-recipe resolver to inspect the page for additional recipes.
-// If extraction fails but HTML fetch succeeds, the error is cleared so callers
-// can still use the HTML for multi-recipe card detection.
+// fetchAndExtractWithHTML fetches a URL once and returns both the extracted
+// recipe and the raw HTML. Unlike calling extractFromURL + fetchHTML separately,
+// this avoids a double fetch.
 func (s *ImportService) fetchAndExtractWithHTML(ctx context.Context, rawURL string) (*models.RecipeDef, []string, string, error) {
-	recipeDef, hashtags, _, _, extractErr := s.extractFromURL(ctx, rawURL)
-	// We need the HTML too, so re-fetch it. This is acceptable because
-	// the common case (multi-recipe detection) only calls this once per
-	// URL, and the result is cached.
-	html, htmlErr := s.fetchHTML(ctx, rawURL)
-	if htmlErr != nil {
-		// Both failed — return the extraction error
-		if extractErr != nil {
-			return nil, nil, "", extractErr
-		}
-		return recipeDef, hashtags, "", htmlErr
+	html, err := s.fetchHTML(ctx, rawURL)
+	if err != nil {
+		return nil, nil, "", err
 	}
-	// HTML succeeded — return it even if extraction failed, so callers
-	// can detect multi-recipe pages from the HTML.
-	return recipeDef, hashtags, html, nil
+
+	recipeDef, hashtags, method := s.extractRecipeFromHTML(html, rawURL)
+	if recipeDef != nil {
+		if s.Policy != nil {
+			s.Policy.RecordOutcome(rawURL, method, true)
+		}
+		return recipeDef, hashtags, html, nil
+	}
+
+	// JSON-LD failed — try AI extraction
+	provider := s.PreviewProvider
+	if provider == nil {
+		provider = s.TextProvider
+	}
+	if provider == nil {
+		// No AI provider, but we still have HTML for multi-recipe detection
+		return nil, nil, html, nil
+	}
+
+	result, aiErr := provider.ExtractRecipeFromText(ctx, html, "preserve source")
+	if aiErr != nil {
+		// AI extraction failed but HTML is available for card detection
+		return nil, nil, html, nil
+	}
+
+	def := recipeResultToRecipeDef(result)
+	def.SourceURL = rawURL
+	return &def, result.Hashtags, html, nil
+}
+
+// extractRecipeFromHTML attempts JSON-LD extraction from already-fetched HTML.
+// Returns nil recipe if no JSON-LD recipe found.
+func (s *ImportService) extractRecipeFromHTML(html string, rawURL string) (*models.RecipeDef, []string, models.ExtractionMethod) {
+	recipeDef, hashtags, err := extractJSONLD(html)
+	if err != nil || recipeDef == nil {
+		return nil, nil, ""
+	}
+	recipeDef.SourceURL = rawURL
+	return recipeDef, hashtags, models.ExtractionJSONLD
 }
 
 // fetchHTML fetches the raw HTML of a URL, using Firecrawl fallback if needed.
@@ -440,11 +467,23 @@ func (s *ImportService) fetchHTML(ctx context.Context, rawURL string) (string, e
 	if s.HTTPFetchOverride != nil {
 		body, statusCode, err := s.HTTPFetchOverride(ctx, rawURL)
 		if err != nil {
-			return "", err
+			return "", &ExtractionError{Code: "fetch_failed", Message: fmt.Sprintf("failed to fetch URL: %v", err)}
+		}
+		if statusCode == http.StatusNotFound {
+			return "", &ExtractionError{Code: "not_found", Message: "recipe page not found"}
 		}
 		if isBotBlockStatus(statusCode) || isCloudflareChallenge(body) {
+			if s.Policy != nil {
+				s.Policy.RecordDirectFetchBlocked(rawURL)
+			}
 			html, _, err := s.fetchViaFirecrawl(ctx, rawURL)
-			return html, err
+			if err != nil {
+				return "", &ExtractionError{Code: "site_blocked", Message: "this website blocks automated access"}
+			}
+			return html, nil
+		}
+		if statusCode != http.StatusOK {
+			return "", &ExtractionError{Code: "fetch_failed", Message: fmt.Sprintf("URL returned status %d", statusCode)}
 		}
 		return string(body), nil
 	}
@@ -457,18 +496,32 @@ func (s *ImportService) fetchHTML(ctx context.Context, rawURL string) (string, e
 
 	resp, err := safeHTTPClient.Do(req)
 	if err != nil {
-		return "", err
+		return "", &ExtractionError{Code: "fetch_failed", Message: fmt.Sprintf("failed to fetch URL: %v", err)}
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 2*1024*1024))
 	if err != nil {
-		return "", err
+		return "", &ExtractionError{Code: "fetch_failed", Message: fmt.Sprintf("failed to read URL body: %v", err)}
+	}
+
+	if resp.StatusCode == http.StatusNotFound {
+		return "", &ExtractionError{Code: "not_found", Message: "recipe page not found"}
 	}
 
 	if isBotBlockStatus(resp.StatusCode) || isCloudflareChallenge(body) {
-		html, _, err := s.fetchViaFirecrawl(ctx, rawURL)
-		return html, err
+		if s.Policy != nil {
+			s.Policy.RecordDirectFetchBlocked(rawURL)
+		}
+		html, _, fcErr := s.fetchViaFirecrawl(ctx, rawURL)
+		if fcErr != nil {
+			return "", &ExtractionError{Code: "site_blocked", Message: "this website blocks automated access"}
+		}
+		return html, nil
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return "", &ExtractionError{Code: "fetch_failed", Message: fmt.Sprintf("URL returned status %d", resp.StatusCode)}
 	}
 
 	return string(body), nil
@@ -660,19 +713,14 @@ func (s *ImportService) PreviewFromURLWithMultiCheck(ctx context.Context, rawURL
 		}
 	}
 
-	// Fetch HTML and check for multiple recipes
+	// Fetch HTML once and reuse for both multi-recipe detection and extraction
 	html, err := s.fetchHTML(ctx, rawURL)
 	if err != nil {
-		log.Error("failed to fetch page for multi-check", zap.Error(err))
-		// Fall back to normal preview
-		recipeDef, canonicalID, fallbackErr := s.PreviewFromURL(ctx, rawURL)
-		if fallbackErr != nil {
-			return nil, fallbackErr
-		}
-		return &PreviewResult{Recipe: recipeDef, CanonicalID: canonicalID}, nil
+		log.Error("failed to fetch page", zap.Error(err))
+		return nil, err // pass through ExtractionError (not_found, site_blocked, etc.)
 	}
 
-	// Check for multiple JSON-LD recipes
+	// Check for multiple JSON-LD recipes before extracting
 	if resolver != nil {
 		cards := extractAllJSONLDRecipes(html, rawURL)
 		if len(cards) > 1 {
@@ -688,11 +736,48 @@ func (s *ImportService) PreviewFromURLWithMultiCheck(ctx context.Context, rawURL
 		}
 	}
 
-	// Single recipe — use normal extraction flow
-	recipeDef, canonicalID, err := s.PreviewFromURL(ctx, rawURL)
-	if err != nil {
-		return nil, err
+	// Single recipe — extract from the HTML we already fetched
+	recipeDef, _, method := s.extractRecipeFromHTML(html, rawURL)
+	if recipeDef == nil {
+		// JSON-LD failed — try AI extraction from the same HTML
+		provider := s.PreviewProvider
+		if provider == nil {
+			provider = s.TextProvider
+		}
+		if provider == nil {
+			return nil, fmt.Errorf("no AI text provider configured for fallback extraction")
+		}
+		result, aiErr := provider.ExtractRecipeFromText(ctx, html, "preserve source")
+		if aiErr != nil {
+			return nil, fmt.Errorf("failed to extract recipe from URL: %w", aiErr)
+		}
+		def := recipeResultToRecipeDef(result)
+		def.SourceURL = rawURL
+		recipeDef = &def
+		method = models.ExtractionHaiku
 	}
+
+	// Save to canonical cache
+	var canonicalID *uint
+	if s.CanonicalRepo != nil {
+		if normalizedURL, normErr := NormalizeURL(rawURL); normErr == nil {
+			now := time.Now()
+			entry := &models.CanonicalRecipe{
+				NormalizedURL:    normalizedURL,
+				OriginalURL:      rawURL,
+				RecipeData:       *recipeDef,
+				ExtractionMethod: method,
+				FetchedAt:        now,
+				LastAccessedAt:   now,
+			}
+			if upsertErr := s.CanonicalRepo.Upsert(entry); upsertErr == nil {
+				canonicalID = &entry.ID
+			} else {
+				log.Warn("failed to upsert canonical for preview", zap.Error(upsertErr))
+			}
+		}
+	}
+
 	return &PreviewResult{Recipe: recipeDef, CanonicalID: canonicalID}, nil
 }
 

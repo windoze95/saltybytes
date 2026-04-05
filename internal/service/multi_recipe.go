@@ -41,7 +41,14 @@ func (e *MultiRecipeEntry) GetCards() []MultiRecipeCard {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	cards := make([]MultiRecipeCard, len(e.Cards))
-	copy(cards, e.Cards)
+	for i, c := range e.Cards {
+		cards[i] = c
+		// Deep-copy the RecipeDef pointer to avoid races with extractSingleCard
+		if c.RecipeDef != nil {
+			defCopy := *c.RecipeDef
+			cards[i].RecipeDef = &defCopy
+		}
+	}
 	return cards
 }
 
@@ -75,17 +82,28 @@ func (r *MultiRecipeRegistry) evictionLoop() {
 	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
 	for range ticker.C {
-		r.mu.Lock()
+		// Collect candidates under read lock, then delete under write lock.
+		// This avoids holding registry lock while acquiring entry locks.
+		r.mu.RLock()
+		var toEvict []string
 		for url, entry := range r.entries {
 			entry.mu.RLock()
 			status := entry.Status
 			detected := entry.DetectedAt
 			entry.mu.RUnlock()
 			if (status == "resolved" || status == "failed") && time.Since(detected) > registryEvictionTTL {
-				delete(r.entries, url)
+				toEvict = append(toEvict, url)
 			}
 		}
-		r.mu.Unlock()
+		r.mu.RUnlock()
+
+		if len(toEvict) > 0 {
+			r.mu.Lock()
+			for _, url := range toEvict {
+				delete(r.entries, url)
+			}
+			r.mu.Unlock()
+		}
 	}
 }
 
@@ -127,26 +145,6 @@ func (r *MultiRecipeRegistry) Register(sourceURL string) (*MultiRecipeEntry, boo
 	}
 	r.entries[sourceURL] = entry
 	return entry, true
-}
-
-// Compiled patterns for detecting multi-recipe titles.
-var multiRecipePatterns = []*regexp.Regexp{
-	regexp.MustCompile(`(?i)^\d+\s+(?:best|top|easy|quick|healthy|delicious|amazing|favorite|favourite|simple|great)\s+.+(?:recipes?|dishes|meals)`),
-	regexp.MustCompile(`(?i)^(?:best|top)\s+\d+\s+.+(?:recipes?|dishes|meals)`),
-	regexp.MustCompile(`(?i)\d+\s+.+(?:recipes?|dishes|meals)\s+(?:to|for|you|that|of)\b`),
-	regexp.MustCompile(`(?i)^(?:the\s+)?(?:best|top|ultimate|definitive)\s+.+(?:recipes?|dishes|meals)\s+(?:of|for|in)\s+\d{4}`),
-	regexp.MustCompile(`(?i)\d+\s+(?:ways?\s+to\s+(?:cook|make|prepare)|(?:recipes?|dishes|meals)\s+(?:everyone|you))`),
-}
-
-// IsMultiRecipeTitle returns true if the title looks like a multi-recipe listicle.
-func IsMultiRecipeTitle(title string) bool {
-	title = strings.TrimSpace(title)
-	for _, re := range multiRecipePatterns {
-		if re.MatchString(title) {
-			return true
-		}
-	}
-	return false
 }
 
 // extractAllJSONLDRecipes extracts ALL Recipe JSON-LD blocks from HTML,
@@ -301,24 +299,13 @@ func (r *MultiRecipeResolver) ResolveFromURL(ctx context.Context, sourceURL stri
 	}
 
 	// Fetch the page
-	recipeDef, _, html, err := r.ImportService.fetchAndExtractWithHTML(ctx, sourceURL)
+	_, _, html, err := r.ImportService.fetchAndExtractWithHTML(ctx, sourceURL)
 	if err != nil || html == "" {
 		return nil
 	}
 
 	// Check for multiple recipes
-	entry := r.ResolveFromHTML(sourceURL, html)
-	if entry != nil {
-		return entry
-	}
-
-	// Single recipe — cache it in canonical if we got a result
-	if recipeDef != nil {
-		// Not multi-recipe, let normal import flow handle it
-		return nil
-	}
-
-	return nil
+	return r.ResolveFromHTML(sourceURL, html)
 }
 
 // extractAllRecipes runs full extraction for each card in the entry.
@@ -375,8 +362,16 @@ func (r *MultiRecipeResolver) extractSingleCard(entry *MultiRecipeEntry, idx int
 		return
 	}
 
-	// Pass the full page HTML with a constraint to extract only this recipe by title
-	extractionInput := fmt.Sprintf("Extract ONLY the recipe titled %q from the following page. Ignore all other recipes.\n\n%s", title, pageHTML)
+	// Truncate HTML to avoid blowing past Claude's context window.
+	// 100KB is plenty for any single recipe's content on a listicle page.
+	const maxHTMLBytes = 100_000
+	truncatedHTML := pageHTML
+	if len(truncatedHTML) > maxHTMLBytes {
+		truncatedHTML = truncatedHTML[:maxHTMLBytes]
+	}
+
+	// Pass the page HTML with a constraint to extract only this recipe by title
+	extractionInput := fmt.Sprintf("Extract ONLY the recipe titled %q from the following page. Ignore all other recipes.\n\n%s", title, truncatedHTML)
 	result, err := provider.ExtractRecipeFromText(ctx, extractionInput, "preserve source")
 	if err != nil {
 		log.Error("failed to extract individual recipe", zap.Error(err))
