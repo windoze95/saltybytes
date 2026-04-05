@@ -404,6 +404,66 @@ func (s *ImportService) extractFromURL(ctx context.Context, rawURL string) (*mod
 	return &def, result.Hashtags, method, result.PromptVersion, nil
 }
 
+// fetchAndExtractWithHTML is like extractFromURL but also returns the raw HTML.
+// Used by the multi-recipe resolver to inspect the page for additional recipes.
+func (s *ImportService) fetchAndExtractWithHTML(ctx context.Context, rawURL string) (*models.RecipeDef, []string, string, error) {
+	recipeDef, hashtags, _, _, err := s.extractFromURL(ctx, rawURL)
+	// We need the HTML too, so re-fetch it. This is acceptable because
+	// the common case (multi-recipe detection during search) only calls
+	// this once per URL, and the result is cached.
+	html, err2 := s.fetchHTML(ctx, rawURL)
+	if err2 != nil && err != nil {
+		return nil, nil, "", err
+	}
+	return recipeDef, hashtags, html, err
+}
+
+// fetchHTML fetches the raw HTML of a URL, using Firecrawl fallback if needed.
+func (s *ImportService) fetchHTML(ctx context.Context, rawURL string) (string, error) {
+	skipDirectFetch := s.Policy != nil && s.Policy.ShouldSkipDirectFetch(rawURL)
+
+	if skipDirectFetch {
+		html, _, err := s.fetchViaFirecrawl(ctx, rawURL)
+		return html, err
+	}
+
+	if s.HTTPFetchOverride != nil {
+		body, statusCode, err := s.HTTPFetchOverride(ctx, rawURL)
+		if err != nil {
+			return "", err
+		}
+		if isBotBlockStatus(statusCode) || isCloudflareChallenge(body) {
+			html, _, err := s.fetchViaFirecrawl(ctx, rawURL)
+			return html, err
+		}
+		return string(body), nil
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("User-Agent", defaultUserAgent)
+
+	resp, err := safeHTTPClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 2*1024*1024))
+	if err != nil {
+		return "", err
+	}
+
+	if isBotBlockStatus(resp.StatusCode) || isCloudflareChallenge(body) {
+		html, _, err := s.fetchViaFirecrawl(ctx, rawURL)
+		return html, err
+	}
+
+	return string(body), nil
+}
+
 // ImportFromPhoto sends an image to the VisionProvider for recipe extraction.
 func (s *ImportService) ImportFromPhoto(ctx context.Context, imageData []byte, user *models.User) (*RecipeResponse, error) {
 	log := logger.Get().With(zap.Uint("user_id", user.ID))

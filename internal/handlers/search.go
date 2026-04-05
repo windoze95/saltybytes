@@ -3,6 +3,7 @@ package handlers
 import (
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/windoze95/saltybytes-api/internal/logger"
@@ -13,7 +14,8 @@ import (
 
 // SearchHandler handles recipe search requests.
 type SearchHandler struct {
-	Service *service.SearchService
+	Service       *service.SearchService
+	MultiResolver *service.MultiRecipeResolver // nil-safe
 }
 
 // NewSearchHandler creates a new SearchHandler.
@@ -64,4 +66,86 @@ func (h *SearchHandler) SearchRecipes(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"results": result.Results})
+}
+
+// ResolveMultiRecipe handles GET /v1/recipes/search/resolve/:multi_id
+// Returns the current state of a multi-recipe resolution.
+func (h *SearchHandler) ResolveMultiRecipe(c *gin.Context) {
+	if h.MultiResolver == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "multi-recipe resolution not available"})
+		return
+	}
+
+	multiID := c.Param("multi_id")
+	if multiID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "multi_id is required"})
+		return
+	}
+
+	entry := h.MultiResolver.Registry.GetByID(multiID)
+	if entry == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "multi-recipe entry not found"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"multi_id":   entry.ID,
+		"source_url": entry.SourceURL,
+		"status":     entry.GetStatus(),
+		"recipes":    entry.GetCards(),
+	})
+}
+
+// CheckMultiRecipe handles POST /v1/recipes/search/check-multi
+// Late detection: checks if a URL contains multiple recipes.
+// If it does, starts resolution and returns individual cards.
+func (h *SearchHandler) CheckMultiRecipe(c *gin.Context) {
+	if _, err := util.GetUserFromContext(c); err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	if h.MultiResolver == nil {
+		c.JSON(http.StatusOK, gin.H{"is_multi": false})
+		return
+	}
+
+	var request struct {
+		URL string `json:"url" binding:"required"`
+	}
+	if err := c.BindJSON(&request); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request: " + err.Error()})
+		return
+	}
+
+	url := strings.TrimSpace(request.URL)
+	if url == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "URL is required"})
+		return
+	}
+
+	// Check if already tracked
+	if existing := h.MultiResolver.Registry.Get(url); existing != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"is_multi": true,
+			"multi_id": existing.ID,
+			"status":   existing.GetStatus(),
+			"recipes":  existing.GetCards(),
+		})
+		return
+	}
+
+	// Try to resolve — this fetches the page and checks for multiple recipes
+	entry := h.MultiResolver.ResolveFromURL(c.Request.Context(), url)
+	if entry == nil {
+		c.JSON(http.StatusOK, gin.H{"is_multi": false})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"is_multi": true,
+		"multi_id": entry.ID,
+		"status":   entry.GetStatus(),
+		"recipes":  entry.GetCards(),
+	})
 }
