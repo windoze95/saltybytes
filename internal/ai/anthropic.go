@@ -18,9 +18,15 @@ import (
 
 // AnthropicProvider implements TextProvider and VisionProvider using Claude.
 type AnthropicProvider struct {
-	client  anthropic.Client
-	model   anthropic.Model
-	prompts *config.Prompts
+	client     anthropic.Client
+	model      anthropic.Model
+	prompts    *config.Prompts
+	middleware AIMiddleware // nil means no middleware
+}
+
+// WithMiddleware sets the middleware chain for this provider.
+func (p *AnthropicProvider) WithMiddleware(mw AIMiddleware) {
+	p.middleware = mw
 }
 
 // NewAnthropicProvider creates a new AnthropicProvider with the given API key
@@ -569,396 +575,486 @@ func buildCachedSystemPrompt(staticPrefix string, dynamicSuffix string) []anthro
 
 // GenerateRecipe creates a new recipe via Claude tool use.
 func (p *AnthropicProvider) GenerateRecipe(ctx context.Context, req RecipeRequest) (*RecipeResult, error) {
-	sysSuffix, err := config.RenderPrompt(p.prompts.Recipe.Generate.System, map[string]interface{}{
-		"UnitSystem":     req.UnitSystem,
-		"Requirements":   req.Requirements,
-		"CookingContext": req.CookingContext,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("render system prompt: %w", err)
+	op := AIOperation{
+		Name:      "GenerateRecipe",
+		Provider:  "anthropic",
+		Model:     string(p.model),
+		StartTime: time.Now(),
 	}
 
-	userPrompt, err := config.RenderPrompt(p.prompts.Recipe.Generate.User, map[string]interface{}{
-		"Prompt": req.UserPrompt,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("render user prompt: %w", err)
-	}
+	return runWithMiddleware(ctx, p.middleware, op, func(ctx context.Context) (*RecipeResult, error) {
+		sysSuffix, err := config.RenderPrompt(p.prompts.Recipe.Generate.System, map[string]interface{}{
+			"UnitSystem":     req.UnitSystem,
+			"Requirements":   req.Requirements,
+			"CookingContext": req.CookingContext,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("render system prompt: %w", err)
+		}
 
-	summaryDesc := p.prompts.Recipe.Summarize.Recipe
-	tool := createRecipeTool(summaryDesc)
+		userPrompt, err := config.RenderPrompt(p.prompts.Recipe.Generate.User, map[string]interface{}{
+			"Prompt": req.UserPrompt,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("render user prompt: %w", err)
+		}
 
-	params := anthropic.MessageNewParams{
-		Model:     p.model,
-		MaxTokens: 4096,
-		System:    buildCachedSystemPrompt(p.prompts.Recipe.Generate.SystemPrefix, sysSuffix),
-		Messages: []anthropic.MessageParam{
-			newUserMessage(anthropic.NewTextBlock(userPrompt)),
-		},
-		Tools: []anthropic.ToolUnionParam{tool},
-		ToolChoice: anthropic.ToolChoiceUnionParam{
-			OfToolChoiceTool: &anthropic.ToolChoiceToolParam{
-				Name: "create_recipe",
+		summaryDesc := p.prompts.Recipe.Summarize.Recipe
+		tool := createRecipeTool(summaryDesc)
+
+		params := anthropic.MessageNewParams{
+			Model:     p.model,
+			MaxTokens: 4096,
+			System:    buildCachedSystemPrompt(p.prompts.Recipe.Generate.SystemPrefix, sysSuffix),
+			Messages: []anthropic.MessageParam{
+				newUserMessage(anthropic.NewTextBlock(userPrompt)),
 			},
-		},
-	}
+			Tools: []anthropic.ToolUnionParam{tool},
+			ToolChoice: anthropic.ToolChoiceUnionParam{
+				OfToolChoiceTool: &anthropic.ToolChoiceToolParam{
+					Name: "create_recipe",
+				},
+			},
+		}
 
-	resp, err := p.createMessageWithRetry(ctx, params)
-	if err != nil {
-		return nil, err
-	}
+		resp, err := p.createMessageWithRetry(ctx, params)
+		if err != nil {
+			return nil, err
+		}
 
-	return extractAndValidateRecipe(resp)
+		return extractAndValidateRecipe(resp)
+	})
 }
 
 // RegenerateRecipe revises an existing recipe based on conversation history.
 func (p *AnthropicProvider) RegenerateRecipe(ctx context.Context, req RegenerateRequest) (*RecipeResult, error) {
-	sysSuffix, err := config.RenderPrompt(p.prompts.Recipe.Regenerate.System, map[string]interface{}{
-		"UnitSystem":     req.UnitSystem,
-		"Requirements":   req.Requirements,
-		"CookingContext": req.CookingContext,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("render system prompt: %w", err)
+	op := AIOperation{
+		Name:      "RegenerateRecipe",
+		Provider:  "anthropic",
+		Model:     string(p.model),
+		StartTime: time.Now(),
 	}
 
-	summaryDesc := p.prompts.Recipe.Summarize.Changes
-	tool := createRecipeTool(summaryDesc)
+	return runWithMiddleware(ctx, p.middleware, op, func(ctx context.Context) (*RecipeResult, error) {
+		sysSuffix, err := config.RenderPrompt(p.prompts.Recipe.Regenerate.System, map[string]interface{}{
+			"UnitSystem":     req.UnitSystem,
+			"Requirements":   req.Requirements,
+			"CookingContext": req.CookingContext,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("render system prompt: %w", err)
+		}
 
-	// Build message list: existing history + new user prompt
-	_, historyParams := messagesToAnthropicParams(req.ExistingHistory)
-	userPrompt, err := config.RenderPrompt(p.prompts.Recipe.Regenerate.User, map[string]interface{}{
-		"Prompt": req.UserPrompt,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("render user prompt: %w", err)
-	}
-	historyParams = append(historyParams, newUserMessage(anthropic.NewTextBlock(userPrompt)))
+		summaryDesc := p.prompts.Recipe.Summarize.Changes
+		tool := createRecipeTool(summaryDesc)
 
-	params := anthropic.MessageNewParams{
-		Model:     p.model,
-		MaxTokens: 4096,
-		System:    buildCachedSystemPrompt(p.prompts.Recipe.Regenerate.SystemPrefix, sysSuffix),
-		Messages: historyParams,
-		Tools:    []anthropic.ToolUnionParam{tool},
-		ToolChoice: anthropic.ToolChoiceUnionParam{
-			OfToolChoiceTool: &anthropic.ToolChoiceToolParam{
-				Name: "create_recipe",
+		// Build message list: existing history + new user prompt
+		_, historyParams := messagesToAnthropicParams(req.ExistingHistory)
+		userPrompt, err := config.RenderPrompt(p.prompts.Recipe.Regenerate.User, map[string]interface{}{
+			"Prompt": req.UserPrompt,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("render user prompt: %w", err)
+		}
+		historyParams = append(historyParams, newUserMessage(anthropic.NewTextBlock(userPrompt)))
+
+		params := anthropic.MessageNewParams{
+			Model:     p.model,
+			MaxTokens: 4096,
+			System:    buildCachedSystemPrompt(p.prompts.Recipe.Regenerate.SystemPrefix, sysSuffix),
+			Messages:  historyParams,
+			Tools:     []anthropic.ToolUnionParam{tool},
+			ToolChoice: anthropic.ToolChoiceUnionParam{
+				OfToolChoiceTool: &anthropic.ToolChoiceToolParam{
+					Name: "create_recipe",
+				},
 			},
-		},
-	}
+		}
 
-	resp, err := p.createMessageWithRetry(ctx, params)
-	if err != nil {
-		return nil, err
-	}
+		resp, err := p.createMessageWithRetry(ctx, params)
+		if err != nil {
+			return nil, err
+		}
 
-	return extractAndValidateRecipe(resp)
+		return extractAndValidateRecipe(resp)
+	})
 }
 
 // ForkRecipe creates a new recipe branched from an existing one.
 func (p *AnthropicProvider) ForkRecipe(ctx context.Context, req ForkRequest) (*RecipeResult, error) {
-	sysSuffix, err := config.RenderPrompt(p.prompts.Recipe.Fork.System, map[string]interface{}{
-		"UnitSystem":     req.UnitSystem,
-		"Requirements":   req.Requirements,
-		"CookingContext": req.CookingContext,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("render system prompt: %w", err)
+	op := AIOperation{
+		Name:      "ForkRecipe",
+		Provider:  "anthropic",
+		Model:     string(p.model),
+		StartTime: time.Now(),
 	}
 
-	summaryDesc := p.prompts.Recipe.Summarize.Recipe
-	tool := createRecipeTool(summaryDesc)
+	return runWithMiddleware(ctx, p.middleware, op, func(ctx context.Context) (*RecipeResult, error) {
+		sysSuffix, err := config.RenderPrompt(p.prompts.Recipe.Fork.System, map[string]interface{}{
+			"UnitSystem":     req.UnitSystem,
+			"Requirements":   req.Requirements,
+			"CookingContext": req.CookingContext,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("render system prompt: %w", err)
+		}
 
-	_, historyParams := messagesToAnthropicParams(req.ExistingHistory)
-	userPrompt, err := config.RenderPrompt(p.prompts.Recipe.Fork.User, map[string]interface{}{
-		"Prompt": req.UserPrompt,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("render user prompt: %w", err)
-	}
-	historyParams = append(historyParams, newUserMessage(anthropic.NewTextBlock(userPrompt)))
+		summaryDesc := p.prompts.Recipe.Summarize.Recipe
+		tool := createRecipeTool(summaryDesc)
 
-	params := anthropic.MessageNewParams{
-		Model:     p.model,
-		MaxTokens: 4096,
-		System:    buildCachedSystemPrompt(p.prompts.Recipe.Fork.SystemPrefix, sysSuffix),
-		Messages: historyParams,
-		Tools:    []anthropic.ToolUnionParam{tool},
-		ToolChoice: anthropic.ToolChoiceUnionParam{
-			OfToolChoiceTool: &anthropic.ToolChoiceToolParam{
-				Name: "create_recipe",
+		_, historyParams := messagesToAnthropicParams(req.ExistingHistory)
+		userPrompt, err := config.RenderPrompt(p.prompts.Recipe.Fork.User, map[string]interface{}{
+			"Prompt": req.UserPrompt,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("render user prompt: %w", err)
+		}
+		historyParams = append(historyParams, newUserMessage(anthropic.NewTextBlock(userPrompt)))
+
+		params := anthropic.MessageNewParams{
+			Model:     p.model,
+			MaxTokens: 4096,
+			System:    buildCachedSystemPrompt(p.prompts.Recipe.Fork.SystemPrefix, sysSuffix),
+			Messages:  historyParams,
+			Tools:     []anthropic.ToolUnionParam{tool},
+			ToolChoice: anthropic.ToolChoiceUnionParam{
+				OfToolChoiceTool: &anthropic.ToolChoiceToolParam{
+					Name: "create_recipe",
+				},
 			},
-		},
-	}
+		}
 
-	resp, err := p.createMessageWithRetry(ctx, params)
-	if err != nil {
-		return nil, err
-	}
+		resp, err := p.createMessageWithRetry(ctx, params)
+		if err != nil {
+			return nil, err
+		}
 
-	return extractAndValidateRecipe(resp)
+		return extractAndValidateRecipe(resp)
+	})
 }
 
 // AnalyzeAllergens analyses ingredients for allergen risks.
 func (p *AnthropicProvider) AnalyzeAllergens(ctx context.Context, req AllergenRequest) (*AllergenResult, error) {
-	sysPrompt, err := config.RenderPrompt(p.prompts.Allergen.Analyze.System, nil)
-	if err != nil {
-		return nil, fmt.Errorf("render system prompt: %w", err)
+	op := AIOperation{
+		Name:      "AnalyzeAllergens",
+		Provider:  "anthropic",
+		Model:     string(p.model),
+		StartTime: time.Now(),
 	}
 
-	ingredientList, _ := json.Marshal(req.Ingredients)
-	userPrompt, err := config.RenderPrompt(p.prompts.Allergen.Analyze.User, map[string]interface{}{
-		"Ingredients": string(ingredientList),
-		"IsPremium":   req.IsPremium,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("render user prompt: %w", err)
-	}
+	return runWithMiddleware(ctx, p.middleware, op, func(ctx context.Context) (*AllergenResult, error) {
+		sysPrompt, err := config.RenderPrompt(p.prompts.Allergen.Analyze.System, nil)
+		if err != nil {
+			return nil, fmt.Errorf("render system prompt: %w", err)
+		}
 
-	tool := analyzeAllergensTool()
+		ingredientList, _ := json.Marshal(req.Ingredients)
+		userPrompt, err := config.RenderPrompt(p.prompts.Allergen.Analyze.User, map[string]interface{}{
+			"Ingredients": string(ingredientList),
+			"IsPremium":   req.IsPremium,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("render user prompt: %w", err)
+		}
 
-	params := anthropic.MessageNewParams{
-		Model:     p.model,
-		MaxTokens: 4096,
-		System:    buildCachedSystemPrompt(sysPrompt, ""),
-		Messages: []anthropic.MessageParam{
-			newUserMessage(anthropic.NewTextBlock(userPrompt)),
-		},
-		Tools: []anthropic.ToolUnionParam{tool},
-		ToolChoice: anthropic.ToolChoiceUnionParam{
-			OfToolChoiceTool: &anthropic.ToolChoiceToolParam{
-				Name: "analyze_allergens",
+		tool := analyzeAllergensTool()
+
+		params := anthropic.MessageNewParams{
+			Model:     p.model,
+			MaxTokens: 4096,
+			System:    buildCachedSystemPrompt(sysPrompt, ""),
+			Messages: []anthropic.MessageParam{
+				newUserMessage(anthropic.NewTextBlock(userPrompt)),
 			},
-		},
-	}
+			Tools: []anthropic.ToolUnionParam{tool},
+			ToolChoice: anthropic.ToolChoiceUnionParam{
+				OfToolChoiceTool: &anthropic.ToolChoiceToolParam{
+					Name: "analyze_allergens",
+				},
+			},
+		}
 
-	resp, err := p.createMessageWithRetry(ctx, params)
-	if err != nil {
-		return nil, err
-	}
+		resp, err := p.createMessageWithRetry(ctx, params)
+		if err != nil {
+			return nil, err
+		}
 
-	return extractAllergenFromToolUse(resp)
+		return extractAllergenFromToolUse(resp)
+	})
 }
 
 // ClassifyVoiceIntent classifies a voice transcript into an app intent.
 func (p *AnthropicProvider) ClassifyVoiceIntent(ctx context.Context, transcript string) (*VoiceIntent, error) {
-	sysPrompt, err := config.RenderPrompt(p.prompts.Voice.Intent.System, nil)
-	if err != nil {
-		return nil, fmt.Errorf("render system prompt: %w", err)
+	op := AIOperation{
+		Name:      "ClassifyVoiceIntent",
+		Provider:  "anthropic",
+		Model:     string(p.model),
+		StartTime: time.Now(),
 	}
 
-	tool := classifyVoiceIntentTool()
+	return runWithMiddleware(ctx, p.middleware, op, func(ctx context.Context) (*VoiceIntent, error) {
+		sysPrompt, err := config.RenderPrompt(p.prompts.Voice.Intent.System, nil)
+		if err != nil {
+			return nil, fmt.Errorf("render system prompt: %w", err)
+		}
 
-	params := anthropic.MessageNewParams{
-		Model:     p.model,
-		MaxTokens: 256,
-		System:    buildCachedSystemPrompt(sysPrompt, ""),
-		Messages: []anthropic.MessageParam{
-			newUserMessage(anthropic.NewTextBlock(transcript)),
-		},
-		Tools: []anthropic.ToolUnionParam{tool},
-		ToolChoice: anthropic.ToolChoiceUnionParam{
-			OfToolChoiceTool: &anthropic.ToolChoiceToolParam{
-				Name: "classify_voice_intent",
+		tool := classifyVoiceIntentTool()
+
+		params := anthropic.MessageNewParams{
+			Model:     p.model,
+			MaxTokens: 256,
+			System:    buildCachedSystemPrompt(sysPrompt, ""),
+			Messages: []anthropic.MessageParam{
+				newUserMessage(anthropic.NewTextBlock(transcript)),
 			},
-		},
-	}
+			Tools: []anthropic.ToolUnionParam{tool},
+			ToolChoice: anthropic.ToolChoiceUnionParam{
+				OfToolChoiceTool: &anthropic.ToolChoiceToolParam{
+					Name: "classify_voice_intent",
+				},
+			},
+		}
 
-	resp, err := p.createMessageWithRetry(ctx, params)
-	if err != nil {
-		return nil, err
-	}
+		resp, err := p.createMessageWithRetry(ctx, params)
+		if err != nil {
+			return nil, err
+		}
 
-	return extractVoiceIntentFromToolUse(resp)
+		return extractVoiceIntentFromToolUse(resp)
+	})
 }
 
 // EstimatePortions estimates portion count and sizes for a recipe.
 func (p *AnthropicProvider) EstimatePortions(ctx context.Context, recipeDef interface{}) (*PortionEstimate, error) {
-	recipeJSON, err := json.Marshal(recipeDef)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal recipe: %w", err)
+	op := AIOperation{
+		Name:      "EstimatePortions",
+		Provider:  "anthropic",
+		Model:     string(p.model),
+		StartTime: time.Now(),
 	}
 
-	tool := estimatePortionsTool()
+	return runWithMiddleware(ctx, p.middleware, op, func(ctx context.Context) (*PortionEstimate, error) {
+		recipeJSON, err := json.Marshal(recipeDef)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal recipe: %w", err)
+		}
 
-	params := anthropic.MessageNewParams{
-		Model:     p.model,
-		MaxTokens: 256,
-		System:    buildCachedSystemPrompt("You are a culinary expert. Estimate the number of portions and portion size for the given recipe.", ""),
-		Messages: []anthropic.MessageParam{
-			newUserMessage(anthropic.NewTextBlock(string(recipeJSON))),
-		},
-		Tools: []anthropic.ToolUnionParam{tool},
-		ToolChoice: anthropic.ToolChoiceUnionParam{
-			OfToolChoiceTool: &anthropic.ToolChoiceToolParam{
-				Name: "estimate_portions",
+		tool := estimatePortionsTool()
+
+		params := anthropic.MessageNewParams{
+			Model:     p.model,
+			MaxTokens: 256,
+			System:    buildCachedSystemPrompt("You are a culinary expert. Estimate the number of portions and portion size for the given recipe.", ""),
+			Messages: []anthropic.MessageParam{
+				newUserMessage(anthropic.NewTextBlock(string(recipeJSON))),
 			},
-		},
-	}
+			Tools: []anthropic.ToolUnionParam{tool},
+			ToolChoice: anthropic.ToolChoiceUnionParam{
+				OfToolChoiceTool: &anthropic.ToolChoiceToolParam{
+					Name: "estimate_portions",
+				},
+			},
+		}
 
-	resp, err := p.createMessageWithRetry(ctx, params)
-	if err != nil {
-		return nil, err
-	}
+		resp, err := p.createMessageWithRetry(ctx, params)
+		if err != nil {
+			return nil, err
+		}
 
-	return extractPortionFromToolUse(resp)
+		return extractPortionFromToolUse(resp)
+	})
 }
 
 // ExtractRecipeFromText extracts a structured recipe from free-form text.
 func (p *AnthropicProvider) ExtractRecipeFromText(ctx context.Context, text string, unitSystem string) (*RecipeResult, error) {
-	var sysPrefix string
-	var promptTemplate string
-	var templateData map[string]interface{}
-
-	if unitSystem == "preserve source" {
-		sysPrefix = p.prompts.Import.URL.SystemPrefix
-		promptTemplate = p.prompts.Import.URL.System
-		templateData = map[string]interface{}{
-			"UnitSystem": "the original units from the source text. Do not convert measurements. Report which unit system is used via the unit_system field",
-		}
-	} else {
-		sysPrefix = p.prompts.Import.Text.SystemPrefix
-		promptTemplate = p.prompts.Import.Text.System
-		templateData = map[string]interface{}{
-			"UnitSystem": unitSystem,
-		}
+	op := AIOperation{
+		Name:      "ExtractRecipeFromText",
+		Provider:  "anthropic",
+		Model:     string(p.model),
+		StartTime: time.Now(),
 	}
 
-	sysSuffix, err := config.RenderPrompt(promptTemplate, templateData)
-	if err != nil {
-		return nil, fmt.Errorf("render system prompt: %w", err)
-	}
+	return runWithMiddleware(ctx, p.middleware, op, func(ctx context.Context) (*RecipeResult, error) {
+		var sysPrefix string
+		var promptTemplate string
+		var templateData map[string]interface{}
 
-	summaryDesc := p.prompts.Recipe.Summarize.Recipe
-	tool := createRecipeTool(summaryDesc)
+		if unitSystem == "preserve source" {
+			sysPrefix = p.prompts.Import.URL.SystemPrefix
+			promptTemplate = p.prompts.Import.URL.System
+			templateData = map[string]interface{}{
+				"UnitSystem": "the original units from the source text. Do not convert measurements. Report which unit system is used via the unit_system field",
+			}
+		} else {
+			sysPrefix = p.prompts.Import.Text.SystemPrefix
+			promptTemplate = p.prompts.Import.Text.System
+			templateData = map[string]interface{}{
+				"UnitSystem": unitSystem,
+			}
+		}
 
-	params := anthropic.MessageNewParams{
-		Model:     p.model,
-		MaxTokens: 4096,
-		System:    buildCachedSystemPrompt(sysPrefix, sysSuffix),
-		Messages: []anthropic.MessageParam{
-			newUserMessage(anthropic.NewTextBlock(text)),
-		},
-		Tools: []anthropic.ToolUnionParam{tool},
-		ToolChoice: anthropic.ToolChoiceUnionParam{
-			OfToolChoiceTool: &anthropic.ToolChoiceToolParam{
-				Name: "create_recipe",
+		sysSuffix, err := config.RenderPrompt(promptTemplate, templateData)
+		if err != nil {
+			return nil, fmt.Errorf("render system prompt: %w", err)
+		}
+
+		summaryDesc := p.prompts.Recipe.Summarize.Recipe
+		tool := createRecipeTool(summaryDesc)
+
+		params := anthropic.MessageNewParams{
+			Model:     p.model,
+			MaxTokens: 4096,
+			System:    buildCachedSystemPrompt(sysPrefix, sysSuffix),
+			Messages: []anthropic.MessageParam{
+				newUserMessage(anthropic.NewTextBlock(text)),
 			},
-		},
-	}
+			Tools: []anthropic.ToolUnionParam{tool},
+			ToolChoice: anthropic.ToolChoiceUnionParam{
+				OfToolChoiceTool: &anthropic.ToolChoiceToolParam{
+					Name: "create_recipe",
+				},
+			},
+		}
 
-	resp, err := p.createMessageWithRetry(ctx, params)
-	if err != nil {
-		return nil, err
-	}
+		resp, err := p.createMessageWithRetry(ctx, params)
+		if err != nil {
+			return nil, err
+		}
 
-	return extractAndValidateRecipe(resp)
+		return extractAndValidateRecipe(resp)
+	})
 }
 
 // CookingQA answers a cooking question with optional recipe context.
 func (p *AnthropicProvider) CookingQA(ctx context.Context, question string, recipeContext string) (string, error) {
-	sysSuffix, err := config.RenderPrompt(p.prompts.CookingQA.System, map[string]interface{}{
-		"RecipeContext": recipeContext,
+	op := AIOperation{
+		Name:      "CookingQA",
+		Provider:  "anthropic",
+		Model:     string(p.model),
+		StartTime: time.Now(),
+	}
+
+	return runWithMiddleware(ctx, p.middleware, op, func(ctx context.Context) (string, error) {
+		sysSuffix, err := config.RenderPrompt(p.prompts.CookingQA.System, map[string]interface{}{
+			"RecipeContext": recipeContext,
+		})
+		if err != nil {
+			return "", fmt.Errorf("render system prompt: %w", err)
+		}
+
+		params := anthropic.MessageNewParams{
+			Model:     p.model,
+			MaxTokens: 1024,
+			System:    buildCachedSystemPrompt(p.prompts.CookingQA.SystemPrefix, sysSuffix),
+			Messages: []anthropic.MessageParam{
+				newUserMessage(anthropic.NewTextBlock(question)),
+			},
+		}
+
+		resp, err := p.createMessageWithRetry(ctx, params)
+		if err != nil {
+			return "", err
+		}
+
+		return extractTextContent(resp)
 	})
-	if err != nil {
-		return "", fmt.Errorf("render system prompt: %w", err)
-	}
-
-	params := anthropic.MessageNewParams{
-		Model:     p.model,
-		MaxTokens: 1024,
-		System:    buildCachedSystemPrompt(p.prompts.CookingQA.SystemPrefix, sysSuffix),
-		Messages: []anthropic.MessageParam{
-			newUserMessage(anthropic.NewTextBlock(question)),
-		},
-	}
-
-	resp, err := p.createMessageWithRetry(ctx, params)
-	if err != nil {
-		return "", err
-	}
-
-	return extractTextContent(resp)
 }
 
 // DietaryInterview conducts a multi-turn dietary interview.
 func (p *AnthropicProvider) DietaryInterview(ctx context.Context, messages []Message, memberName string) (string, error) {
-	sysSuffix, err := config.RenderPrompt(p.prompts.DietaryInterview.System, map[string]interface{}{
-		"MemberName": memberName,
+	op := AIOperation{
+		Name:      "DietaryInterview",
+		Provider:  "anthropic",
+		Model:     string(p.model),
+		StartTime: time.Now(),
+	}
+
+	return runWithMiddleware(ctx, p.middleware, op, func(ctx context.Context) (string, error) {
+		sysSuffix, err := config.RenderPrompt(p.prompts.DietaryInterview.System, map[string]interface{}{
+			"MemberName": memberName,
+		})
+		if err != nil {
+			return "", fmt.Errorf("render system prompt: %w", err)
+		}
+
+		_, msgParams := messagesToAnthropicParams(messages)
+
+		params := anthropic.MessageNewParams{
+			Model:     p.model,
+			MaxTokens: 1024,
+			System:    buildCachedSystemPrompt(p.prompts.DietaryInterview.SystemPrefix, sysSuffix),
+			Messages:  msgParams,
+		}
+
+		resp, err := p.createMessageWithRetry(ctx, params)
+		if err != nil {
+			return "", err
+		}
+
+		return extractTextContent(resp)
 	})
-	if err != nil {
-		return "", fmt.Errorf("render system prompt: %w", err)
-	}
-
-	_, msgParams := messagesToAnthropicParams(messages)
-
-	params := anthropic.MessageNewParams{
-		Model:     p.model,
-		MaxTokens: 1024,
-		System:    buildCachedSystemPrompt(p.prompts.DietaryInterview.SystemPrefix, sysSuffix),
-		Messages: msgParams,
-	}
-
-	resp, err := p.createMessageWithRetry(ctx, params)
-	if err != nil {
-		return "", err
-	}
-
-	return extractTextContent(resp)
 }
 
 // --- VisionProvider implementation ---
 
 // ExtractRecipeFromImage extracts a structured recipe from a photo.
 func (p *AnthropicProvider) ExtractRecipeFromImage(ctx context.Context, imageData []byte, unitSystem string, requirements string) (*RecipeResult, error) {
-	sysSuffix, err := config.RenderPrompt(p.prompts.Recipe.Import.Vision.System, map[string]interface{}{
-		"UnitSystem":   unitSystem,
-		"Requirements": requirements,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("render system prompt: %w", err)
+	op := AIOperation{
+		Name:      "ExtractRecipeFromImage",
+		Provider:  "anthropic",
+		Model:     string(p.model),
+		StartTime: time.Now(),
 	}
 
-	b64 := base64.StdEncoding.EncodeToString(imageData)
-	mediaType := detectImageMediaType(imageData)
+	return runWithMiddleware(ctx, p.middleware, op, func(ctx context.Context) (*RecipeResult, error) {
+		sysSuffix, err := config.RenderPrompt(p.prompts.Recipe.Import.Vision.System, map[string]interface{}{
+			"UnitSystem":   unitSystem,
+			"Requirements": requirements,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("render system prompt: %w", err)
+		}
 
-	summaryDesc := p.prompts.Recipe.Summarize.Recipe
-	tool := createRecipeTool(summaryDesc)
+		b64 := base64.StdEncoding.EncodeToString(imageData)
+		mediaType := detectImageMediaType(imageData)
 
-	params := anthropic.MessageNewParams{
-		Model:     p.model,
-		MaxTokens: 4096,
-		System:    buildCachedSystemPrompt(p.prompts.Recipe.Import.Vision.SystemPrefix, sysSuffix),
-		Messages: []anthropic.MessageParam{
-			newUserMessage(
-				anthropic.ContentBlockParamUnion{
-					OfRequestImageBlock: &anthropic.ImageBlockParam{
-						Source: anthropic.ImageBlockParamSourceUnion{
-							OfBase64ImageSource: &anthropic.Base64ImageSourceParam{
-								MediaType: anthropic.Base64ImageSourceMediaType(mediaType),
-								Data:      b64,
+		summaryDesc := p.prompts.Recipe.Summarize.Recipe
+		tool := createRecipeTool(summaryDesc)
+
+		params := anthropic.MessageNewParams{
+			Model:     p.model,
+			MaxTokens: 4096,
+			System:    buildCachedSystemPrompt(p.prompts.Recipe.Import.Vision.SystemPrefix, sysSuffix),
+			Messages: []anthropic.MessageParam{
+				newUserMessage(
+					anthropic.ContentBlockParamUnion{
+						OfRequestImageBlock: &anthropic.ImageBlockParam{
+							Source: anthropic.ImageBlockParamSourceUnion{
+								OfBase64ImageSource: &anthropic.Base64ImageSourceParam{
+									MediaType: anthropic.Base64ImageSourceMediaType(mediaType),
+									Data:      b64,
+								},
 							},
 						},
 					},
-				},
-				anthropic.NewTextBlock("Extract the recipe from this image. If the image shows a prepared dish, infer a reasonable recipe for it."),
-			),
-		},
-		Tools: []anthropic.ToolUnionParam{tool},
-		ToolChoice: anthropic.ToolChoiceUnionParam{
-			OfToolChoiceTool: &anthropic.ToolChoiceToolParam{
-				Name: "create_recipe",
+					anthropic.NewTextBlock("Extract the recipe from this image. If the image shows a prepared dish, infer a reasonable recipe for it."),
+				),
 			},
-		},
-	}
+			Tools: []anthropic.ToolUnionParam{tool},
+			ToolChoice: anthropic.ToolChoiceUnionParam{
+				OfToolChoiceTool: &anthropic.ToolChoiceToolParam{
+					Name: "create_recipe",
+				},
+			},
+		}
 
-	resp, err := p.createMessageWithRetry(ctx, params)
-	if err != nil {
-		return nil, err
-	}
+		resp, err := p.createMessageWithRetry(ctx, params)
+		if err != nil {
+			return nil, err
+		}
 
-	return extractAndValidateRecipe(resp)
+		return extractAndValidateRecipe(resp)
+	})
 }
 
 // detectImageMediaType returns the MIME type based on magic bytes.
