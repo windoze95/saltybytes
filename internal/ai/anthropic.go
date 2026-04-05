@@ -545,6 +545,19 @@ func extractAndValidateRecipe(msg *anthropic.Message) (*RecipeResult, error) {
 	return result, nil
 }
 
+// buildCachedSystemPrompt creates a system prompt TextBlockParam with cache
+// control enabled. Anthropic's prompt caching caches the longest common prefix
+// of the system prompt across calls, so placing static content at the beginning
+// of the prompt and dynamic per-request context at the end maximises cache hits.
+func buildCachedSystemPrompt(text string) []anthropic.TextBlockParam {
+	return []anthropic.TextBlockParam{
+		{
+			Text:         text,
+			CacheControl: anthropic.CacheControlEphemeralParam{},
+		},
+	}
+}
+
 // --- TextProvider implementation ---
 
 // GenerateRecipe creates a new recipe via Claude tool use.
@@ -570,9 +583,7 @@ func (p *AnthropicProvider) GenerateRecipe(ctx context.Context, req RecipeReques
 	params := anthropic.MessageNewParams{
 		Model:     p.model,
 		MaxTokens: 4096,
-		System: []anthropic.TextBlockParam{
-			{Text: sysPrompt},
-		},
+		System:    buildCachedSystemPrompt(sysPrompt),
 		Messages: []anthropic.MessageParam{
 			newUserMessage(anthropic.NewTextBlock(userPrompt)),
 		},
@@ -618,9 +629,7 @@ func (p *AnthropicProvider) RegenerateRecipe(ctx context.Context, req Regenerate
 	params := anthropic.MessageNewParams{
 		Model:     p.model,
 		MaxTokens: 4096,
-		System: []anthropic.TextBlockParam{
-			{Text: sysPrompt},
-		},
+		System:    buildCachedSystemPrompt(sysPrompt),
 		Messages: historyParams,
 		Tools:    []anthropic.ToolUnionParam{tool},
 		ToolChoice: anthropic.ToolChoiceUnionParam{
@@ -663,9 +672,7 @@ func (p *AnthropicProvider) ForkRecipe(ctx context.Context, req ForkRequest) (*R
 	params := anthropic.MessageNewParams{
 		Model:     p.model,
 		MaxTokens: 4096,
-		System: []anthropic.TextBlockParam{
-			{Text: sysPrompt},
-		},
+		System:    buildCachedSystemPrompt(sysPrompt),
 		Messages: historyParams,
 		Tools:    []anthropic.ToolUnionParam{tool},
 		ToolChoice: anthropic.ToolChoiceUnionParam{
@@ -704,9 +711,7 @@ func (p *AnthropicProvider) AnalyzeAllergens(ctx context.Context, req AllergenRe
 	params := anthropic.MessageNewParams{
 		Model:     p.model,
 		MaxTokens: 4096,
-		System: []anthropic.TextBlockParam{
-			{Text: sysPrompt},
-		},
+		System:    buildCachedSystemPrompt(sysPrompt),
 		Messages: []anthropic.MessageParam{
 			newUserMessage(anthropic.NewTextBlock(userPrompt)),
 		},
@@ -738,9 +743,7 @@ func (p *AnthropicProvider) ClassifyVoiceIntent(ctx context.Context, transcript 
 	params := anthropic.MessageNewParams{
 		Model:     p.model,
 		MaxTokens: 256,
-		System: []anthropic.TextBlockParam{
-			{Text: sysPrompt},
-		},
+		System:    buildCachedSystemPrompt(sysPrompt),
 		Messages: []anthropic.MessageParam{
 			newUserMessage(anthropic.NewTextBlock(transcript)),
 		},
@@ -772,9 +775,7 @@ func (p *AnthropicProvider) EstimatePortions(ctx context.Context, recipeDef inte
 	params := anthropic.MessageNewParams{
 		Model:     p.model,
 		MaxTokens: 256,
-		System: []anthropic.TextBlockParam{
-			{Text: "You are a culinary expert. Estimate the number of portions and portion size for the given recipe."},
-		},
+		System:    buildCachedSystemPrompt("You are a culinary expert. Estimate the number of portions and portion size for the given recipe."),
 		Messages: []anthropic.MessageParam{
 			newUserMessage(anthropic.NewTextBlock(string(recipeJSON))),
 		},
@@ -822,9 +823,7 @@ func (p *AnthropicProvider) ExtractRecipeFromText(ctx context.Context, text stri
 	params := anthropic.MessageNewParams{
 		Model:     p.model,
 		MaxTokens: 4096,
-		System: []anthropic.TextBlockParam{
-			{Text: sysPrompt},
-		},
+		System:    buildCachedSystemPrompt(sysPrompt),
 		Messages: []anthropic.MessageParam{
 			newUserMessage(anthropic.NewTextBlock(text)),
 		},
@@ -856,9 +855,7 @@ func (p *AnthropicProvider) CookingQA(ctx context.Context, question string, reci
 	params := anthropic.MessageNewParams{
 		Model:     p.model,
 		MaxTokens: 1024,
-		System: []anthropic.TextBlockParam{
-			{Text: sysPrompt},
-		},
+		System:    buildCachedSystemPrompt(sysPrompt),
 		Messages: []anthropic.MessageParam{
 			newUserMessage(anthropic.NewTextBlock(question)),
 		},
@@ -886,9 +883,7 @@ func (p *AnthropicProvider) DietaryInterview(ctx context.Context, messages []Mes
 	params := anthropic.MessageNewParams{
 		Model:     p.model,
 		MaxTokens: 1024,
-		System: []anthropic.TextBlockParam{
-			{Text: sysPrompt},
-		},
+		System:    buildCachedSystemPrompt(sysPrompt),
 		Messages: msgParams,
 	}
 
@@ -921,9 +916,7 @@ func (p *AnthropicProvider) ExtractRecipeFromImage(ctx context.Context, imageDat
 	params := anthropic.MessageNewParams{
 		Model:     p.model,
 		MaxTokens: 4096,
-		System: []anthropic.TextBlockParam{
-			{Text: sysPrompt},
-		},
+		System:    buildCachedSystemPrompt(sysPrompt),
 		Messages: []anthropic.MessageParam{
 			newUserMessage(
 				anthropic.ContentBlockParamUnion{
