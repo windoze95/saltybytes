@@ -33,6 +33,7 @@ type Recipe struct {
 	CanonicalID        *uint              `gorm:"index"`
 	Canonical          *CanonicalRecipe   `gorm:"foreignKey:CanonicalID"`
 	HasDiverged        bool               `gorm:"default:false"`
+	PromptVersion      string             `json:"prompt_version,omitempty" gorm:"size:16"` // hash of prompt templates used
 }
 
 // Tag is the model for a recipe hashtag.

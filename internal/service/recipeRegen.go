@@ -62,9 +62,10 @@ func (s *RecipeService) FinishRegenerateRecipe(recipe *models.Recipe, user *mode
 
 	req := ai.RegenerateRequest{
 		RecipeRequest: ai.RecipeRequest{
-			UserPrompt:   userPrompt,
-			UnitSystem:   user.Personalization.UnitSystemText(),
-			Requirements: user.Personalization.Requirements,
+			UserPrompt:     userPrompt,
+			UnitSystem:     user.Personalization.UnitSystemText(),
+			Requirements:   user.Personalization.Requirements,
+			CookingContext: user.Personalization.CookingContextPrompt(),
 		},
 		ExistingHistory: existingHistory,
 	}
@@ -82,6 +83,7 @@ func (s *RecipeService) FinishRegenerateRecipe(recipe *models.Recipe, user *mode
 		}
 		recipeDef := recipeResultToRecipeDef(result)
 		recipe.RecipeDef = recipeDef
+		recipe.PromptVersion = result.PromptVersion
 
 		if err := validateRecipeCoreFields(recipe); err != nil {
 			recipeErrChan <- err

@@ -570,8 +570,9 @@ func buildCachedSystemPrompt(staticPrefix string, dynamicSuffix string) []anthro
 // GenerateRecipe creates a new recipe via Claude tool use.
 func (p *AnthropicProvider) GenerateRecipe(ctx context.Context, req RecipeRequest) (*RecipeResult, error) {
 	sysSuffix, err := config.RenderPrompt(p.prompts.Recipe.Generate.System, map[string]interface{}{
-		"UnitSystem":   req.UnitSystem,
-		"Requirements": req.Requirements,
+		"UnitSystem":     req.UnitSystem,
+		"Requirements":   req.Requirements,
+		"CookingContext": req.CookingContext,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("render system prompt: %w", err)
@@ -607,14 +608,20 @@ func (p *AnthropicProvider) GenerateRecipe(ctx context.Context, req RecipeReques
 		return nil, err
 	}
 
-	return extractAndValidateRecipe(resp)
+	result, err := extractAndValidateRecipe(resp)
+	if err != nil {
+		return nil, err
+	}
+	result.PromptVersion = config.PromptVersion(p.prompts)
+	return result, nil
 }
 
 // RegenerateRecipe revises an existing recipe based on conversation history.
 func (p *AnthropicProvider) RegenerateRecipe(ctx context.Context, req RegenerateRequest) (*RecipeResult, error) {
 	sysSuffix, err := config.RenderPrompt(p.prompts.Recipe.Regenerate.System, map[string]interface{}{
-		"UnitSystem":   req.UnitSystem,
-		"Requirements": req.Requirements,
+		"UnitSystem":     req.UnitSystem,
+		"Requirements":   req.Requirements,
+		"CookingContext": req.CookingContext,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("render system prompt: %w", err)
@@ -651,14 +658,20 @@ func (p *AnthropicProvider) RegenerateRecipe(ctx context.Context, req Regenerate
 		return nil, err
 	}
 
-	return extractAndValidateRecipe(resp)
+	result, err := extractAndValidateRecipe(resp)
+	if err != nil {
+		return nil, err
+	}
+	result.PromptVersion = config.PromptVersion(p.prompts)
+	return result, nil
 }
 
 // ForkRecipe creates a new recipe branched from an existing one.
 func (p *AnthropicProvider) ForkRecipe(ctx context.Context, req ForkRequest) (*RecipeResult, error) {
 	sysSuffix, err := config.RenderPrompt(p.prompts.Recipe.Fork.System, map[string]interface{}{
-		"UnitSystem":   req.UnitSystem,
-		"Requirements": req.Requirements,
+		"UnitSystem":     req.UnitSystem,
+		"Requirements":   req.Requirements,
+		"CookingContext": req.CookingContext,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("render system prompt: %w", err)
@@ -694,7 +707,12 @@ func (p *AnthropicProvider) ForkRecipe(ctx context.Context, req ForkRequest) (*R
 		return nil, err
 	}
 
-	return extractAndValidateRecipe(resp)
+	result, err := extractAndValidateRecipe(resp)
+	if err != nil {
+		return nil, err
+	}
+	result.PromptVersion = config.PromptVersion(p.prompts)
+	return result, nil
 }
 
 // AnalyzeAllergens analyses ingredients for allergen risks.
@@ -850,7 +868,12 @@ func (p *AnthropicProvider) ExtractRecipeFromText(ctx context.Context, text stri
 		return nil, err
 	}
 
-	return extractAndValidateRecipe(resp)
+	result, err := extractAndValidateRecipe(resp)
+	if err != nil {
+		return nil, err
+	}
+	result.PromptVersion = config.PromptVersion(p.prompts)
+	return result, nil
 }
 
 // CookingQA answers a cooking question with optional recipe context.
@@ -955,7 +978,12 @@ func (p *AnthropicProvider) ExtractRecipeFromImage(ctx context.Context, imageDat
 		return nil, err
 	}
 
-	return extractAndValidateRecipe(resp)
+	result, err := extractAndValidateRecipe(resp)
+	if err != nil {
+		return nil, err
+	}
+	result.PromptVersion = config.PromptVersion(p.prompts)
+	return result, nil
 }
 
 // detectImageMediaType returns the MIME type based on magic bytes.

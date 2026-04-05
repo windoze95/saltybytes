@@ -48,9 +48,10 @@ func (s *RecipeService) FinishGenerateRecipe(recipe *models.Recipe, user *models
 	imageErrChan := make(chan error, 1) // buffered to prevent goroutine leak when genImage is false
 
 	req := ai.RecipeRequest{
-		UserPrompt:   userPrompt,
-		UnitSystem:   user.Personalization.UnitSystemText(),
-		Requirements: user.Personalization.Requirements,
+		UserPrompt:     userPrompt,
+		UnitSystem:     user.Personalization.UnitSystemText(),
+		Requirements:   user.Personalization.Requirements,
+		CookingContext: user.Personalization.CookingContextPrompt(),
 	}
 
 	// Goroutine to handle recipe generation
@@ -66,6 +67,7 @@ func (s *RecipeService) FinishGenerateRecipe(recipe *models.Recipe, user *models
 		}
 		recipeDef := recipeResultToRecipeDef(result)
 		recipe.RecipeDef = recipeDef
+		recipe.PromptVersion = result.PromptVersion
 
 		if err := validateRecipeCoreFields(recipe); err != nil {
 			recipeErrChan <- err

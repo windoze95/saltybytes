@@ -42,10 +42,11 @@ type SearchProvider interface {
 
 // RecipeRequest holds parameters for generating a new recipe.
 type RecipeRequest struct {
-	UserPrompt   string
-	UnitSystem   string
-	Requirements string
-	Messages     []Message // for conversation history
+	UserPrompt     string
+	UnitSystem     string
+	Requirements   string
+	CookingContext string    // free-form cooking preferences injected into AI prompts
+	Messages       []Message // for conversation history
 }
 
 // RegenerateRequest extends RecipeRequest with prior conversation history.
@@ -74,6 +75,7 @@ type RecipeResult struct {
 	PortionSize       string
 	SourceURL         string
 	UnitSystem        string
+	PromptVersion     string // hash of prompt templates used to generate this recipe
 }
 
 // IngredientResult is a single ingredient in the recipe output.
