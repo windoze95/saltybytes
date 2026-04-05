@@ -406,16 +406,24 @@ func (s *ImportService) extractFromURL(ctx context.Context, rawURL string) (*mod
 
 // fetchAndExtractWithHTML is like extractFromURL but also returns the raw HTML.
 // Used by the multi-recipe resolver to inspect the page for additional recipes.
+// If extraction fails but HTML fetch succeeds, the error is cleared so callers
+// can still use the HTML for multi-recipe card detection.
 func (s *ImportService) fetchAndExtractWithHTML(ctx context.Context, rawURL string) (*models.RecipeDef, []string, string, error) {
-	recipeDef, hashtags, _, _, err := s.extractFromURL(ctx, rawURL)
+	recipeDef, hashtags, _, _, extractErr := s.extractFromURL(ctx, rawURL)
 	// We need the HTML too, so re-fetch it. This is acceptable because
-	// the common case (multi-recipe detection during search) only calls
-	// this once per URL, and the result is cached.
-	html, err2 := s.fetchHTML(ctx, rawURL)
-	if err2 != nil && err != nil {
-		return nil, nil, "", err
+	// the common case (multi-recipe detection) only calls this once per
+	// URL, and the result is cached.
+	html, htmlErr := s.fetchHTML(ctx, rawURL)
+	if htmlErr != nil {
+		// Both failed — return the extraction error
+		if extractErr != nil {
+			return nil, nil, "", extractErr
+		}
+		return recipeDef, hashtags, "", htmlErr
 	}
-	return recipeDef, hashtags, html, err
+	// HTML succeeded — return it even if extraction failed, so callers
+	// can detect multi-recipe pages from the HTML.
+	return recipeDef, hashtags, html, nil
 }
 
 // fetchHTML fetches the raw HTML of a URL, using Firecrawl fallback if needed.

@@ -34,6 +34,7 @@ type MultiRecipeEntry struct {
 	Cards       []MultiRecipeCard `json:"recipes"`
 	DetectedAt  time.Time         `json:"detected_at"`
 	ResolvedAt  *time.Time        `json:"resolved_at,omitempty"`
+	pageHTML    string            // stored for extraction, not serialized
 }
 
 func (e *MultiRecipeEntry) GetCards() []MultiRecipeCard {
@@ -259,6 +260,7 @@ func (r *MultiRecipeResolver) ResolveFromHTML(sourceURL string, html string) *Mu
 
 	entry.mu.Lock()
 	entry.Cards = cards
+	entry.pageHTML = html
 	entry.mu.Unlock()
 
 	// Start background extraction for each card
@@ -329,6 +331,7 @@ func (r *MultiRecipeResolver) extractSingleCard(entry *MultiRecipeEntry, idx int
 	card.ExtractionStatus = "extracting"
 	title := card.Title
 	sourceURL := card.SourceURL
+	pageHTML := entry.pageHTML
 	entry.mu.Unlock()
 
 	log := logger.Get().With(zap.String("title", title), zap.String("source_url", sourceURL))
@@ -348,9 +351,9 @@ func (r *MultiRecipeResolver) extractSingleCard(entry *MultiRecipeEntry, idx int
 		return
 	}
 
-	// Ask Claude to extract just this specific recipe by name
-	prompt := fmt.Sprintf("Extract ONLY the recipe titled %q from the following page. Ignore all other recipes on the page.", title)
-	result, err := provider.ExtractRecipeFromText(ctx, prompt, "preserve source")
+	// Pass the full page HTML with a constraint to extract only this recipe by title
+	extractionInput := fmt.Sprintf("Extract ONLY the recipe titled %q from the following page. Ignore all other recipes.\n\n%s", title, pageHTML)
+	result, err := provider.ExtractRecipeFromText(ctx, extractionInput, "preserve source")
 	if err != nil {
 		log.Error("failed to extract individual recipe", zap.Error(err))
 		entry.mu.Lock()
@@ -371,9 +374,27 @@ func (r *MultiRecipeResolver) extractSingleCard(entry *MultiRecipeEntry, idx int
 	}
 	entry.mu.Unlock()
 
-	// Cache in canonical repo
+	// Cache in canonical repo with a distinct key per card.
+	// NormalizeURL strips fragments, so we append a slug query param instead.
 	if r.ImportService.CanonicalRepo != nil {
-		if normalizedURL, err := NormalizeURL(sourceURL + "#" + title); err == nil {
+		slug := strings.Map(func(r rune) rune {
+			if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '-' {
+				return r
+			}
+			if r >= 'A' && r <= 'Z' {
+				return r + 32 // lowercase
+			}
+			if r == ' ' {
+				return '-'
+			}
+			return -1 // drop
+		}, title)
+		separator := "?"
+		if strings.Contains(sourceURL, "?") {
+			separator = "&"
+		}
+		distinctURL := sourceURL + separator + "_recipe=" + slug
+		if normalizedURL, err := NormalizeURL(distinctURL); err == nil {
 			now := time.Now()
 			canonical := &models.CanonicalRecipe{
 				NormalizedURL:    normalizedURL,
