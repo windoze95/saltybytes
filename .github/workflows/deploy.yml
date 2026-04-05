@@ -105,19 +105,23 @@ jobs:
       - name: Verify deployed image
         run: |
           EXPECTED_TAG="${{ steps.build-image.outputs.image-tag }}"
+          EXPECTED_DIGEST=$(aws ecr describe-images \
+            --repository-name saltybytes-api \
+            --image-ids imageTag="$EXPECTED_TAG" \
+            --query 'imageDetails[0].imageDigest' --output text)
           TASK_ARN=$(aws ecs list-tasks \
             --cluster $ECS_CLUSTER \
             --service-name $ECS_SERVICE \
             --query 'taskArns[0]' --output text)
-          RUNNING_IMAGE=$(aws ecs describe-tasks \
+          RUNNING_DIGEST=$(aws ecs describe-tasks \
             --cluster $ECS_CLUSTER \
             --tasks "$TASK_ARN" \
-            --query 'tasks[0].containers[0].image' --output text)
-          echo "Expected tag: $EXPECTED_TAG"
-          echo "Running image: $RUNNING_IMAGE"
-          if echo "$RUNNING_IMAGE" | grep -q "$EXPECTED_TAG"; then
+            --query 'tasks[0].containers[0].imageDigest' --output text)
+          echo "Expected digest ($EXPECTED_TAG): $EXPECTED_DIGEST"
+          echo "Running digest: $RUNNING_DIGEST"
+          if [ "$EXPECTED_DIGEST" = "$RUNNING_DIGEST" ]; then
             echo "Image verification passed."
           else
-            echo "ERROR: Running image does not match expected tag $EXPECTED_TAG"
+            echo "ERROR: Running image digest does not match pushed tag $EXPECTED_TAG"
             exit 1
           fi
