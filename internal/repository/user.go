@@ -120,6 +120,7 @@ func (r *UserRepository) UpdatePersonalization(userID uint, updatedPersonalizati
 	// Update fields
 	existingPersonalization.UnitSystem = updatedPersonalization.UnitSystem
 	existingPersonalization.Requirements = updatedPersonalization.Requirements
+	existingPersonalization.CookingContext = updatedPersonalization.CookingContext
 	existingPersonalization.UID = updatedPersonalization.UID
 
 	// Perform the update

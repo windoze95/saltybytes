@@ -41,9 +41,10 @@ type SettingsResponse struct {
 
 // PersonalizationResponse is the response object for user personalization.
 type PersonalizationResponse struct {
-	UnitSystem   string `json:"unit_system"`
-	Requirements string `json:"requirements"`
-	UID          string `json:"uid"`
+	UnitSystem     string `json:"unit_system"`
+	Requirements   string `json:"requirements"`
+	CookingContext string `json:"cooking_context"`
+	UID            string `json:"uid"`
 }
 
 // NewUserService is the constructor function for initializing a new UserService
@@ -126,9 +127,10 @@ func ToUserResponse(user *models.User) *UserResponse {
 	}
 	if user.Personalization != nil {
 		resp.Personalization = PersonalizationResponse{
-			UnitSystem:   user.Personalization.UnitSystem,
-			Requirements: user.Personalization.Requirements,
-			UID:          user.Personalization.UID.String(),
+			UnitSystem:     user.Personalization.UnitSystem,
+			Requirements:   user.Personalization.Requirements,
+			CookingContext: user.Personalization.CookingContext,
+			UID:            user.Personalization.UID.String(),
 		}
 	}
 	return resp

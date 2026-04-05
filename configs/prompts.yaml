@@ -12,6 +12,7 @@ recipe:
       - hashtags should be specific and varied: ["thaiGreenCurry", "weeknightDinner", "coconutMilk", "freshBasil", "glutenFree", "dairyFree", "20MinuteMeal", "spicyFood", "southeastAsian", "onePotMeal"] — not generic like ["curry", "dinner", "food"]
       - linked_recipe_suggestions should be actionable: ["Homemade Coconut Milk", "Jasmine Rice", "Thai Mango Sticky Rice"] — not vague like ["Side dish", "Dessert"]
       {{if .Requirements}}The user has the following dietary requirements and preferences: {{.Requirements}}{{end}}
+      {{if .CookingContext}}{{.CookingContext}}{{end}}
     user: |
       Create a recipe for {{.Prompt}}
   fork:
@@ -23,6 +24,7 @@ recipe:
       Use accurate cooking-specific conversions (e.g., 1 cup all-purpose flour = 120g, 1 cup granulated sugar = 200g, 1 cup butter = 227g, 1 cup water/milk = 240mL).
       If the primary unit system is already Metric, duplicate the values into metric_unit and metric_amount.
       {{if .Requirements}}The user has the following dietary requirements and preferences: {{.Requirements}}{{end}}
+      {{if .CookingContext}}{{.CookingContext}}{{end}}
     user: |
       {{.Prompt}}
   regenerate:
@@ -34,6 +36,7 @@ recipe:
       Use accurate cooking-specific conversions (e.g., 1 cup all-purpose flour = 120g, 1 cup granulated sugar = 200g, 1 cup butter = 227g, 1 cup water/milk = 240mL).
       If the primary unit system is already Metric, duplicate the values into metric_unit and metric_amount.
       {{if .Requirements}}The user has the following dietary requirements and preferences: {{.Requirements}}{{end}}
+      {{if .CookingContext}}{{.CookingContext}}{{end}}
     user: |
       {{.Prompt}}
   summarize:
