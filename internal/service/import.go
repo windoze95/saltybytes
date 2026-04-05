@@ -131,7 +131,7 @@ func (s *ImportService) ImportFromURL(ctx context.Context, rawURL string, user *
 					log.Info("import from canonical cache hit")
 					go s.CanonicalRepo.IncrementHitCount(canonical.ID)
 					canonicalID := canonical.ID
-					recipeResp, _, createErr := s.createImportedRecipe(ctx, &canonical.RecipeData, user, models.RecipeTypeImportLink, rawURL, &canonicalID, nil, "")
+					recipeResp, _, createErr := s.createImportedRecipe(ctx, &canonical.RecipeData, user, models.RecipeTypeImportLink, rawURL, &canonicalID, nil, canonical.PromptVersion)
 					return recipeResp, createErr
 				}
 			}
@@ -156,6 +156,7 @@ func (s *ImportService) ImportFromURL(ctx context.Context, rawURL string, user *
 				ExtractionMethod: method,
 				FetchedAt:        now,
 				LastAccessedAt:   now,
+				PromptVersion:    promptVersion,
 			}
 			if upsertErr := s.CanonicalRepo.Upsert(entry); upsertErr == nil {
 				canonicalID = &entry.ID
@@ -183,7 +184,7 @@ func (s *ImportService) ImportFromCanonical(ctx context.Context, canonicalID uin
 	go s.CanonicalRepo.IncrementHitCount(canonical.ID)
 
 	cID := canonical.ID
-	resp, _, createErr := s.createImportedRecipe(ctx, &canonical.RecipeData, user, models.RecipeTypeImportLink, canonical.OriginalURL, &cID, nil, "")
+	resp, _, createErr := s.createImportedRecipe(ctx, &canonical.RecipeData, user, models.RecipeTypeImportLink, canonical.OriginalURL, &cID, nil, canonical.PromptVersion)
 	return resp, createErr
 }
 
@@ -506,7 +507,7 @@ func (s *ImportService) PreviewFromURL(ctx context.Context, rawURL string) (*mod
 		}
 	}
 
-	recipeDef, _, method, _, err := s.extractFromURL(ctx, rawURL)
+	recipeDef, _, method, promptVersion, err := s.extractFromURL(ctx, rawURL)
 	if err != nil {
 		log.Error("preview extraction failed", zap.Error(err))
 		return nil, nil, err
@@ -524,6 +525,7 @@ func (s *ImportService) PreviewFromURL(ctx context.Context, rawURL string) (*mod
 				ExtractionMethod: method,
 				FetchedAt:        now,
 				LastAccessedAt:   now,
+				PromptVersion:    promptVersion,
 			}
 			if upsertErr := s.CanonicalRepo.Upsert(entry); upsertErr == nil {
 				canonicalID = &entry.ID

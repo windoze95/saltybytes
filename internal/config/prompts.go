@@ -75,7 +75,7 @@ type Prompts struct {
 // PromptVersion returns a short hash of the current prompt templates.
 // This identifies which prompt version generated a recipe.
 func PromptVersion(prompts *Prompts) string {
-	data, err := json.Marshal(prompts)
+	data, err := json.Marshal(prompts.Recipe)
 	if err != nil {
 		return "unknown"
 	}
