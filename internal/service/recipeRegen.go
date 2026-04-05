@@ -222,7 +222,10 @@ func nodeChainToMessages(nodes []models.RecipeNode, currentDef *models.RecipeDef
 // Older nodes beyond keepRecent are summarized into a single context message to
 // reduce token usage while preserving the recipe's evolution history.
 func compactNodeChain(nodes []models.RecipeNode, currentDef *models.RecipeDef, keepRecent int) []ai.Message {
-	if len(nodes) <= keepRecent {
+	if len(nodes) <= keepRecent+1 {
+		// Compacting a single node adds boilerplate (summary wrapper + assistant
+		// ack) that exceeds the original prompt+summary pair, increasing token
+		// usage. Only compact when at least 2 older nodes would be collapsed.
 		return nodeChainToMessages(nodes, currentDef)
 	}
 
