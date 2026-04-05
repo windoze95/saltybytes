@@ -11,9 +11,13 @@ import (
 )
 
 // PromptPair holds a system and user prompt template.
+// SystemPrefix is an optional static preamble that is split from the dynamic
+// System template so that Anthropic prompt caching can cache the stable prefix
+// without being invalidated by per-request template variables.
 type PromptPair struct {
-	System string `yaml:"system"`
-	User   string `yaml:"user"`
+	SystemPrefix string `yaml:"system_prefix"`
+	System       string `yaml:"system"`
+	User         string `yaml:"user"`
 }
 
 // SummarizePrompts holds summarization prompt templates.
@@ -49,8 +53,10 @@ type VoicePrompts struct {
 }
 
 // SinglePrompt holds a single system prompt (no user template).
+// SystemPrefix is an optional static preamble (see PromptPair).
 type SinglePrompt struct {
-	System string `yaml:"system"`
+	SystemPrefix string `yaml:"system_prefix"`
+	System       string `yaml:"system"`
 }
 
 // Prompts is the top-level prompt configuration loaded from YAML.

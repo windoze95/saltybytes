@@ -545,24 +545,31 @@ func extractAndValidateRecipe(msg *anthropic.Message) (*RecipeResult, error) {
 	return result, nil
 }
 
-// buildCachedSystemPrompt creates a system prompt TextBlockParam with cache
-// control enabled. Anthropic's prompt caching caches the longest common prefix
-// of the system prompt across calls, so placing static content at the beginning
-// of the prompt and dynamic per-request context at the end maximises cache hits.
-func buildCachedSystemPrompt(text string) []anthropic.TextBlockParam {
-	return []anthropic.TextBlockParam{
+// buildCachedSystemPrompt creates system prompt TextBlockParams where the
+// static prefix is marked for Anthropic prompt caching and the dynamic
+// per-request suffix is left uncached. This prevents per-request template
+// variables (UnitSystem, Requirements, etc.) from invalidating the cache.
+// When dynamicSuffix is empty the entire prompt is treated as static.
+func buildCachedSystemPrompt(staticPrefix string, dynamicSuffix string) []anthropic.TextBlockParam {
+	blocks := []anthropic.TextBlockParam{
 		{
-			Text:         text,
+			Text:         staticPrefix,
 			CacheControl: anthropic.CacheControlEphemeralParam{},
 		},
 	}
+	if dynamicSuffix != "" {
+		blocks = append(blocks, anthropic.TextBlockParam{
+			Text: dynamicSuffix,
+		})
+	}
+	return blocks
 }
 
 // --- TextProvider implementation ---
 
 // GenerateRecipe creates a new recipe via Claude tool use.
 func (p *AnthropicProvider) GenerateRecipe(ctx context.Context, req RecipeRequest) (*RecipeResult, error) {
-	sysPrompt, err := config.RenderPrompt(p.prompts.Recipe.Generate.System, map[string]interface{}{
+	sysSuffix, err := config.RenderPrompt(p.prompts.Recipe.Generate.System, map[string]interface{}{
 		"UnitSystem":   req.UnitSystem,
 		"Requirements": req.Requirements,
 	})
@@ -583,7 +590,7 @@ func (p *AnthropicProvider) GenerateRecipe(ctx context.Context, req RecipeReques
 	params := anthropic.MessageNewParams{
 		Model:     p.model,
 		MaxTokens: 4096,
-		System:    buildCachedSystemPrompt(sysPrompt),
+		System:    buildCachedSystemPrompt(p.prompts.Recipe.Generate.SystemPrefix, sysSuffix),
 		Messages: []anthropic.MessageParam{
 			newUserMessage(anthropic.NewTextBlock(userPrompt)),
 		},
@@ -605,7 +612,7 @@ func (p *AnthropicProvider) GenerateRecipe(ctx context.Context, req RecipeReques
 
 // RegenerateRecipe revises an existing recipe based on conversation history.
 func (p *AnthropicProvider) RegenerateRecipe(ctx context.Context, req RegenerateRequest) (*RecipeResult, error) {
-	sysPrompt, err := config.RenderPrompt(p.prompts.Recipe.Regenerate.System, map[string]interface{}{
+	sysSuffix, err := config.RenderPrompt(p.prompts.Recipe.Regenerate.System, map[string]interface{}{
 		"UnitSystem":   req.UnitSystem,
 		"Requirements": req.Requirements,
 	})
@@ -629,7 +636,7 @@ func (p *AnthropicProvider) RegenerateRecipe(ctx context.Context, req Regenerate
 	params := anthropic.MessageNewParams{
 		Model:     p.model,
 		MaxTokens: 4096,
-		System:    buildCachedSystemPrompt(sysPrompt),
+		System:    buildCachedSystemPrompt(p.prompts.Recipe.Regenerate.SystemPrefix, sysSuffix),
 		Messages: historyParams,
 		Tools:    []anthropic.ToolUnionParam{tool},
 		ToolChoice: anthropic.ToolChoiceUnionParam{
@@ -649,7 +656,7 @@ func (p *AnthropicProvider) RegenerateRecipe(ctx context.Context, req Regenerate
 
 // ForkRecipe creates a new recipe branched from an existing one.
 func (p *AnthropicProvider) ForkRecipe(ctx context.Context, req ForkRequest) (*RecipeResult, error) {
-	sysPrompt, err := config.RenderPrompt(p.prompts.Recipe.Fork.System, map[string]interface{}{
+	sysSuffix, err := config.RenderPrompt(p.prompts.Recipe.Fork.System, map[string]interface{}{
 		"UnitSystem":   req.UnitSystem,
 		"Requirements": req.Requirements,
 	})
@@ -672,7 +679,7 @@ func (p *AnthropicProvider) ForkRecipe(ctx context.Context, req ForkRequest) (*R
 	params := anthropic.MessageNewParams{
 		Model:     p.model,
 		MaxTokens: 4096,
-		System:    buildCachedSystemPrompt(sysPrompt),
+		System:    buildCachedSystemPrompt(p.prompts.Recipe.Fork.SystemPrefix, sysSuffix),
 		Messages: historyParams,
 		Tools:    []anthropic.ToolUnionParam{tool},
 		ToolChoice: anthropic.ToolChoiceUnionParam{
@@ -711,7 +718,7 @@ func (p *AnthropicProvider) AnalyzeAllergens(ctx context.Context, req AllergenRe
 	params := anthropic.MessageNewParams{
 		Model:     p.model,
 		MaxTokens: 4096,
-		System:    buildCachedSystemPrompt(sysPrompt),
+		System:    buildCachedSystemPrompt(sysPrompt, ""),
 		Messages: []anthropic.MessageParam{
 			newUserMessage(anthropic.NewTextBlock(userPrompt)),
 		},
@@ -743,7 +750,7 @@ func (p *AnthropicProvider) ClassifyVoiceIntent(ctx context.Context, transcript 
 	params := anthropic.MessageNewParams{
 		Model:     p.model,
 		MaxTokens: 256,
-		System:    buildCachedSystemPrompt(sysPrompt),
+		System:    buildCachedSystemPrompt(sysPrompt, ""),
 		Messages: []anthropic.MessageParam{
 			newUserMessage(anthropic.NewTextBlock(transcript)),
 		},
@@ -775,7 +782,7 @@ func (p *AnthropicProvider) EstimatePortions(ctx context.Context, recipeDef inte
 	params := anthropic.MessageNewParams{
 		Model:     p.model,
 		MaxTokens: 256,
-		System:    buildCachedSystemPrompt("You are a culinary expert. Estimate the number of portions and portion size for the given recipe."),
+		System:    buildCachedSystemPrompt("You are a culinary expert. Estimate the number of portions and portion size for the given recipe.", ""),
 		Messages: []anthropic.MessageParam{
 			newUserMessage(anthropic.NewTextBlock(string(recipeJSON))),
 		},
@@ -797,22 +804,25 @@ func (p *AnthropicProvider) EstimatePortions(ctx context.Context, recipeDef inte
 
 // ExtractRecipeFromText extracts a structured recipe from free-form text.
 func (p *AnthropicProvider) ExtractRecipeFromText(ctx context.Context, text string, unitSystem string) (*RecipeResult, error) {
+	var sysPrefix string
 	var promptTemplate string
 	var templateData map[string]interface{}
 
 	if unitSystem == "preserve source" {
+		sysPrefix = p.prompts.Import.URL.SystemPrefix
 		promptTemplate = p.prompts.Import.URL.System
 		templateData = map[string]interface{}{
 			"UnitSystem": "the original units from the source text. Do not convert measurements. Report which unit system is used via the unit_system field",
 		}
 	} else {
+		sysPrefix = p.prompts.Import.Text.SystemPrefix
 		promptTemplate = p.prompts.Import.Text.System
 		templateData = map[string]interface{}{
 			"UnitSystem": unitSystem,
 		}
 	}
 
-	sysPrompt, err := config.RenderPrompt(promptTemplate, templateData)
+	sysSuffix, err := config.RenderPrompt(promptTemplate, templateData)
 	if err != nil {
 		return nil, fmt.Errorf("render system prompt: %w", err)
 	}
@@ -823,7 +833,7 @@ func (p *AnthropicProvider) ExtractRecipeFromText(ctx context.Context, text stri
 	params := anthropic.MessageNewParams{
 		Model:     p.model,
 		MaxTokens: 4096,
-		System:    buildCachedSystemPrompt(sysPrompt),
+		System:    buildCachedSystemPrompt(sysPrefix, sysSuffix),
 		Messages: []anthropic.MessageParam{
 			newUserMessage(anthropic.NewTextBlock(text)),
 		},
@@ -845,7 +855,7 @@ func (p *AnthropicProvider) ExtractRecipeFromText(ctx context.Context, text stri
 
 // CookingQA answers a cooking question with optional recipe context.
 func (p *AnthropicProvider) CookingQA(ctx context.Context, question string, recipeContext string) (string, error) {
-	sysPrompt, err := config.RenderPrompt(p.prompts.CookingQA.System, map[string]interface{}{
+	sysSuffix, err := config.RenderPrompt(p.prompts.CookingQA.System, map[string]interface{}{
 		"RecipeContext": recipeContext,
 	})
 	if err != nil {
@@ -855,7 +865,7 @@ func (p *AnthropicProvider) CookingQA(ctx context.Context, question string, reci
 	params := anthropic.MessageNewParams{
 		Model:     p.model,
 		MaxTokens: 1024,
-		System:    buildCachedSystemPrompt(sysPrompt),
+		System:    buildCachedSystemPrompt(p.prompts.CookingQA.SystemPrefix, sysSuffix),
 		Messages: []anthropic.MessageParam{
 			newUserMessage(anthropic.NewTextBlock(question)),
 		},
@@ -871,7 +881,7 @@ func (p *AnthropicProvider) CookingQA(ctx context.Context, question string, reci
 
 // DietaryInterview conducts a multi-turn dietary interview.
 func (p *AnthropicProvider) DietaryInterview(ctx context.Context, messages []Message, memberName string) (string, error) {
-	sysPrompt, err := config.RenderPrompt(p.prompts.DietaryInterview.System, map[string]interface{}{
+	sysSuffix, err := config.RenderPrompt(p.prompts.DietaryInterview.System, map[string]interface{}{
 		"MemberName": memberName,
 	})
 	if err != nil {
@@ -883,7 +893,7 @@ func (p *AnthropicProvider) DietaryInterview(ctx context.Context, messages []Mes
 	params := anthropic.MessageNewParams{
 		Model:     p.model,
 		MaxTokens: 1024,
-		System:    buildCachedSystemPrompt(sysPrompt),
+		System:    buildCachedSystemPrompt(p.prompts.DietaryInterview.SystemPrefix, sysSuffix),
 		Messages: msgParams,
 	}
 
@@ -899,7 +909,7 @@ func (p *AnthropicProvider) DietaryInterview(ctx context.Context, messages []Mes
 
 // ExtractRecipeFromImage extracts a structured recipe from a photo.
 func (p *AnthropicProvider) ExtractRecipeFromImage(ctx context.Context, imageData []byte, unitSystem string, requirements string) (*RecipeResult, error) {
-	sysPrompt, err := config.RenderPrompt(p.prompts.Recipe.Import.Vision.System, map[string]interface{}{
+	sysSuffix, err := config.RenderPrompt(p.prompts.Recipe.Import.Vision.System, map[string]interface{}{
 		"UnitSystem":   unitSystem,
 		"Requirements": requirements,
 	})
@@ -916,7 +926,7 @@ func (p *AnthropicProvider) ExtractRecipeFromImage(ctx context.Context, imageDat
 	params := anthropic.MessageNewParams{
 		Model:     p.model,
 		MaxTokens: 4096,
-		System:    buildCachedSystemPrompt(sysPrompt),
+		System:    buildCachedSystemPrompt(p.prompts.Recipe.Import.Vision.SystemPrefix, sysSuffix),
 		Messages: []anthropic.MessageParam{
 			newUserMessage(
 				anthropic.ContentBlockParamUnion{
