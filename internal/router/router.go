@@ -68,6 +68,7 @@ func SetupRouter(cfg *config.Config, database *gorm.DB) *gin.Engine {
 	importService := service.NewImportService(cfg, recipeRepo, recipeService, textProvider, textProvider, previewProvider)
 	importService.CanonicalRepo = canonicalRepo
 	importHandler := handlers.NewImportHandler(importService)
+	// MultiResolver is wired later after search setup; set via field
 
 	// Group for API routes that don't require token verification
 	apiPublic := r.Group("/v1")
@@ -175,8 +176,16 @@ func SetupRouter(cfg *config.Config, database *gorm.DB) *gin.Engine {
 	searchService.EmbedProvider = embedProvider
 	searchService.StartBackgroundTasks()
 	importService.StartCanonicalBackgroundTasks()
-	searchHandler := handlers.NewSearchHandler(searchService)
+
+	// Multi-recipe resolution (detection happens on click via preview, not search)
+	multiRegistry := service.NewMultiRecipeRegistry()
+	multiResolver := service.NewMultiRecipeResolver(multiRegistry, importService)
+	importHandler.MultiResolver = multiResolver
+
+	searchHandler := &handlers.SearchHandler{Service: searchService, MultiResolver: multiResolver}
 	apiProtected.GET("/recipes/search", middleware.AttachUserToContext(userService), searchHandler.SearchRecipes)
+	apiProtected.GET("/recipes/search/resolve/:multi_id", middleware.AttachUserToContext(userService), searchHandler.ResolveMultiRecipe)
+	apiProtected.POST("/recipes/search/check-multi", middleware.AttachUserToContext(userService), searchHandler.CheckMultiRecipe)
 
 	// Vector similarity routes
 	similarityHandler := handlers.NewSimilarityHandler(vectorRepo, embedProvider, recipeService)
