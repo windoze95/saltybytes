@@ -570,8 +570,9 @@ func buildCachedSystemPrompt(staticPrefix string, dynamicSuffix string) []anthro
 // GenerateRecipe creates a new recipe via Claude tool use.
 func (p *AnthropicProvider) GenerateRecipe(ctx context.Context, req RecipeRequest) (*RecipeResult, error) {
 	sysSuffix, err := config.RenderPrompt(p.prompts.Recipe.Generate.System, map[string]interface{}{
-		"UnitSystem":   req.UnitSystem,
-		"Requirements": req.Requirements,
+		"UnitSystem":     req.UnitSystem,
+		"Requirements":   req.Requirements,
+		"CookingContext": req.CookingContext,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("render system prompt: %w", err)
@@ -613,8 +614,9 @@ func (p *AnthropicProvider) GenerateRecipe(ctx context.Context, req RecipeReques
 // RegenerateRecipe revises an existing recipe based on conversation history.
 func (p *AnthropicProvider) RegenerateRecipe(ctx context.Context, req RegenerateRequest) (*RecipeResult, error) {
 	sysSuffix, err := config.RenderPrompt(p.prompts.Recipe.Regenerate.System, map[string]interface{}{
-		"UnitSystem":   req.UnitSystem,
-		"Requirements": req.Requirements,
+		"UnitSystem":     req.UnitSystem,
+		"Requirements":   req.Requirements,
+		"CookingContext": req.CookingContext,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("render system prompt: %w", err)
@@ -657,8 +659,9 @@ func (p *AnthropicProvider) RegenerateRecipe(ctx context.Context, req Regenerate
 // ForkRecipe creates a new recipe branched from an existing one.
 func (p *AnthropicProvider) ForkRecipe(ctx context.Context, req ForkRequest) (*RecipeResult, error) {
 	sysSuffix, err := config.RenderPrompt(p.prompts.Recipe.Fork.System, map[string]interface{}{
-		"UnitSystem":   req.UnitSystem,
-		"Requirements": req.Requirements,
+		"UnitSystem":     req.UnitSystem,
+		"Requirements":   req.Requirements,
+		"CookingContext": req.CookingContext,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("render system prompt: %w", err)

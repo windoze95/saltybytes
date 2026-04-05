@@ -62,9 +62,10 @@ func (s *RecipeService) FinishRegenerateRecipe(recipe *models.Recipe, user *mode
 
 	req := ai.RegenerateRequest{
 		RecipeRequest: ai.RecipeRequest{
-			UserPrompt:   userPrompt,
-			UnitSystem:   user.Personalization.UnitSystemText(),
-			Requirements: user.Personalization.Requirements,
+			UserPrompt:     userPrompt,
+			UnitSystem:     user.Personalization.UnitSystemText(),
+			Requirements:   user.Personalization.Requirements,
+			CookingContext: user.Personalization.CookingContextPrompt(),
 		},
 		ExistingHistory: existingHistory,
 	}

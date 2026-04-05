@@ -2,6 +2,7 @@ package models
 
 import (
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -150,10 +151,11 @@ type UserSettings struct {
 // Personalization is the model for a user's personalization settings.
 type Personalization struct {
 	gorm.Model
-	UserID       uint      `gorm:"unique;index"`
-	UnitSystem   string    `gorm:"type:text;default:'us_customary'"`
-	Requirements string    // Additional instructions or guidelines
-	UID          uuid.UUID
+	UserID         uint      `gorm:"unique;index"`
+	UnitSystem     string    `gorm:"type:text;default:'us_customary'"`
+	Requirements   string    // Additional instructions or guidelines
+	CookingContext string    `json:"cooking_context" gorm:"type:text"` // free-form cooking preferences injected into AI prompts
+	UID            uuid.UUID
 }
 
 // UnitSystemText returns the display text for the current UnitSystem.
@@ -164,6 +166,15 @@ func (p *Personalization) UnitSystemText() string {
 	default:
 		return "US Customary"
 	}
+}
+
+// CookingContextPrompt returns the cooking context formatted for AI prompt injection.
+// Returns empty string if no context is set.
+func (p *Personalization) CookingContextPrompt() string {
+	if p.CookingContext == "" {
+		return ""
+	}
+	return fmt.Sprintf("Additional context about the user's kitchen and preferences: %s", p.CookingContext)
 }
 
 // BeforeCreate is a GORM hook that runs before creating a new user Personalization.
