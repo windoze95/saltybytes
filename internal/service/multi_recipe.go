@@ -409,6 +409,10 @@ func (r *MultiRecipeResolver) extractSingleCard(entry *MultiRecipeEntry, idx int
 			}
 			return -1 // drop
 		}, title)
+		// Fallback for non-ASCII titles that produce empty slugs
+		if slug == "" {
+			slug = fmt.Sprintf("card-%d", idx)
+		}
 		separator := "?"
 		if strings.Contains(sourceURL, "?") {
 			separator = "&"

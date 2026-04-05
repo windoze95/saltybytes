@@ -700,11 +700,21 @@ func (s *ImportService) PreviewFromURLWithMultiCheck(ctx context.Context, rawURL
 		}
 	}
 
-	// Check canonical cache — but only when multi-recipe detection is
-	// unavailable or the URL has already been checked. Otherwise a
-	// previously-cached listicle URL would always return a single recipe
-	// and never reach multi-recipe detection.
-	canUseCanonicalCache := resolver == nil // no resolver = no multi detection needed
+	// Use canonical cache when:
+	// - no resolver (multi detection unavailable), OR
+	// - resolver confirms this URL was already checked and is NOT multi-recipe
+	// This prevents previously-cached listicle URLs from bypassing detection,
+	// while still caching confirmed single-recipe URLs.
+	canUseCanonicalCache := resolver == nil
+	if !canUseCanonicalCache {
+		if checked := resolver.Registry.Get(rawURL); checked != nil {
+			status := checked.GetStatus()
+			cards := checked.GetCards()
+			if (status == "resolved" || status == "failed") && len(cards) <= 1 {
+				canUseCanonicalCache = true // confirmed single-recipe
+			}
+		}
+	}
 	if s.CanonicalRepo != nil && canUseCanonicalCache {
 		normalizedURL, normErr := NormalizeURL(rawURL)
 		if normErr == nil {
@@ -872,6 +882,13 @@ func (s *ImportService) refreshStaleCanonicals() {
 	}
 
 	for _, entry := range entries {
+		// Skip multi-recipe card entries — they have _recipe= in the URL
+		// and can't be refreshed by generic extractFromURL (which grabs
+		// the first recipe). They'll be re-extracted when clicked.
+		if strings.Contains(entry.OriginalURL, "_recipe=") {
+			continue
+		}
+
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		recipeDef, _, method, _, err := s.extractFromURL(ctx, entry.OriginalURL)
 		cancel()
