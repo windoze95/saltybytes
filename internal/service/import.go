@@ -43,10 +43,11 @@ type ImportService struct {
 	VisionProvider  ai.VisionProvider
 	PreviewProvider ai.TextProvider
 	CanonicalRepo   repository.CanonicalRecipeRepo
+	Policy          *ImportPolicy
 
 	// Test seams — nil in production, set in tests to bypass real HTTP/Firecrawl calls
 	HTTPFetchOverride      func(ctx context.Context, url string) (body []byte, statusCode int, err error)
-	FirecrawlFetchOverride func(ctx context.Context, url string) (html string, err error)
+	FirecrawlFetchOverride func(ctx context.Context, url string) (html string, statusCode int, err error)
 }
 
 // NewImportService creates a new ImportService.
@@ -58,6 +59,7 @@ func NewImportService(cfg *config.Config, recipeRepo repository.RecipeRepo, reci
 		TextProvider:    textProvider,
 		VisionProvider:  visionProvider,
 		PreviewProvider: previewProvider,
+		Policy:          NewImportPolicy(),
 	}
 }
 
@@ -201,14 +203,14 @@ func isCloudflareChallenge(body []byte) bool {
 
 // fetchViaFirecrawl scrapes a URL using the Firecrawl API as a fallback
 // when direct HTTP fetch is blocked by bot protection.
-func (s *ImportService) fetchViaFirecrawl(ctx context.Context, rawURL string) (string, error) {
+func (s *ImportService) fetchViaFirecrawl(ctx context.Context, rawURL string) (string, int, error) {
 	if s.FirecrawlFetchOverride != nil {
 		return s.FirecrawlFetchOverride(ctx, rawURL)
 	}
 
 	apiKey := s.Cfg.EnvVars.FirecrawlAPIKey
 	if apiKey == "" {
-		return "", fmt.Errorf("firecrawl API key not configured")
+		return "", 0, fmt.Errorf("firecrawl API key not configured")
 	}
 
 	payload, err := json.Marshal(map[string]interface{}{
@@ -216,7 +218,7 @@ func (s *ImportService) fetchViaFirecrawl(ctx context.Context, rawURL string) (s
 		"formats": []string{"html"},
 	})
 	if err != nil {
-		return "", fmt.Errorf("failed to marshal firecrawl request: %w", err)
+		return "", 0, fmt.Errorf("failed to marshal firecrawl request: %w", err)
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
@@ -224,40 +226,43 @@ func (s *ImportService) fetchViaFirecrawl(ctx context.Context, rawURL string) (s
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.firecrawl.dev/v1/scrape", strings.NewReader(string(payload)))
 	if err != nil {
-		return "", fmt.Errorf("failed to create firecrawl request: %w", err)
+		return "", 0, fmt.Errorf("failed to create firecrawl request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("firecrawl request failed: %w", err)
+		return "", 0, fmt.Errorf("firecrawl request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 2*1024*1024))
 	if err != nil {
-		return "", fmt.Errorf("failed to read firecrawl response: %w", err)
+		return "", 0, fmt.Errorf("failed to read firecrawl response: %w", err)
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("firecrawl returned status %d", resp.StatusCode)
+		return "", 0, fmt.Errorf("firecrawl returned status %d", resp.StatusCode)
 	}
 
 	var result struct {
 		Success bool `json:"success"`
 		Data    struct {
-			HTML string `json:"html"`
+			HTML     string `json:"html"`
+			Metadata struct {
+				StatusCode int `json:"statusCode"`
+			} `json:"metadata"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(respBody, &result); err != nil {
-		return "", fmt.Errorf("failed to parse firecrawl response: %w", err)
+		return "", 0, fmt.Errorf("failed to parse firecrawl response: %w", err)
 	}
 	if !result.Success || result.Data.HTML == "" {
-		return "", fmt.Errorf("firecrawl returned no HTML")
+		return "", 0, fmt.Errorf("firecrawl returned no HTML")
 	}
 
-	return result.Data.HTML, nil
+	return result.Data.HTML, result.Data.Metadata.StatusCode, nil
 }
 
 // extractFromURL fetches a URL and extracts recipe data via JSON-LD or AI fallback.
@@ -266,11 +271,26 @@ func (s *ImportService) fetchViaFirecrawl(ctx context.Context, rawURL string) (s
 func (s *ImportService) extractFromURL(ctx context.Context, rawURL string) (*models.RecipeDef, []string, models.ExtractionMethod, error) {
 	log := logger.Get().With(zap.String("url", rawURL))
 
+	// Check if this domain is known to block direct fetches
+	skipDirectFetch := s.Policy != nil && s.Policy.ShouldSkipDirectFetch(rawURL)
+
 	// Phase 1: Fetch HTML (with Firecrawl fallback for blocked sites)
 	var html string
 	var usedFirecrawl bool
 
-	if s.HTTPFetchOverride != nil {
+	if skipDirectFetch {
+		log.Info("skipping direct fetch for known-blocking domain, using firecrawl")
+		fcHTML, fcStatus, fcErr := s.fetchViaFirecrawl(ctx, rawURL)
+		if fcErr != nil {
+			log.Warn("firecrawl fallback failed for known-blocking domain", zap.Error(fcErr))
+			return nil, nil, "", &ExtractionError{Code: "site_blocked", Message: "this website blocks automated access"}
+		}
+		if fcStatus == http.StatusNotFound {
+			return nil, nil, "", &ExtractionError{Code: "not_found", Message: "recipe page not found"}
+		}
+		html = fcHTML
+		usedFirecrawl = true
+	} else if s.HTTPFetchOverride != nil {
 		body, statusCode, err := s.HTTPFetchOverride(ctx, rawURL)
 		if err != nil {
 			return nil, nil, "", &ExtractionError{Code: "fetch_failed", Message: fmt.Sprintf("failed to fetch URL: %v", err)}
@@ -280,7 +300,10 @@ func (s *ImportService) extractFromURL(ctx context.Context, rawURL string) (*mod
 		}
 		if isBotBlockStatus(statusCode) || isCloudflareChallenge(body) {
 			log.Info("direct fetch blocked, trying firecrawl", zap.Int("status", statusCode))
-			fcHTML, fcErr := s.fetchViaFirecrawl(ctx, rawURL)
+			if s.Policy != nil {
+				s.Policy.RecordDirectFetchBlocked(rawURL)
+			}
+			fcHTML, _, fcErr := s.fetchViaFirecrawl(ctx, rawURL)
 			if fcErr != nil {
 				log.Warn("firecrawl fallback failed", zap.Error(fcErr))
 				return nil, nil, "", &ExtractionError{Code: "site_blocked", Message: "this website blocks automated access"}
@@ -316,7 +339,10 @@ func (s *ImportService) extractFromURL(ctx context.Context, rawURL string) (*mod
 
 		if isBotBlockStatus(resp.StatusCode) || isCloudflareChallenge(body) {
 			log.Info("direct fetch blocked, trying firecrawl", zap.Int("status", resp.StatusCode))
-			fcHTML, fcErr := s.fetchViaFirecrawl(ctx, rawURL)
+			if s.Policy != nil {
+				s.Policy.RecordDirectFetchBlocked(rawURL)
+			}
+			fcHTML, _, fcErr := s.fetchViaFirecrawl(ctx, rawURL)
 			if fcErr != nil {
 				log.Warn("firecrawl fallback failed", zap.Error(fcErr))
 				return nil, nil, "", &ExtractionError{Code: "site_blocked", Message: "this website blocks automated access"}
@@ -338,6 +364,9 @@ func (s *ImportService) extractFromURL(ctx context.Context, rawURL string) (*mod
 		if usedFirecrawl {
 			method = models.ExtractionFirecrawlJSONLD
 		}
+		if s.Policy != nil {
+			s.Policy.RecordOutcome(rawURL, method, true)
+		}
 		return recipeDef, hashtags, method, nil
 	}
 
@@ -352,6 +381,13 @@ func (s *ImportService) extractFromURL(ctx context.Context, rawURL string) (*mod
 
 	result, err := provider.ExtractRecipeFromText(ctx, html, "preserve source")
 	if err != nil {
+		method := models.ExtractionHaiku
+		if usedFirecrawl {
+			method = models.ExtractionFirecrawlHaiku
+		}
+		if s.Policy != nil {
+			s.Policy.RecordOutcome(rawURL, method, false)
+		}
 		return nil, nil, "", fmt.Errorf("failed to extract recipe from URL: %w", err)
 	}
 
@@ -360,6 +396,9 @@ func (s *ImportService) extractFromURL(ctx context.Context, rawURL string) (*mod
 	method := models.ExtractionHaiku
 	if usedFirecrawl {
 		method = models.ExtractionFirecrawlHaiku
+	}
+	if s.Policy != nil {
+		s.Policy.RecordOutcome(rawURL, method, true)
 	}
 	return &def, result.Hashtags, method, nil
 }
