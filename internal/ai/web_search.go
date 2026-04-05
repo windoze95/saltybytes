@@ -65,14 +65,14 @@ func markExhausted(exhaustedAt *atomic.Int64) {
 // Google no longer allows Custom Search Engines to search the entire web
 // (a curated site list is required). DO NOT DELETE the Google code — it can
 // be re-enabled once a suitable CSE configuration is set up.
-func (p *WebSearchProvider) SearchRecipes(ctx context.Context, query string, count int) ([]SearchResult, error) {
+func (p *WebSearchProvider) SearchRecipes(ctx context.Context, query string, count int, offset int) ([]SearchResult, error) {
 	if count <= 0 {
 		count = 10
 	}
 
 	// Try Brave (unless we recently hit a quota limit)
 	if !isExhausted(&p.braveExhaustedAt) && p.braveAPIKey != "" {
-		results, err := p.searchBrave(ctx, query, count)
+		results, err := p.searchBrave(ctx, query, count, offset)
 		if err == nil {
 			return results, nil
 		}
@@ -123,7 +123,7 @@ type googleErrorBlock struct {
 	Message string `json:"message"`
 }
 
-func (p *WebSearchProvider) searchGoogle(ctx context.Context, query string, count int) ([]SearchResult, error) {
+func (p *WebSearchProvider) searchGoogle(ctx context.Context, query string, count int, offset int) ([]SearchResult, error) {
 	// Google CSE max is 10 per request
 	if count > 10 {
 		count = 10
@@ -215,7 +215,7 @@ type braveThumbnail struct {
 	Src string `json:"src"`
 }
 
-func (p *WebSearchProvider) searchBrave(ctx context.Context, query string, count int) ([]SearchResult, error) {
+func (p *WebSearchProvider) searchBrave(ctx context.Context, query string, count int, offset int) ([]SearchResult, error) {
 	if count > 20 {
 		count = 20
 	}
@@ -223,6 +223,9 @@ func (p *WebSearchProvider) searchBrave(ctx context.Context, query string, count
 	params := url.Values{}
 	params.Set("q", query+" recipe")
 	params.Set("count", fmt.Sprintf("%d", count))
+	if offset > 0 {
+		params.Set("offset", fmt.Sprintf("%d", offset))
+	}
 
 	reqURL := fmt.Sprintf("%s?%s", braveSearchEndpoint, params.Encode())
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)

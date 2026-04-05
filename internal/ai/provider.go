@@ -37,7 +37,7 @@ type EmbeddingProvider interface {
 
 // SearchProvider handles web recipe search (Google + Brave fallback).
 type SearchProvider interface {
-	SearchRecipes(ctx context.Context, query string, count int) ([]SearchResult, error)
+	SearchRecipes(ctx context.Context, query string, count int, offset int) ([]SearchResult, error)
 }
 
 // RecipeRequest holds parameters for generating a new recipe.

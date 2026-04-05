@@ -590,12 +590,12 @@ func (m *MockUserRepo) UsernameExists(username string) (bool, error) {
 
 // MockSearchProvider is a mock implementation of ai.SearchProvider.
 type MockSearchProvider struct {
-	SearchRecipesFunc func(ctx context.Context, query string, count int) ([]ai.SearchResult, error)
+	SearchRecipesFunc func(ctx context.Context, query string, count int, offset int) ([]ai.SearchResult, error)
 }
 
-func (m *MockSearchProvider) SearchRecipes(ctx context.Context, query string, count int) ([]ai.SearchResult, error) {
+func (m *MockSearchProvider) SearchRecipes(ctx context.Context, query string, count int, offset int) ([]ai.SearchResult, error) {
 	if m.SearchRecipesFunc != nil {
-		return m.SearchRecipesFunc(ctx, query, count)
+		return m.SearchRecipesFunc(ctx, query, count, offset)
 	}
 	return nil, fmt.Errorf("SearchRecipes not configured")
 }
