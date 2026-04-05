@@ -16,6 +16,11 @@ import (
 
 const cacheTTL = 24 * time.Hour
 
+// maxProviderPageSize is the largest page a search provider can return in a
+// single call (Brave caps at 20). Used to derive HasMore correctly when the
+// caller requests more than the provider can deliver.
+const maxProviderPageSize = 20
+
 // SearchServiceResult wraps search results with a cache flag.
 type SearchServiceResult struct {
 	Results   []ai.SearchResult
@@ -48,6 +53,15 @@ func NewSearchService(cfg *config.Config, searchProvider ai.SearchProvider, subS
 func (s *SearchService) SearchRecipes(ctx context.Context, query string, count int, offset int) (*SearchServiceResult, error) {
 	normalized := normalizeQuery(query)
 
+	// The provider may cap page size below what the caller asked for
+	// (e.g. Brave max 20). Use the effective cap for HasMore so we
+	// don't falsely report no-more-results when the provider simply
+	// cannot return that many per page.
+	effectiveCount := count
+	if effectiveCount > maxProviderPageSize {
+		effectiveCount = maxProviderPageSize
+	}
+
 	// Paginated requests bypass cache entirely.
 	if offset > 0 {
 		results, err := s.SearchProvider.SearchRecipes(ctx, query, count, offset)
@@ -57,7 +71,7 @@ func (s *SearchService) SearchRecipes(ctx context.Context, query string, count i
 		return &SearchServiceResult{
 			Results:   results,
 			FromCache: false,
-			HasMore:   len(results) == count,
+			HasMore:   len(results) >= effectiveCount,
 		}, nil
 	}
 
@@ -74,7 +88,7 @@ func (s *SearchService) SearchRecipes(ctx context.Context, query string, count i
 			return &SearchServiceResult{
 				Results:   results,
 				FromCache: true,
-				HasMore:   len(results) == count,
+				HasMore:   len(results) >= effectiveCount,
 			}, nil
 		}
 	}
@@ -94,7 +108,7 @@ func (s *SearchService) SearchRecipes(ctx context.Context, query string, count i
 				return &SearchServiceResult{
 					Results:   results,
 					FromCache: true,
-					HasMore:   len(results) == count,
+					HasMore:   len(results) >= effectiveCount,
 				}, nil
 			}
 		} else {
@@ -116,7 +130,7 @@ func (s *SearchService) SearchRecipes(ctx context.Context, query string, count i
 	return &SearchServiceResult{
 		Results:   results,
 		FromCache: false,
-		HasMore:   len(results) == count,
+		HasMore:   len(results) >= effectiveCount,
 	}, nil
 }
 

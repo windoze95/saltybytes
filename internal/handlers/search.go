@@ -71,8 +71,8 @@ func (h *SearchHandler) SearchRecipes(c *gin.Context) {
 		return
 	}
 
-	// Only increment usage for fresh searches (not pagination or cache hits)
-	if !result.FromCache && offset == 0 && h.Service.SubService != nil {
+	// Increment usage for every non-cached search (including pagination)
+	if !result.FromCache && h.Service.SubService != nil {
 		if err := h.Service.SubService.IncrementUsage(user.ID, "search"); err != nil {
 			logger.Get().Error("failed to increment search usage", zap.Uint("user_id", user.ID), zap.Error(err))
 		}
