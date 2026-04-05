@@ -71,9 +71,10 @@ func (s *RecipeService) FinishGenerateRecipeWithFork(recipe *models.Recipe, sour
 
 	req := ai.ForkRequest{
 		RecipeRequest: ai.RecipeRequest{
-			UserPrompt:   userPrompt,
-			UnitSystem:   user.Personalization.UnitSystemText(),
-			Requirements: user.Personalization.Requirements,
+			UserPrompt:     userPrompt,
+			UnitSystem:     user.Personalization.UnitSystemText(),
+			Requirements:   user.Personalization.Requirements,
+			CookingContext: user.Personalization.CookingContextPrompt(),
 		},
 		ExistingHistory: existingHistory,
 	}

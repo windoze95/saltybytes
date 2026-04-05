@@ -293,8 +293,9 @@ func (h *UserHandler) UpdatePersonalization(c *gin.Context) {
 	}
 
 	var req struct {
-		UnitSystem   string `json:"unit_system"`
-		Requirements string `json:"requirements"`
+		UnitSystem     string `json:"unit_system"`
+		Requirements   string `json:"requirements"`
+		CookingContext string `json:"cooking_context"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
@@ -302,9 +303,10 @@ func (h *UserHandler) UpdatePersonalization(c *gin.Context) {
 	}
 
 	updatedPersonalization := &models.Personalization{
-		UnitSystem:   req.UnitSystem,
-		Requirements: req.Requirements,
-		UID:          user.Personalization.UID,
+		UnitSystem:     req.UnitSystem,
+		Requirements:   req.Requirements,
+		CookingContext: req.CookingContext,
+		UID:            user.Personalization.UID,
 	}
 
 	if err := h.Service.UpdatePersonalization(user, updatedPersonalization); err != nil {

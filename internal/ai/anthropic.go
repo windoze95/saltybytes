@@ -584,8 +584,9 @@ func (p *AnthropicProvider) GenerateRecipe(ctx context.Context, req RecipeReques
 
 	return runWithMiddleware(ctx, p.middleware, op, func(ctx context.Context) (*RecipeResult, error) {
 		sysSuffix, err := config.RenderPrompt(p.prompts.Recipe.Generate.System, map[string]interface{}{
-			"UnitSystem":   req.UnitSystem,
-			"Requirements": req.Requirements,
+			"UnitSystem":     req.UnitSystem,
+			"Requirements":   req.Requirements,
+			"CookingContext": req.CookingContext,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("render system prompt: %w", err)
@@ -636,8 +637,9 @@ func (p *AnthropicProvider) RegenerateRecipe(ctx context.Context, req Regenerate
 
 	return runWithMiddleware(ctx, p.middleware, op, func(ctx context.Context) (*RecipeResult, error) {
 		sysSuffix, err := config.RenderPrompt(p.prompts.Recipe.Regenerate.System, map[string]interface{}{
-			"UnitSystem":   req.UnitSystem,
-			"Requirements": req.Requirements,
+			"UnitSystem":     req.UnitSystem,
+			"Requirements":   req.Requirements,
+			"CookingContext": req.CookingContext,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("render system prompt: %w", err)
@@ -689,8 +691,9 @@ func (p *AnthropicProvider) ForkRecipe(ctx context.Context, req ForkRequest) (*R
 
 	return runWithMiddleware(ctx, p.middleware, op, func(ctx context.Context) (*RecipeResult, error) {
 		sysSuffix, err := config.RenderPrompt(p.prompts.Recipe.Fork.System, map[string]interface{}{
-			"UnitSystem":   req.UnitSystem,
-			"Requirements": req.Requirements,
+			"UnitSystem":     req.UnitSystem,
+			"Requirements":   req.Requirements,
+			"CookingContext": req.CookingContext,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("render system prompt: %w", err)
