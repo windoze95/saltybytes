@@ -67,6 +67,7 @@ func (s *RecipeService) FinishGenerateRecipe(recipe *models.Recipe, user *models
 		}
 		recipeDef := recipeResultToRecipeDef(result)
 		recipe.RecipeDef = recipeDef
+		recipe.PromptVersion = result.PromptVersion
 
 		if err := validateRecipeCoreFields(recipe); err != nil {
 			recipeErrChan <- err

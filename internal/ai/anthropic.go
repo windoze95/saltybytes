@@ -622,7 +622,12 @@ func (p *AnthropicProvider) GenerateRecipe(ctx context.Context, req RecipeReques
 			return nil, err
 		}
 
-		return extractAndValidateRecipe(resp)
+		result, err := extractAndValidateRecipe(resp)
+		if err != nil {
+			return nil, err
+		}
+		result.PromptVersion = config.PromptVersion(p.prompts)
+		return result, nil
 	})
 }
 
@@ -676,7 +681,12 @@ func (p *AnthropicProvider) RegenerateRecipe(ctx context.Context, req Regenerate
 			return nil, err
 		}
 
-		return extractAndValidateRecipe(resp)
+		result, err := extractAndValidateRecipe(resp)
+		if err != nil {
+			return nil, err
+		}
+		result.PromptVersion = config.PromptVersion(p.prompts)
+		return result, nil
 	})
 }
 
@@ -729,7 +739,12 @@ func (p *AnthropicProvider) ForkRecipe(ctx context.Context, req ForkRequest) (*R
 			return nil, err
 		}
 
-		return extractAndValidateRecipe(resp)
+		result, err := extractAndValidateRecipe(resp)
+		if err != nil {
+			return nil, err
+		}
+		result.PromptVersion = config.PromptVersion(p.prompts)
+		return result, nil
 	})
 }
 
@@ -921,7 +936,12 @@ func (p *AnthropicProvider) ExtractRecipeFromText(ctx context.Context, text stri
 			return nil, err
 		}
 
-		return extractAndValidateRecipe(resp)
+		result, err := extractAndValidateRecipe(resp)
+		if err != nil {
+			return nil, err
+		}
+		result.PromptVersion = config.PromptVersion(p.prompts)
+		return result, nil
 	})
 }
 
@@ -1053,7 +1073,12 @@ func (p *AnthropicProvider) ExtractRecipeFromImage(ctx context.Context, imageDat
 			return nil, err
 		}
 
-		return extractAndValidateRecipe(resp)
+		result, err := extractAndValidateRecipe(resp)
+		if err != nil {
+			return nil, err
+		}
+		result.PromptVersion = config.PromptVersion(p.prompts)
+		return result, nil
 	})
 }
 

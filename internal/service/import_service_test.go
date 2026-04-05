@@ -183,7 +183,7 @@ func TestCreateImportedRecipe_AssociatesTags(t *testing.T) {
 		ImagePrompt:  "A baked thing",
 	}
 
-	resp, _, err := svc.createImportedRecipe(context.Background(), recipeDef, user, models.RecipeTypeManualEntry, "", nil, []string{"baking", "easy"})
+	resp, _, err := svc.createImportedRecipe(context.Background(), recipeDef, user, models.RecipeTypeManualEntry, "", nil, []string{"baking", "easy"}, "")
 	if err != nil {
 		t.Fatalf("createImportedRecipe error: %v", err)
 	}
@@ -338,7 +338,7 @@ func TestCreateImportedRecipe_CreatesTree(t *testing.T) {
 		ImagePrompt:  "Salty",
 	}
 
-	_, _, err := svc.createImportedRecipe(context.Background(), recipeDef, user, models.RecipeTypeImportCopypasta, "", nil, nil)
+	_, _, err := svc.createImportedRecipe(context.Background(), recipeDef, user, models.RecipeTypeImportCopypasta, "", nil, nil, "")
 	if err != nil {
 		t.Fatalf("createImportedRecipe error: %v", err)
 	}
@@ -361,7 +361,7 @@ func TestExtractFromURL_DirectSuccess(t *testing.T) {
 		return []byte(jsonLDHTML()), 200, nil
 	}
 
-	def, _, method, err := svc.extractFromURL(context.Background(), "https://example.com/recipe")
+	def, _, method, _, err := svc.extractFromURL(context.Background(), "https://example.com/recipe")
 	if err != nil {
 		t.Fatalf("extractFromURL error: %v", err)
 	}
@@ -385,7 +385,7 @@ func TestExtractFromURL_DirectSuccess_AIFallback(t *testing.T) {
 		return []byte(plainHTML()), 200, nil
 	}
 
-	def, _, method, err := svc.extractFromURL(context.Background(), "https://example.com/recipe")
+	def, _, method, _, err := svc.extractFromURL(context.Background(), "https://example.com/recipe")
 	if err != nil {
 		t.Fatalf("extractFromURL error: %v", err)
 	}
@@ -408,7 +408,7 @@ func TestExtractFromURL_403_FirecrawlSuccess(t *testing.T) {
 		return jsonLDHTML(), 200, nil
 	}
 
-	def, _, method, err := svc.extractFromURL(context.Background(), "https://example.com/recipe")
+	def, _, method, _, err := svc.extractFromURL(context.Background(), "https://example.com/recipe")
 	if err != nil {
 		t.Fatalf("extractFromURL error: %v", err)
 	}
@@ -431,7 +431,7 @@ func TestExtractFromURL_403_FirecrawlFail(t *testing.T) {
 		return "", 0, fmt.Errorf("firecrawl error")
 	}
 
-	_, _, _, err := svc.extractFromURL(context.Background(), "https://example.com/recipe")
+	_, _, _, _, err := svc.extractFromURL(context.Background(), "https://example.com/recipe")
 	if err == nil {
 		t.Fatal("expected error when firecrawl fails")
 	}
@@ -452,7 +452,7 @@ func TestExtractFromURL_403_NoFirecrawlKey(t *testing.T) {
 		return []byte("Forbidden"), 403, nil
 	}
 
-	_, _, _, err := svc.extractFromURL(context.Background(), "https://example.com/recipe")
+	_, _, _, _, err := svc.extractFromURL(context.Background(), "https://example.com/recipe")
 	if err == nil {
 		t.Fatal("expected error when no firecrawl key")
 	}
@@ -472,7 +472,7 @@ func TestExtractFromURL_404(t *testing.T) {
 		return []byte("Not Found"), 404, nil
 	}
 
-	_, _, _, err := svc.extractFromURL(context.Background(), "https://example.com/recipe")
+	_, _, _, _, err := svc.extractFromURL(context.Background(), "https://example.com/recipe")
 	if err == nil {
 		t.Fatal("expected error on 404")
 	}
@@ -496,7 +496,7 @@ func TestExtractFromURL_CloudflareChallenge(t *testing.T) {
 		return jsonLDHTML(), 200, nil
 	}
 
-	def, _, method, err := svc.extractFromURL(context.Background(), "https://example.com/recipe")
+	def, _, method, _, err := svc.extractFromURL(context.Background(), "https://example.com/recipe")
 	if err != nil {
 		t.Fatalf("extractFromURL error: %v", err)
 	}
@@ -521,7 +521,7 @@ func TestExtractFromURL_500_NoFirecrawl(t *testing.T) {
 		return "", 0, fmt.Errorf("should not be called")
 	}
 
-	_, _, _, err := svc.extractFromURL(context.Background(), "https://example.com/recipe")
+	_, _, _, _, err := svc.extractFromURL(context.Background(), "https://example.com/recipe")
 	if err == nil {
 		t.Fatal("expected error on 500")
 	}

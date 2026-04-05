@@ -145,6 +145,7 @@ func (r *RecipeRepository) UpdateRecipeDef(recipe *models.Recipe) error {
 			"CookTime":          recipe.CookTime,
 			"LinkedSuggestions": recipe.LinkedSuggestions,
 			"ImagePrompt":       recipe.ImagePrompt,
+			"PromptVersion":     recipe.PromptVersion,
 		}).Error
 	if err != nil {
 		logger.Get().Error("failed to update recipe core fields", zap.Uint("recipe_id", recipe.ID), zap.Error(err))

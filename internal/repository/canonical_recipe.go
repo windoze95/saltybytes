@@ -43,7 +43,7 @@ func (r *CanonicalRecipeRepository) GetByNormalizedURL(normalizedURL string) (*m
 func (r *CanonicalRecipeRepository) Upsert(entry *models.CanonicalRecipe) error {
 	return r.DB.Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "normalized_url"}},
-		DoUpdates: clause.AssignmentColumns([]string{"recipe_data", "extraction_method", "fetched_at", "last_accessed_at", "original_url", "embedding"}),
+		DoUpdates: clause.AssignmentColumns([]string{"recipe_data", "extraction_method", "fetched_at", "last_accessed_at", "original_url", "embedding", "prompt_version"}),
 	}).Create(entry).Error
 }
 

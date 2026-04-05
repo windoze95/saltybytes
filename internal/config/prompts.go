@@ -2,6 +2,9 @@ package config
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -67,6 +70,17 @@ type Prompts struct {
 	CookingQA        SinglePrompt    `yaml:"cooking_qa"`
 	DietaryInterview SinglePrompt    `yaml:"dietary_interview"`
 	Import           ImportPrompts   `yaml:"import"`
+}
+
+// PromptVersion returns a short hash of the current prompt templates.
+// This identifies which prompt version generated a recipe.
+func PromptVersion(prompts *Prompts) string {
+	data, err := json.Marshal(prompts.Recipe)
+	if err != nil {
+		return "unknown"
+	}
+	hash := sha256.Sum256(data)
+	return hex.EncodeToString(hash[:8]) // 16-char hex string
 }
 
 // LoadPrompts reads and parses a YAML prompt configuration file.

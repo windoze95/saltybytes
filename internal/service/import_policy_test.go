@@ -214,7 +214,7 @@ func TestExtractFromURL_PolicyRecordsOutcome_JSONLD(t *testing.T) {
 		return []byte(jsonLDHTML()), 200, nil
 	}
 
-	_, _, method, err := svc.extractFromURL(context.Background(), "https://example.com/recipe")
+	_, _, method, _, err := svc.extractFromURL(context.Background(), "https://example.com/recipe")
 	if err != nil {
 		t.Fatalf("extractFromURL error: %v", err)
 	}
@@ -241,7 +241,7 @@ func TestExtractFromURL_PolicyRecordsBlocked(t *testing.T) {
 		return jsonLDHTML(), 200, nil
 	}
 
-	_, _, _, err := svc.extractFromURL(context.Background(), "https://blocked.com/recipe")
+	_, _, _, _, err := svc.extractFromURL(context.Background(), "https://blocked.com/recipe")
 	if err != nil {
 		t.Fatalf("extractFromURL error: %v", err)
 	}
@@ -277,7 +277,7 @@ func TestExtractFromURL_PolicySkipsDirectFetch(t *testing.T) {
 		return jsonLDHTML(), 200, nil
 	}
 
-	def, _, method, err := svc.extractFromURL(context.Background(), "https://blocked.com/new-recipe")
+	def, _, method, _, err := svc.extractFromURL(context.Background(), "https://blocked.com/new-recipe")
 	if err != nil {
 		t.Fatalf("extractFromURL error: %v", err)
 	}
@@ -310,7 +310,7 @@ func TestExtractFromURL_PolicySkipsDirectFetch_404(t *testing.T) {
 		return "<html>Not Found</html>", 404, nil
 	}
 
-	_, _, _, err := svc.extractFromURL(context.Background(), "https://blocked.com/deleted-recipe")
+	_, _, _, _, err := svc.extractFromURL(context.Background(), "https://blocked.com/deleted-recipe")
 	if err == nil {
 		t.Fatal("expected error for 404 on skip-direct domain")
 	}
@@ -332,7 +332,7 @@ func TestExtractFromURL_NilPolicyStillWorks(t *testing.T) {
 		return []byte(jsonLDHTML()), 200, nil
 	}
 
-	def, _, method, err := svc.extractFromURL(context.Background(), "https://example.com/recipe")
+	def, _, method, _, err := svc.extractFromURL(context.Background(), "https://example.com/recipe")
 	if err != nil {
 		t.Fatalf("extractFromURL error: %v", err)
 	}

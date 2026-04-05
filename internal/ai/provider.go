@@ -75,6 +75,7 @@ type RecipeResult struct {
 	PortionSize       string
 	SourceURL         string
 	UnitSystem        string
+	PromptVersion     string // hash of prompt templates used to generate this recipe
 }
 
 // IngredientResult is a single ingredient in the recipe output.

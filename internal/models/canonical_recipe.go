@@ -27,4 +27,5 @@ type CanonicalRecipe struct {
 	LastAccessedAt   time.Time        `gorm:"index;not null"`
 	FetchedAt        time.Time        `gorm:"index;not null"`
 	Embedding        *string          `gorm:"type:vector(1536)" json:"-"`
+	PromptVersion    string           `gorm:"size:16"`
 }
