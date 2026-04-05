@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/windoze95/saltybytes-api/internal/ai"
@@ -52,7 +53,7 @@ func (s *RecipeService) FinishRegenerateRecipe(recipe *models.Recipe, user *mode
 	if tree, treeErr := s.Repo.GetTreeByRecipeID(recipe.ID); treeErr == nil {
 		if activeNode, nodeErr := s.Repo.GetActiveNode(tree.ID); nodeErr == nil {
 			if ancestors, ancestorErr := s.Repo.GetNodeAncestors(activeNode.ID); ancestorErr == nil {
-				existingHistory = nodeChainToMessages(ancestors, &recipe.RecipeDef)
+				existingHistory = compactNodeChain(ancestors, &recipe.RecipeDef, maxUncompactedNodes)
 			} else {
 				logger.Get().Warn("failed to load node ancestors for regen", zap.Uint("recipe_id", recipe.ID), zap.Error(ancestorErr))
 			}
@@ -178,6 +179,8 @@ func (s *RecipeService) FinishRegenerateRecipe(recipe *models.Recipe, user *mode
 	}
 }
 
+const maxUncompactedNodes = 6 // compact when tree depth exceeds this
+
 // nodeChainToMessages converts a chain of tree nodes into ai.Message slices
 // for use as conversation context in regen/fork flows. The last node's response
 // is serialized from the current RecipeDef; earlier nodes use summaries.
@@ -211,6 +214,56 @@ func nodeChainToMessages(nodes []models.RecipeNode, currentDef *models.RecipeDef
 		messages = append(messages, ai.Message{Role: "user", Content: userContent})
 		messages = append(messages, ai.Message{Role: "assistant", Content: assistantContent})
 	}
+
+	return messages
+}
+
+// compactNodeChain converts a node chain to messages with compaction for deep trees.
+// Older nodes beyond keepRecent are summarized into a single context message to
+// reduce token usage while preserving the recipe's evolution history.
+func compactNodeChain(nodes []models.RecipeNode, currentDef *models.RecipeDef, keepRecent int) []ai.Message {
+	if len(nodes) <= keepRecent+1 {
+		// Compacting a single node adds boilerplate (summary wrapper + assistant
+		// ack) that exceeds the original prompt+summary pair, increasing token
+		// usage. Only compact when at least 2 older nodes would be collapsed.
+		return nodeChainToMessages(nodes, currentDef)
+	}
+
+	logger.Get().Info("compacting recipe node chain",
+		zap.Int("total_nodes", len(nodes)),
+		zap.Int("keep_recent", keepRecent),
+		zap.Int("compacted_nodes", len(nodes)-keepRecent),
+	)
+
+	// Split into older (to summarize) and recent (to keep verbatim)
+	olderNodes := nodes[:len(nodes)-keepRecent]
+	recentNodes := nodes[len(nodes)-keepRecent:]
+
+	// Build summary of older conversation
+	var summaryParts []string
+	for _, node := range olderNodes {
+		if node.Summary != "" {
+			summaryParts = append(summaryParts, fmt.Sprintf("- %s: %s", node.Prompt, node.Summary))
+		} else if node.Prompt != "" {
+			summaryParts = append(summaryParts, fmt.Sprintf("- %s", node.Prompt))
+		}
+	}
+
+	var messages []ai.Message
+
+	if len(summaryParts) > 0 {
+		summary := fmt.Sprintf(
+			"This recipe has been through %d prior revisions. Here is a summary of the earlier changes:\n%s\n\nThe recent conversation follows.",
+			len(olderNodes),
+			strings.Join(summaryParts, "\n"),
+		)
+		messages = append(messages, ai.Message{Role: "user", Content: summary})
+		messages = append(messages, ai.Message{Role: "assistant", Content: "Understood. I have the context of the recipe's evolution. I'll continue from the recent conversation."})
+	}
+
+	// Append recent nodes as full messages
+	recentMessages := nodeChainToMessages(recentNodes, currentDef)
+	messages = append(messages, recentMessages...)
 
 	return messages
 }

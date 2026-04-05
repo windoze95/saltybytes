@@ -62,7 +62,7 @@ func (s *RecipeService) FinishGenerateRecipeWithFork(recipe *models.Recipe, sour
 	if tree, treeErr := s.Repo.GetTreeByRecipeID(sourceRecipe.ID); treeErr == nil {
 		if activeNode, nodeErr := s.Repo.GetActiveNode(tree.ID); nodeErr == nil {
 			if ancestors, ancestorErr := s.Repo.GetNodeAncestors(activeNode.ID); ancestorErr == nil {
-				existingHistory = nodeChainToMessages(ancestors, &effectiveDef)
+				existingHistory = compactNodeChain(ancestors, &effectiveDef, maxUncompactedNodes)
 			} else {
 				logger.Get().Warn("failed to load node ancestors for fork", zap.Uint("recipe_id", sourceRecipe.ID), zap.Error(ancestorErr))
 			}
