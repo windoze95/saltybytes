@@ -1,11 +1,16 @@
 package handlers
 
 import (
+	"context"
+	"encoding/json"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/windoze95/saltybytes-api/internal/ai"
 	"github.com/windoze95/saltybytes-api/internal/logger"
 	"github.com/windoze95/saltybytes-api/internal/repository"
 	"github.com/windoze95/saltybytes-api/internal/service"
@@ -221,6 +226,66 @@ func (h *RecipeHandler) GenerateRecipeWithFork(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"recipe": recipeResponse, "message": "Regenerating recipe"})
+}
+
+// StreamGenerateRecipe generates a recipe with streaming SSE progress events.
+func (h *RecipeHandler) StreamGenerateRecipe(c *gin.Context) {
+	user, err := util.GetUserFromContext(c)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	var request struct {
+		UserPrompt string `json:"user_prompt"`
+		GenImage   *bool  `json:"gen_image"`
+	}
+	if err := c.BindJSON(&request); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request: " + err.Error()})
+		return
+	}
+
+	genImage := true
+	if request.GenImage != nil {
+		genImage = *request.GenImage
+	}
+
+	prompt := strings.TrimSpace(request.UserPrompt)
+	if prompt == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "user_prompt is required"})
+		return
+	}
+
+	// Set SSE headers
+	c.Header("Content-Type", "text/event-stream")
+	c.Header("Cache-Control", "no-cache")
+	c.Header("Connection", "keep-alive")
+	c.Header("X-Accel-Buffering", "no") // disable nginx buffering
+
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Minute)
+	defer cancel()
+
+	events := make(chan ai.StreamEvent, 32)
+
+	go func() {
+		defer close(events)
+		h.Service.StreamGenerateRecipe(ctx, user, prompt, genImage, events)
+	}()
+
+	c.Stream(func(w io.Writer) bool {
+		select {
+		case event, ok := <-events:
+			if !ok {
+				return false
+			}
+			data, _ := json.Marshal(event)
+			c.SSEvent(string(event.Type), string(data))
+			c.Writer.Flush()
+			return event.Type != ai.StreamEventComplete && event.Type != ai.StreamEventError
+		case <-ctx.Done():
+			return false
+		}
+	})
 }
 
 // DeleteRecipe deletes a recipe by its ID.

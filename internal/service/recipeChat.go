@@ -174,3 +174,152 @@ func (s *RecipeService) FinishGenerateRecipe(recipe *models.Recipe, user *models
 		return
 	}
 }
+
+// StreamGenerateRecipe creates and generates a recipe using streaming, emitting
+// progress events to the provided channel. The caller must close the channel
+// after this method returns.
+func (s *RecipeService) StreamGenerateRecipe(ctx context.Context, user *models.User, userPrompt string, genImage bool, events chan<- ai.StreamEvent) {
+	log := logger.Get().With(zap.Uint("user_id", user.ID))
+
+	if user.Personalization.ID == 0 {
+		log.Warn("user personalization is nil")
+		events <- ai.StreamEvent{Type: ai.StreamEventError, Error: "user personalization is nil", ErrorKind: "content_quality"}
+		return
+	}
+
+	// Create placeholder recipe
+	recipe := &models.Recipe{
+		CreatedBy:          user,
+		PersonalizationUID: user.Personalization.UID,
+		Status:             "generating",
+	}
+	if err := s.Repo.CreateRecipe(recipe); err != nil {
+		log.Error("failed to save recipe record", zap.Error(err))
+		events <- ai.StreamEvent{Type: ai.StreamEventError, Error: "failed to create recipe", ErrorKind: "unknown"}
+		return
+	}
+
+	events <- ai.StreamEvent{Type: ai.StreamEventStarted, RecipeID: recipe.ID}
+
+	// Type-assert to get streaming capability
+	anthropicProvider, ok := s.TextProvider.(*ai.AnthropicProvider)
+	if !ok {
+		// Fall back to non-streaming generation
+		log.Info("provider does not support streaming, falling back to sync generation")
+		result, err := s.TextProvider.GenerateRecipe(ctx, ai.RecipeRequest{
+			UserPrompt:     userPrompt,
+			UnitSystem:     user.Personalization.UnitSystemText(),
+			Requirements:   user.Personalization.Requirements,
+			CookingContext: user.Personalization.CookingContextPrompt(),
+		})
+		if err != nil {
+			log.Error("sync recipe generation failed", zap.Uint("recipe_id", recipe.ID), zap.Error(err))
+			s.Repo.UpdateRecipeStatus(recipe.ID, "failed")
+			s.DeleteRecipe(context.Background(), recipe.ID)
+			events <- ai.StreamEvent{Type: ai.StreamEventError, RecipeID: recipe.ID, Error: err.Error(), ErrorKind: "unknown"}
+			return
+		}
+		s.finishStreamedRecipe(ctx, recipe, user, userPrompt, result, genImage, events)
+		return
+	}
+
+	req := ai.RecipeRequest{
+		UserPrompt:     userPrompt,
+		UnitSystem:     user.Personalization.UnitSystemText(),
+		Requirements:   user.Personalization.Requirements,
+		CookingContext: user.Personalization.CookingContextPrompt(),
+	}
+
+	result, err := anthropicProvider.StreamGenerateRecipe(ctx, req, events)
+	if err != nil {
+		log.Error("streaming recipe generation failed", zap.Uint("recipe_id", recipe.ID), zap.Error(err))
+		s.Repo.UpdateRecipeStatus(recipe.ID, "failed")
+		s.DeleteRecipe(context.Background(), recipe.ID)
+		// Error event already emitted by StreamGenerateRecipe
+		return
+	}
+
+	s.finishStreamedRecipe(ctx, recipe, user, userPrompt, result, genImage, events)
+}
+
+// finishStreamedRecipe persists the generated recipe and emits the complete event.
+func (s *RecipeService) finishStreamedRecipe(ctx context.Context, recipe *models.Recipe, user *models.User, userPrompt string, result *ai.RecipeResult, genImage bool, events chan<- ai.StreamEvent) {
+	log := logger.Get().With(zap.Uint("recipe_id", recipe.ID))
+
+	if result.UnitSystem == "" {
+		result.UnitSystem = user.Personalization.UnitSystem
+	}
+	recipeDef := recipeResultToRecipeDef(result)
+	recipe.RecipeDef = recipeDef
+	recipe.PromptVersion = result.PromptVersion
+
+	if err := validateRecipeCoreFields(recipe); err != nil {
+		log.Error("recipe validation failed", zap.Error(err))
+		s.Repo.UpdateRecipeStatus(recipe.ID, "failed")
+		s.DeleteRecipe(context.Background(), recipe.ID)
+		events <- ai.StreamEvent{Type: ai.StreamEventError, RecipeID: recipe.ID, Error: err.Error(), ErrorKind: "content_quality"}
+		return
+	}
+
+	if err := s.Repo.UpdateRecipeDef(recipe); err != nil {
+		log.Error("failed to persist recipe", zap.Error(err))
+		s.Repo.UpdateRecipeStatus(recipe.ID, "failed")
+		events <- ai.StreamEvent{Type: ai.StreamEventError, RecipeID: recipe.ID, Error: "failed to save recipe", ErrorKind: "unknown"}
+		return
+	}
+
+	if err := s.AssociateTagsWithRecipe(recipe, result.Hashtags); err != nil {
+		log.Error("failed to associate tags", zap.Error(err))
+	}
+
+	rootNode := &models.RecipeNode{
+		Prompt:      userPrompt,
+		Response:    &recipeDef,
+		Summary:     result.Summary,
+		Type:        models.RecipeTypeChat,
+		BranchName:  "original",
+		CreatedByID: recipe.CreatedByID,
+		IsActive:    true,
+	}
+	if _, err := s.Repo.CreateRecipeTree(recipe.ID, rootNode); err != nil {
+		log.Error("failed to create recipe tree", zap.Error(err))
+	}
+
+	s.generateAndStoreEmbedding(ctx, recipe.ID, &recipeDef)
+	s.Repo.UpdateRecipeStatus(recipe.ID, "ready")
+
+	// Image generation runs in background — SSE closes after complete
+	if genImage && result.ImagePrompt != "" {
+		go func() {
+			imgCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			defer cancel()
+			imageBytes, err := s.ImageProvider.GenerateImage(imgCtx, result.ImagePrompt)
+			if err != nil {
+				log.Error("background image generation failed", zap.Error(err))
+				return
+			}
+			imageURL, err := uploadRecipeImage(imgCtx, recipe.ID, imageBytes, s.Cfg)
+			if err != nil {
+				log.Error("background image upload failed", zap.Error(err))
+				return
+			}
+			s.Repo.UpdateRecipeImageURL(recipe.ID, imageURL)
+		}()
+	}
+
+	recipeResponse := s.ToRecipeResponse(recipe)
+	events <- ai.StreamEvent{Type: ai.StreamEventComplete, RecipeID: recipe.ID, Result: &ai.RecipeResult{
+		Title:             recipeResponse.Title,
+		Ingredients:       result.Ingredients,
+		Instructions:      result.Instructions,
+		CookTime:          result.CookTime,
+		ImagePrompt:       result.ImagePrompt,
+		Hashtags:          result.Hashtags,
+		LinkedSuggestions: result.LinkedSuggestions,
+		Summary:           result.Summary,
+		Portions:          result.Portions,
+		PortionSize:       result.PortionSize,
+		UnitSystem:        result.UnitSystem,
+		PromptVersion:     result.PromptVersion,
+	}}
+}
