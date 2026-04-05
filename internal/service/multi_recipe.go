@@ -9,7 +9,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/windoze95/saltybytes-api/internal/ai"
 	"github.com/windoze95/saltybytes-api/internal/logger"
 	"github.com/windoze95/saltybytes-api/internal/models"
 	"go.uber.org/zap"
@@ -393,64 +392,3 @@ func (r *MultiRecipeResolver) extractSingleCard(entry *MultiRecipeEntry, idx int
 	log.Info("individual recipe extracted successfully")
 }
 
-// PostProcessSearchResults checks search results for multi-recipe titles
-// and begins background resolution for any detected.
-func (r *MultiRecipeResolver) PostProcessSearchResults(results []ai.SearchResult) []ai.SearchResult {
-	for i := range results {
-		if IsMultiRecipeTitle(results[i].Title) {
-			// Check if already tracked
-			if existing := r.Registry.Get(results[i].URL); existing != nil {
-				// Already resolving/resolved — mark it
-				results[i].IsMulti = true
-				results[i].MultiID = existing.ID
-				continue
-			}
-
-			// Mark as multi — actual resolution happens when we can fetch the page
-			results[i].IsMulti = true
-
-			// Register and start background resolution
-			entry, isNew := r.Registry.Register(results[i].URL)
-			results[i].MultiID = entry.ID
-			if isNew {
-				go r.resolveInBackground(results[i].URL, entry)
-			}
-		}
-	}
-	return results
-}
-
-// resolveInBackground fetches a URL and resolves its recipes.
-func (r *MultiRecipeResolver) resolveInBackground(sourceURL string, entry *MultiRecipeEntry) {
-	log := logger.Get().With(zap.String("url", sourceURL), zap.String("multi_id", entry.ID))
-
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
-
-	_, _, html, err := r.ImportService.fetchAndExtractWithHTML(ctx, sourceURL)
-	if err != nil || html == "" {
-		log.Warn("failed to fetch multi-recipe page for resolution", zap.Error(err))
-		entry.mu.Lock()
-		entry.Status = "failed"
-		entry.mu.Unlock()
-		return
-	}
-
-	cards := extractAllJSONLDRecipes(html, sourceURL)
-	if len(cards) <= 1 {
-		// Not actually multi-recipe — mark as resolved with single/no results
-		entry.mu.Lock()
-		entry.Status = "resolved"
-		now := time.Now()
-		entry.ResolvedAt = &now
-		entry.Cards = cards
-		entry.mu.Unlock()
-		return
-	}
-
-	entry.mu.Lock()
-	entry.Cards = cards
-	entry.mu.Unlock()
-
-	r.extractAllRecipes(entry)
-}

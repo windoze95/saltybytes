@@ -141,8 +141,6 @@ type SearchResult struct {
 	Rating      float64 `json:"rating"`
 	ImageURL    string  `json:"image_url"`
 	Description string  `json:"description"`
-	IsMulti     bool    `json:"is_multi,omitempty"`    // true if this is a multi-recipe page
-	MultiID     string  `json:"multi_id,omitempty"`    // ID for resolving individual recipes
 }
 
 // Message represents a single message in a conversation.

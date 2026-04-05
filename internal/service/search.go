@@ -29,7 +29,6 @@ type SearchService struct {
 	SubService     *SubscriptionService
 	CacheRepo      repository.SearchCacheRepo
 	EmbedProvider  ai.EmbeddingProvider
-	MultiResolver  *MultiRecipeResolver // nil-safe; set after construction
 }
 
 // NewSearchService creates a new SearchService.
@@ -87,11 +86,6 @@ func (s *SearchService) SearchRecipes(ctx context.Context, query string, count i
 	results, err := s.SearchProvider.SearchRecipes(ctx, query, count)
 	if err != nil {
 		return nil, err
-	}
-
-	// Post-process: detect multi-recipe results and start background resolution
-	if s.MultiResolver != nil {
-		results = s.MultiResolver.PostProcessSearchResults(results)
 	}
 
 	// Save to cache asynchronously

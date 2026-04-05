@@ -538,6 +538,16 @@ func (s *ImportService) ImportManual(ctx context.Context, recipeDef *models.Reci
 	return resp, err
 }
 
+// PreviewResult holds the result of a URL preview, which may be a single
+// recipe or a multi-recipe page that needs resolution.
+type PreviewResult struct {
+	Recipe      *models.RecipeDef `json:"recipe,omitempty"`
+	CanonicalID *uint             `json:"canonical_id,omitempty"`
+	IsMulti     bool              `json:"is_multi"`
+	MultiID     string            `json:"multi_id,omitempty"`
+	MultiCards  []MultiRecipeCard `json:"recipes,omitempty"`
+}
+
 // PreviewFromURL fetches a page and extracts recipe data without saving.
 // When a CanonicalRepo is configured, it checks the cache first and saves
 // extractions for future deduplication. Returns the recipe data and optional canonical ID.
@@ -596,6 +606,84 @@ func (s *ImportService) PreviewFromURL(ctx context.Context, rawURL string) (*mod
 	}
 
 	return recipeDef, canonicalID, nil
+}
+
+// PreviewFromURLWithMultiCheck is like PreviewFromURL but also detects
+// multi-recipe pages. When multiple JSON-LD recipes are found, it returns
+// a PreviewResult with IsMulti=true and individual cards instead of
+// extracting only the first recipe. The resolver handles background
+// extraction of each individual recipe.
+func (s *ImportService) PreviewFromURLWithMultiCheck(ctx context.Context, rawURL string, resolver *MultiRecipeResolver) (*PreviewResult, error) {
+	log := logger.Get().With(zap.String("source_url", rawURL))
+
+	if err := validateExternalURL(rawURL); err != nil {
+		return nil, fmt.Errorf("URL validation failed: %w", err)
+	}
+
+	// Check if already tracked as multi-recipe
+	if resolver != nil {
+		if existing := resolver.Registry.Get(rawURL); existing != nil {
+			return &PreviewResult{
+				IsMulti:    true,
+				MultiID:    existing.ID,
+				MultiCards: existing.GetCards(),
+			}, nil
+		}
+	}
+
+	// Check canonical cache first (single-recipe cache hit)
+	if s.CanonicalRepo != nil {
+		normalizedURL, normErr := NormalizeURL(rawURL)
+		if normErr == nil {
+			if canonical, err := s.CanonicalRepo.GetByNormalizedURL(normalizedURL); err == nil {
+				if time.Since(canonical.FetchedAt) < canonicalTTL {
+					log.Info("preview canonical cache hit")
+					go s.CanonicalRepo.IncrementHitCount(canonical.ID)
+					data := canonical.RecipeData
+					if data.SourceURL == "" {
+						data.SourceURL = rawURL
+					}
+					canonicalID := canonical.ID
+					return &PreviewResult{Recipe: &data, CanonicalID: &canonicalID}, nil
+				}
+			}
+		}
+	}
+
+	// Fetch HTML and check for multiple recipes
+	html, err := s.fetchHTML(ctx, rawURL)
+	if err != nil {
+		log.Error("failed to fetch page for multi-check", zap.Error(err))
+		// Fall back to normal preview
+		recipeDef, canonicalID, fallbackErr := s.PreviewFromURL(ctx, rawURL)
+		if fallbackErr != nil {
+			return nil, fallbackErr
+		}
+		return &PreviewResult{Recipe: recipeDef, CanonicalID: canonicalID}, nil
+	}
+
+	// Check for multiple JSON-LD recipes
+	if resolver != nil {
+		cards := extractAllJSONLDRecipes(html, rawURL)
+		if len(cards) > 1 {
+			log.Info("multi-recipe page detected on click", zap.Int("recipe_count", len(cards)))
+			entry := resolver.ResolveFromHTML(rawURL, html)
+			if entry != nil {
+				return &PreviewResult{
+					IsMulti:    true,
+					MultiID:    entry.ID,
+					MultiCards: entry.GetCards(),
+				}, nil
+			}
+		}
+	}
+
+	// Single recipe — use normal extraction flow
+	recipeDef, canonicalID, err := s.PreviewFromURL(ctx, rawURL)
+	if err != nil {
+		return nil, err
+	}
+	return &PreviewResult{Recipe: recipeDef, CanonicalID: canonicalID}, nil
 }
 
 // createImportedRecipe creates a recipe in the DB from a RecipeDef.

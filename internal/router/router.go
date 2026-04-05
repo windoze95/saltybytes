@@ -68,6 +68,7 @@ func SetupRouter(cfg *config.Config, database *gorm.DB) *gin.Engine {
 	importService := service.NewImportService(cfg, recipeRepo, recipeService, textProvider, textProvider, previewProvider)
 	importService.CanonicalRepo = canonicalRepo
 	importHandler := handlers.NewImportHandler(importService)
+	// MultiResolver is wired later after search setup; set via field
 
 	// Group for API routes that don't require token verification
 	apiPublic := r.Group("/v1")
@@ -176,10 +177,10 @@ func SetupRouter(cfg *config.Config, database *gorm.DB) *gin.Engine {
 	searchService.StartBackgroundTasks()
 	importService.StartCanonicalBackgroundTasks()
 
-	// Multi-recipe resolution
+	// Multi-recipe resolution (detection happens on click via preview, not search)
 	multiRegistry := service.NewMultiRecipeRegistry()
 	multiResolver := service.NewMultiRecipeResolver(multiRegistry, importService)
-	searchService.MultiResolver = multiResolver
+	importHandler.MultiResolver = multiResolver
 
 	searchHandler := &handlers.SearchHandler{Service: searchService, MultiResolver: multiResolver}
 	apiProtected.GET("/recipes/search", middleware.AttachUserToContext(userService), searchHandler.SearchRecipes)

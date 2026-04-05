@@ -17,7 +17,8 @@ import (
 
 // ImportHandler handles recipe import requests.
 type ImportHandler struct {
-	Service *service.ImportService
+	Service       *service.ImportService
+	MultiResolver *service.MultiRecipeResolver // nil-safe; set for multi-recipe detection
 }
 
 // NewImportHandler creates a new ImportHandler.
@@ -234,7 +235,7 @@ func (h *ImportHandler) PreviewFromURL(c *gin.Context) {
 		return
 	}
 
-	recipeDef, canonicalID, err := h.Service.PreviewFromURL(c.Request.Context(), url)
+	result, err := h.Service.PreviewFromURLWithMultiCheck(c.Request.Context(), url, h.MultiResolver)
 	if err != nil {
 		logger.Get().Error("failed to preview recipe from URL", zap.String("url", url), zap.Error(err))
 		var extractErr *service.ExtractionError
@@ -255,12 +256,21 @@ func (h *ImportHandler) PreviewFromURL(c *gin.Context) {
 		return
 	}
 
-	response := gin.H{"recipe": recipeDef}
-	if canonicalID != nil {
-		response["canonical_id"] = *canonicalID
+	if result.IsMulti {
+		c.JSON(http.StatusOK, gin.H{
+			"is_multi": true,
+			"multi_id": result.MultiID,
+			"recipes":  result.MultiCards,
+		})
+		return
 	}
-	if recipeDef.UnitSystem != "" {
-		response["unit_system"] = recipeDef.UnitSystem
+
+	response := gin.H{"recipe": result.Recipe}
+	if result.CanonicalID != nil {
+		response["canonical_id"] = *result.CanonicalID
+	}
+	if result.Recipe != nil && result.Recipe.UnitSystem != "" {
+		response["unit_system"] = result.Recipe.UnitSystem
 	}
 	c.JSON(http.StatusOK, response)
 }
