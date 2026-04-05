@@ -105,8 +105,9 @@ jobs:
       - name: Verify deployed image
         run: |
           EXPECTED_TAG="${{ steps.build-image.outputs.image-tag }}"
+          ECR_REPO_NAME="${ECR_REPO##*/}"
           EXPECTED_DIGEST=$(aws ecr describe-images \
-            --repository-name saltybytes-api \
+            --repository-name "$ECR_REPO_NAME" \
             --image-ids imageTag="$EXPECTED_TAG" \
             --query 'imageDetails[0].imageDigest' --output text)
           TASK_ARN=$(aws ecs list-tasks \
