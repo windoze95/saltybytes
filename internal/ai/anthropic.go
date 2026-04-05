@@ -258,7 +258,7 @@ func classifyAnthropicError(err error) *AIError {
 			return NewAIError(FailureAuth, err, "unauthorized")
 		}
 	}
-	return NewAIError(FailureTransient, err, "unknown API error")
+	return NewAIError(FailureUnknown, err, "unknown API error")
 }
 
 // extractRecipeFromToolUse parses the tool-use content block returned by Claude.

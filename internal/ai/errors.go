@@ -20,6 +20,8 @@ const (
 	FailureVisionAmbiguous
 	// FailureQuotaExhausted means rate limits are exhausted for the billing period.
 	FailureQuotaExhausted
+	// FailureUnknown is an unrecognized error. Do not retry.
+	FailureUnknown
 )
 
 // AIError wraps an error with classification metadata.
@@ -54,6 +56,8 @@ func (e *AIError) kindString() string {
 		return "vision_ambiguous"
 	case FailureQuotaExhausted:
 		return "quota_exhausted"
+	case FailureUnknown:
+		return "unknown"
 	default:
 		return "unknown"
 	}
