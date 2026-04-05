@@ -63,9 +63,11 @@ func NewImportService(cfg *config.Config, recipeRepo repository.RecipeRepo, reci
 	}
 }
 
-// validateExternalURL checks that a user-supplied URL is safe to fetch.
+// ValidateExternalURL checks that a user-supplied URL is safe to fetch.
 // It blocks private/internal IPs and non-HTTP(S) schemes to prevent SSRF.
-func validateExternalURL(rawURL string) error {
+// ValidateExternalURL checks that a user-supplied URL is safe to fetch.
+// It blocks private/internal IPs and non-HTTP(S) schemes to prevent SSRF.
+func ValidateExternalURL(rawURL string) error {
 	u, err := url.Parse(rawURL)
 	if err != nil {
 		return fmt.Errorf("invalid URL: %w", err)
@@ -108,7 +110,7 @@ var safeHTTPClient = &http.Client{
 		if len(via) >= 10 {
 			return fmt.Errorf("too many redirects")
 		}
-		return validateExternalURL(req.URL.String())
+		return ValidateExternalURL(req.URL.String())
 	},
 }
 
@@ -118,7 +120,7 @@ var safeHTTPClient = &http.Client{
 func (s *ImportService) ImportFromURL(ctx context.Context, rawURL string, user *models.User) (*RecipeResponse, error) {
 	log := logger.Get().With(zap.Uint("user_id", user.ID), zap.String("source_url", rawURL))
 
-	if err := validateExternalURL(rawURL); err != nil {
+	if err := ValidateExternalURL(rawURL); err != nil {
 		return nil, fmt.Errorf("URL validation failed: %w", err)
 	}
 
@@ -562,7 +564,7 @@ type PreviewResult struct {
 func (s *ImportService) PreviewFromURL(ctx context.Context, rawURL string) (*models.RecipeDef, *uint, error) {
 	log := logger.Get().With(zap.String("source_url", rawURL))
 
-	if err := validateExternalURL(rawURL); err != nil {
+	if err := ValidateExternalURL(rawURL); err != nil {
 		return nil, nil, fmt.Errorf("URL validation failed: %w", err)
 	}
 
@@ -624,7 +626,7 @@ func (s *ImportService) PreviewFromURL(ctx context.Context, rawURL string) (*mod
 func (s *ImportService) PreviewFromURLWithMultiCheck(ctx context.Context, rawURL string, resolver *MultiRecipeResolver) (*PreviewResult, error) {
 	log := logger.Get().With(zap.String("source_url", rawURL))
 
-	if err := validateExternalURL(rawURL); err != nil {
+	if err := ValidateExternalURL(rawURL); err != nil {
 		return nil, fmt.Errorf("URL validation failed: %w", err)
 	}
 

@@ -124,6 +124,12 @@ func (h *SearchHandler) CheckMultiRecipe(c *gin.Context) {
 		return
 	}
 
+	// Validate URL before any network fetches to prevent SSRF
+	if err := service.ValidateExternalURL(url); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid URL: " + err.Error()})
+		return
+	}
+
 	// Check if already tracked
 	if existing := h.MultiResolver.Registry.Get(url); existing != nil {
 		c.JSON(http.StatusOK, gin.H{

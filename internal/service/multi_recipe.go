@@ -59,10 +59,33 @@ type MultiRecipeRegistry struct {
 	counter uint64
 }
 
+const registryEvictionTTL = 30 * time.Minute
+
 // NewMultiRecipeRegistry creates a new registry.
 func NewMultiRecipeRegistry() *MultiRecipeRegistry {
-	return &MultiRecipeRegistry{
+	r := &MultiRecipeRegistry{
 		entries: make(map[string]*MultiRecipeEntry),
+	}
+	go r.evictionLoop()
+	return r
+}
+
+// evictionLoop periodically removes resolved/failed entries older than the TTL.
+func (r *MultiRecipeRegistry) evictionLoop() {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+	for range ticker.C {
+		r.mu.Lock()
+		for url, entry := range r.entries {
+			entry.mu.RLock()
+			status := entry.Status
+			detected := entry.DetectedAt
+			entry.mu.RUnlock()
+			if (status == "resolved" || status == "failed") && time.Since(detected) > registryEvictionTTL {
+				delete(r.entries, url)
+			}
+		}
+		r.mu.Unlock()
 	}
 }
 
@@ -319,6 +342,7 @@ func (r *MultiRecipeResolver) extractAllRecipes(entry *MultiRecipeEntry) {
 	entry.mu.Lock()
 	entry.Status = "resolved"
 	entry.ResolvedAt = &now
+	entry.pageHTML = "" // free memory — no longer needed after extraction
 	entry.mu.Unlock()
 
 	log.Info("multi-recipe extraction complete")
@@ -398,7 +422,7 @@ func (r *MultiRecipeResolver) extractSingleCard(entry *MultiRecipeEntry, idx int
 			now := time.Now()
 			canonical := &models.CanonicalRecipe{
 				NormalizedURL:    normalizedURL,
-				OriginalURL:      sourceURL,
+				OriginalURL:      distinctURL, // use distinct URL so refresh extracts this specific recipe
 				RecipeData:       def,
 				ExtractionMethod: models.ExtractionHaiku,
 				FetchedAt:        now,
