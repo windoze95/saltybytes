@@ -253,6 +253,47 @@ func stringField(obj map[string]interface{}, key string) string {
 	return ""
 }
 
+// stripHTMLToText extracts visible text from HTML, removing scripts, styles,
+// nav elements, and tags. Produces a much smaller input for AI detection
+// than raw HTML (~10-20x reduction).
+func stripHTMLToText(html string) string {
+	// Remove script, style, nav, header, footer blocks entirely
+	for _, tag := range []string{"script", "style", "nav", "header", "footer", "noscript", "svg"} {
+		re := regexp.MustCompile(`(?is)<` + tag + `[^>]*>.*?</` + tag + `>`)
+		html = re.ReplaceAllString(html, " ")
+	}
+
+	// Remove HTML comments
+	commentRe := regexp.MustCompile(`(?s)<!--.*?-->`)
+	html = commentRe.ReplaceAllString(html, " ")
+
+	// Replace block-level tags with newlines to preserve structure
+	blockRe := regexp.MustCompile(`(?i)<(?:h[1-6]|p|div|li|tr|br|article|section)[^>]*>`)
+	html = blockRe.ReplaceAllString(html, "\n")
+
+	// Remove all remaining tags
+	tagRe := regexp.MustCompile(`<[^>]+>`)
+	html = tagRe.ReplaceAllString(html, " ")
+
+	// Decode common HTML entities
+	html = strings.ReplaceAll(html, "&amp;", "&")
+	html = strings.ReplaceAll(html, "&lt;", "<")
+	html = strings.ReplaceAll(html, "&gt;", ">")
+	html = strings.ReplaceAll(html, "&quot;", "\"")
+	html = strings.ReplaceAll(html, "&#39;", "'")
+	html = strings.ReplaceAll(html, "&nbsp;", " ")
+
+	// Collapse whitespace
+	spaceRe := regexp.MustCompile(`[ \t]+`)
+	html = spaceRe.ReplaceAllString(html, " ")
+
+	// Collapse multiple newlines
+	nlRe := regexp.MustCompile(`\n{3,}`)
+	html = nlRe.ReplaceAllString(html, "\n\n")
+
+	return strings.TrimSpace(html)
+}
+
 // detectMultipleRecipesFromHTML uses AI to detect recipe titles in HTML when
 // JSON-LD detection finds zero or one Recipe blocks. Returns individual cards
 // if multiple recipes found, nil otherwise.
@@ -261,11 +302,13 @@ func detectMultipleRecipesFromHTML(ctx context.Context, provider ai.TextProvider
 		return nil
 	}
 
-	// Truncate HTML for the detection prompt
-	const maxDetectBytes = 80_000
-	truncated := html
-	if len(truncated) > maxDetectBytes {
-		truncated = truncated[:maxDetectBytes]
+	// Strip HTML to plain text — reduces input ~10-20x, avoids rate limits
+	text := stripHTMLToText(html)
+
+	// Truncate to a reasonable size for detection (not full extraction)
+	const maxDetectBytes = 15_000
+	if len(text) > maxDetectBytes {
+		text = text[:maxDetectBytes]
 	}
 
 	prompt := `This page may contain multiple recipes. List ALL distinct recipe titles found on the page.
@@ -277,7 +320,7 @@ Rules:
 - Do not add numbering, bullets, or formatting — just the recipe name per line
 
 Page content:
-` + truncated
+` + text
 
 	result, err := provider.CookingQA(ctx, prompt, "")
 	if err != nil {
@@ -453,16 +496,15 @@ func (r *MultiRecipeResolver) extractSingleCard(entry *MultiRecipeEntry, idx int
 		return
 	}
 
-	// Truncate HTML to avoid blowing past Claude's context window.
-	// 100KB is plenty for any single recipe's content on a listicle page.
-	const maxHTMLBytes = 100_000
-	truncatedHTML := pageHTML
-	if len(truncatedHTML) > maxHTMLBytes {
-		truncatedHTML = truncatedHTML[:maxHTMLBytes]
+	// Strip HTML to text and truncate — raw HTML wastes tokens on tags/CSS/JS
+	pageText := stripHTMLToText(pageHTML)
+	const maxExtractBytes = 30_000
+	if len(pageText) > maxExtractBytes {
+		pageText = pageText[:maxExtractBytes]
 	}
 
-	// Pass the page HTML with a constraint to extract only this recipe by title
-	extractionInput := fmt.Sprintf("Extract ONLY the recipe titled %q from the following page. Ignore all other recipes.\n\n%s", title, truncatedHTML)
+	// Pass the stripped text with a constraint to extract only this recipe by title
+	extractionInput := fmt.Sprintf("Extract ONLY the recipe titled %q from the following page. Ignore all other recipes.\n\n%s", title, pageText)
 	result, err := provider.ExtractRecipeFromText(ctx, extractionInput, "preserve source")
 	if err != nil {
 		log.Error("failed to extract individual recipe", zap.Error(err))
