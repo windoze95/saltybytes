@@ -631,6 +631,133 @@ func (p *AnthropicProvider) GenerateRecipe(ctx context.Context, req RecipeReques
 	})
 }
 
+// StreamGenerateRecipe creates a recipe via Claude streaming, emitting progress
+// events to the provided channel. The channel is NOT closed by this method;
+// the caller is responsible for closing it after this returns.
+func (p *AnthropicProvider) StreamGenerateRecipe(ctx context.Context, req RecipeRequest, events chan<- StreamEvent) (*RecipeResult, error) {
+	op := AIOperation{
+		Name:      "StreamGenerateRecipe",
+		Provider:  "anthropic",
+		Model:     string(p.model),
+		StartTime: time.Now(),
+	}
+
+	// Middleware: manual Before/After since we can't use runWithMiddleware for streaming
+	if p.middleware != nil {
+		ctx = p.middleware.Before(ctx, op)
+	}
+	var finalErr error
+	defer func() {
+		if p.middleware != nil {
+			p.middleware.After(ctx, AIOperationResult{
+				Operation: op,
+				Duration:  time.Since(op.StartTime),
+				Err:       finalErr,
+			})
+		}
+	}()
+
+	sysSuffix, err := config.RenderPrompt(p.prompts.Recipe.Generate.System, map[string]interface{}{
+		"UnitSystem":     req.UnitSystem,
+		"Requirements":   req.Requirements,
+		"CookingContext": req.CookingContext,
+	})
+	if err != nil {
+		finalErr = fmt.Errorf("render system prompt: %w", err)
+		return nil, finalErr
+	}
+
+	userPrompt, err := config.RenderPrompt(p.prompts.Recipe.Generate.User, map[string]interface{}{
+		"Prompt": req.UserPrompt,
+	})
+	if err != nil {
+		finalErr = fmt.Errorf("render user prompt: %w", err)
+		return nil, finalErr
+	}
+
+	summaryDesc := p.prompts.Recipe.Summarize.Recipe
+	tool := createRecipeTool(summaryDesc)
+
+	params := anthropic.MessageNewParams{
+		Model:     p.model,
+		MaxTokens: 4096,
+		System:    buildCachedSystemPrompt(p.prompts.Recipe.Generate.SystemPrefix, sysSuffix),
+		Messages: []anthropic.MessageParam{
+			newUserMessage(anthropic.NewTextBlock(userPrompt)),
+		},
+		Tools: []anthropic.ToolUnionParam{tool},
+		ToolChoice: anthropic.ToolChoiceUnionParam{
+			OfToolChoiceTool: &anthropic.ToolChoiceToolParam{
+				Name: "create_recipe",
+			},
+		},
+	}
+
+	stream := p.client.Messages.NewStreaming(ctx, params)
+	defer stream.Close()
+
+	var message anthropic.Message
+	var deltaCount int
+
+	for stream.Next() {
+		event := stream.Current()
+		if err := message.Accumulate(event); err != nil {
+			finalErr = fmt.Errorf("accumulate stream event: %w", err)
+			TrySendEvent(ctx, events, StreamEvent{Type: StreamEventError, Error: finalErr.Error(), ErrorKind: "content_parse"})
+			return nil, finalErr
+		}
+
+		switch event.Type {
+		case "message_start":
+			if !TrySendEvent(ctx, events, StreamEvent{Type: StreamEventGenerating}) {
+				finalErr = ctx.Err()
+				return nil, finalErr
+			}
+		case "content_block_delta":
+			deltaCount++
+			// Throttle progress: emit every 20 deltas
+			if deltaCount%20 == 0 {
+				if !TrySendEvent(ctx, events, StreamEvent{
+					Type:        StreamEventProgress,
+					TokensSoFar: int64(message.Usage.OutputTokens),
+				}) {
+					finalErr = ctx.Err()
+					return nil, finalErr
+				}
+			}
+		case "message_delta":
+			TrySendEvent(ctx, events, StreamEvent{
+				Type:        StreamEventProgress,
+				TokensSoFar: int64(message.Usage.OutputTokens),
+			})
+		}
+	}
+
+	if err := stream.Err(); err != nil {
+		aiErr := classifyAnthropicError(err)
+		finalErr = aiErr
+		TrySendEvent(ctx, events, StreamEvent{Type: StreamEventError, Error: aiErr.Detail, ErrorKind: aiErr.kindString()})
+		return nil, finalErr
+	}
+
+	result, err := extractAndValidateRecipe(&message)
+	if err != nil {
+		finalErr = err
+		var aiErr *AIError
+		kind := "unknown"
+		if errors.As(err, &aiErr) {
+			kind = aiErr.kindString()
+		}
+		TrySendEvent(ctx, events, StreamEvent{Type: StreamEventError, Error: err.Error(), ErrorKind: kind})
+		return nil, finalErr
+	}
+
+	// Do NOT emit StreamEventComplete here — the service layer emits it
+	// after persistence succeeds, preventing premature completion signals.
+	result.PromptVersion = config.PromptVersion(p.prompts)
+	return result, nil
+}
+
 // RegenerateRecipe revises an existing recipe based on conversation history.
 func (p *AnthropicProvider) RegenerateRecipe(ctx context.Context, req RegenerateRequest) (*RecipeResult, error) {
 	op := AIOperation{
