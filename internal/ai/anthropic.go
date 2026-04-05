@@ -703,34 +703,40 @@ func (p *AnthropicProvider) StreamGenerateRecipe(ctx context.Context, req Recipe
 		event := stream.Current()
 		if err := message.Accumulate(event); err != nil {
 			finalErr = fmt.Errorf("accumulate stream event: %w", err)
-			events <- StreamEvent{Type: StreamEventError, Error: finalErr.Error(), ErrorKind: "content_parse"}
+			TrySendEvent(ctx, events, StreamEvent{Type: StreamEventError, Error: finalErr.Error(), ErrorKind: "content_parse"})
 			return nil, finalErr
 		}
 
 		switch event.Type {
 		case "message_start":
-			events <- StreamEvent{Type: StreamEventGenerating}
+			if !TrySendEvent(ctx, events, StreamEvent{Type: StreamEventGenerating}) {
+				finalErr = ctx.Err()
+				return nil, finalErr
+			}
 		case "content_block_delta":
 			deltaCount++
 			// Throttle progress: emit every 20 deltas
 			if deltaCount%20 == 0 {
-				events <- StreamEvent{
+				if !TrySendEvent(ctx, events, StreamEvent{
 					Type:        StreamEventProgress,
 					TokensSoFar: int64(message.Usage.OutputTokens),
+				}) {
+					finalErr = ctx.Err()
+					return nil, finalErr
 				}
 			}
 		case "message_delta":
-			events <- StreamEvent{
+			TrySendEvent(ctx, events, StreamEvent{
 				Type:        StreamEventProgress,
 				TokensSoFar: int64(message.Usage.OutputTokens),
-			}
+			})
 		}
 	}
 
 	if err := stream.Err(); err != nil {
 		aiErr := classifyAnthropicError(err)
 		finalErr = aiErr
-		events <- StreamEvent{Type: StreamEventError, Error: aiErr.Detail, ErrorKind: aiErr.kindString()}
+		TrySendEvent(ctx, events, StreamEvent{Type: StreamEventError, Error: aiErr.Detail, ErrorKind: aiErr.kindString()})
 		return nil, finalErr
 	}
 
@@ -742,12 +748,13 @@ func (p *AnthropicProvider) StreamGenerateRecipe(ctx context.Context, req Recipe
 		if errors.As(err, &aiErr) {
 			kind = aiErr.kindString()
 		}
-		events <- StreamEvent{Type: StreamEventError, Error: err.Error(), ErrorKind: kind}
+		TrySendEvent(ctx, events, StreamEvent{Type: StreamEventError, Error: err.Error(), ErrorKind: kind})
 		return nil, finalErr
 	}
 
+	// Do NOT emit StreamEventComplete here — the service layer emits it
+	// after persistence succeeds, preventing premature completion signals.
 	result.PromptVersion = config.PromptVersion(p.prompts)
-	events <- StreamEvent{Type: StreamEventComplete, Result: result}
 	return result, nil
 }
 

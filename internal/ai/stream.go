@@ -1,5 +1,7 @@
 package ai
 
+import "context"
+
 // StreamEventType enumerates the SSE event types for streaming recipe generation.
 type StreamEventType string
 
@@ -24,4 +26,16 @@ type StreamEvent struct {
 	Result      *RecipeResult   `json:"result,omitempty"`
 	Error       string          `json:"error,omitempty"`
 	ErrorKind   string          `json:"error_kind,omitempty"`
+}
+
+// TrySendEvent sends an event to the channel, returning false if the context
+// is cancelled (e.g. client disconnected). This prevents the producer goroutine
+// from blocking forever on a full or unconsumed channel.
+func TrySendEvent(ctx context.Context, events chan<- StreamEvent, event StreamEvent) bool {
+	select {
+	case events <- event:
+		return true
+	case <-ctx.Done():
+		return false
+	}
 }

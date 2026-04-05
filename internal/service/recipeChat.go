@@ -183,7 +183,7 @@ func (s *RecipeService) StreamGenerateRecipe(ctx context.Context, user *models.U
 
 	if user.Personalization.ID == 0 {
 		log.Warn("user personalization is nil")
-		events <- ai.StreamEvent{Type: ai.StreamEventError, Error: "user personalization is nil", ErrorKind: "content_quality"}
+		ai.TrySendEvent(ctx, events, ai.StreamEvent{Type: ai.StreamEventError, Error: "user personalization is nil", ErrorKind: "content_quality"})
 		return
 	}
 
@@ -195,11 +195,11 @@ func (s *RecipeService) StreamGenerateRecipe(ctx context.Context, user *models.U
 	}
 	if err := s.Repo.CreateRecipe(recipe); err != nil {
 		log.Error("failed to save recipe record", zap.Error(err))
-		events <- ai.StreamEvent{Type: ai.StreamEventError, Error: "failed to create recipe", ErrorKind: "unknown"}
+		ai.TrySendEvent(ctx, events, ai.StreamEvent{Type: ai.StreamEventError, Error: "failed to create recipe", ErrorKind: "unknown"})
 		return
 	}
 
-	events <- ai.StreamEvent{Type: ai.StreamEventStarted, RecipeID: recipe.ID}
+	ai.TrySendEvent(ctx, events, ai.StreamEvent{Type: ai.StreamEventStarted, RecipeID: recipe.ID})
 
 	// Type-assert to get streaming capability
 	anthropicProvider, ok := s.TextProvider.(*ai.AnthropicProvider)
@@ -216,7 +216,7 @@ func (s *RecipeService) StreamGenerateRecipe(ctx context.Context, user *models.U
 			log.Error("sync recipe generation failed", zap.Uint("recipe_id", recipe.ID), zap.Error(err))
 			s.Repo.UpdateRecipeStatus(recipe.ID, "failed")
 			s.DeleteRecipe(context.Background(), recipe.ID)
-			events <- ai.StreamEvent{Type: ai.StreamEventError, RecipeID: recipe.ID, Error: err.Error(), ErrorKind: "unknown"}
+			ai.TrySendEvent(ctx, events, ai.StreamEvent{Type: ai.StreamEventError, RecipeID: recipe.ID, Error: err.Error(), ErrorKind: "unknown"})
 			return
 		}
 		s.finishStreamedRecipe(ctx, recipe, user, userPrompt, result, genImage, events)
@@ -257,14 +257,14 @@ func (s *RecipeService) finishStreamedRecipe(ctx context.Context, recipe *models
 		log.Error("recipe validation failed", zap.Error(err))
 		s.Repo.UpdateRecipeStatus(recipe.ID, "failed")
 		s.DeleteRecipe(context.Background(), recipe.ID)
-		events <- ai.StreamEvent{Type: ai.StreamEventError, RecipeID: recipe.ID, Error: err.Error(), ErrorKind: "content_quality"}
+		ai.TrySendEvent(ctx, events, ai.StreamEvent{Type: ai.StreamEventError, RecipeID: recipe.ID, Error: err.Error(), ErrorKind: "content_quality"})
 		return
 	}
 
 	if err := s.Repo.UpdateRecipeDef(recipe); err != nil {
 		log.Error("failed to persist recipe", zap.Error(err))
 		s.Repo.UpdateRecipeStatus(recipe.ID, "failed")
-		events <- ai.StreamEvent{Type: ai.StreamEventError, RecipeID: recipe.ID, Error: "failed to save recipe", ErrorKind: "unknown"}
+		ai.TrySendEvent(ctx, events, ai.StreamEvent{Type: ai.StreamEventError, RecipeID: recipe.ID, Error: "failed to save recipe", ErrorKind: "unknown"})
 		return
 	}
 
@@ -308,7 +308,7 @@ func (s *RecipeService) finishStreamedRecipe(ctx context.Context, recipe *models
 	}
 
 	recipeResponse := s.ToRecipeResponse(recipe)
-	events <- ai.StreamEvent{Type: ai.StreamEventComplete, RecipeID: recipe.ID, Result: &ai.RecipeResult{
+	ai.TrySendEvent(ctx, events, ai.StreamEvent{Type: ai.StreamEventComplete, RecipeID: recipe.ID, Result: &ai.RecipeResult{
 		Title:             recipeResponse.Title,
 		Ingredients:       result.Ingredients,
 		Instructions:      result.Instructions,
@@ -321,5 +321,5 @@ func (s *RecipeService) finishStreamedRecipe(ctx context.Context, recipe *models
 		PortionSize:       result.PortionSize,
 		UnitSystem:        result.UnitSystem,
 		PromptVersion:     result.PromptVersion,
-	}}
+	}})
 }
