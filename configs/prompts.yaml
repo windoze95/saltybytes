@@ -93,10 +93,8 @@ allergen:
         "confidence": 0.9,
         "requires_review": false
       }
-      Example analysis for "all-purpose flour":
-      {"ingredient_name": "all-purpose flour", "common_allergens": ["wheat"], "possible_allergens": [], "sub_ingredients": ["wheat flour", "malted barley flour", "niacin", "reduced iron", "thiamine mononitrate", "riboflavin", "folic acid"], "seed_oil_risk": false, "confidence": 0.98}
-      Example analysis for "vegetable oil":
-      {"ingredient_name": "vegetable oil", "common_allergens": ["soybeans"], "possible_allergens": [], "sub_ingredients": ["soybean oil"], "seed_oil_risk": true, "confidence": 0.85}
+      Example response for ["all-purpose flour", "vegetable oil"]:
+      {"ingredient_analyses": [{"ingredient_name": "all-purpose flour", "common_allergens": ["wheat"], "possible_allergens": [], "sub_ingredients": ["wheat flour", "malted barley flour", "niacin", "reduced iron", "thiamine mononitrate", "riboflavin", "folic acid"], "seed_oil_risk": false, "confidence": 0.98}, {"ingredient_name": "vegetable oil", "common_allergens": ["soybeans"], "possible_allergens": [], "sub_ingredients": ["soybean oil"], "seed_oil_risk": true, "confidence": 0.85}], "confidence": 0.9, "requires_review": false}
     user: |
       Analyze the following ingredients for allergens and seed oil risks:
       {{.Ingredients}}
