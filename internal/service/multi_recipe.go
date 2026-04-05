@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/windoze95/saltybytes-api/internal/ai"
 	"github.com/windoze95/saltybytes-api/internal/logger"
 	"github.com/windoze95/saltybytes-api/internal/models"
 	"go.uber.org/zap"
@@ -252,6 +253,75 @@ func stringField(obj map[string]interface{}, key string) string {
 	return ""
 }
 
+// detectMultipleRecipesFromHTML uses AI to detect recipe titles in HTML when
+// JSON-LD detection finds zero or one Recipe blocks. Returns individual cards
+// if multiple recipes found, nil otherwise.
+func detectMultipleRecipesFromHTML(ctx context.Context, provider ai.TextProvider, html string, sourceURL string) []MultiRecipeCard {
+	if provider == nil {
+		return nil
+	}
+
+	// Truncate HTML for the detection prompt
+	const maxDetectBytes = 80_000
+	truncated := html
+	if len(truncated) > maxDetectBytes {
+		truncated = truncated[:maxDetectBytes]
+	}
+
+	prompt := `This page may contain multiple recipes. List ALL distinct recipe titles found on the page.
+
+Rules:
+- Only list actual recipes with ingredients/instructions, not article titles or navigation links
+- If there is only 0 or 1 recipe, respond with just: SINGLE
+- If there are multiple recipes, respond with one title per line, nothing else
+- Do not add numbering, bullets, or formatting — just the recipe name per line
+
+Page content:
+` + truncated
+
+	result, err := provider.CookingQA(ctx, prompt, "")
+	if err != nil {
+		return nil
+	}
+
+	// Parse the response
+	response := strings.TrimSpace(result)
+	if response == "SINGLE" || response == "" {
+		return nil
+	}
+
+	const maxCards = 20 // cap to prevent runaway extraction from malformed responses
+	lines := strings.Split(response, "\n")
+	var cards []MultiRecipeCard
+	seen := make(map[string]bool)
+	for _, line := range lines {
+		title := strings.TrimSpace(line)
+		// Skip empty lines, "SINGLE", and noisy/too-long lines
+		if title == "" || title == "SINGLE" || len(title) < 3 || len(title) > 200 || seen[title] {
+			continue
+		}
+		seen[title] = true
+		cards = append(cards, MultiRecipeCard{
+			Title:            title,
+			SourceURL:        sourceURL,
+			ExtractionStatus: "pending",
+		})
+		if len(cards) >= maxCards {
+			break
+		}
+	}
+
+	if len(cards) <= 1 {
+		return nil
+	}
+
+	logger.Get().Info("AI detected multiple recipes on page",
+		zap.String("url", sourceURL),
+		zap.Int("count", len(cards)),
+	)
+	return cards
+}
+
 // MultiRecipeResolver handles detection and background extraction of multi-recipe pages.
 type MultiRecipeResolver struct {
 	Registry      *MultiRecipeRegistry
@@ -267,9 +337,24 @@ func NewMultiRecipeResolver(registry *MultiRecipeRegistry, importService *Import
 }
 
 // ResolveFromHTML detects and begins resolving a multi-recipe page from fetched HTML.
+// Uses JSON-LD detection first, then falls back to AI-based detection.
 // Returns the entry if multi-recipe, or nil if single-recipe.
-func (r *MultiRecipeResolver) ResolveFromHTML(sourceURL string, html string) *MultiRecipeEntry {
+func (r *MultiRecipeResolver) ResolveFromHTML(ctx context.Context, sourceURL string, html string) *MultiRecipeEntry {
+	// Try JSON-LD detection first (fast, no AI call)
 	cards := extractAllJSONLDRecipes(html, sourceURL)
+
+	// Fall back to AI detection if JSON-LD found 0-1 recipes
+	if len(cards) <= 1 {
+		provider := r.ImportService.PreviewProvider
+		if provider == nil {
+			provider = r.ImportService.TextProvider
+		}
+		aiCards := detectMultipleRecipesFromHTML(ctx, provider, html, sourceURL)
+		if aiCards != nil {
+			cards = aiCards
+		}
+	}
+
 	if len(cards) <= 1 {
 		return nil
 	}
@@ -306,7 +391,7 @@ func (r *MultiRecipeResolver) ResolveFromURL(ctx context.Context, sourceURL stri
 	}
 
 	// Check for multiple recipes
-	return r.ResolveFromHTML(sourceURL, html)
+	return r.ResolveFromHTML(ctx, sourceURL, html)
 }
 
 // extractAllRecipes runs full extraction for each card in the entry.

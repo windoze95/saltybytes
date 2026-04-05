@@ -740,19 +740,15 @@ func (s *ImportService) PreviewFromURLWithMultiCheck(ctx context.Context, rawURL
 		return nil, err // pass through ExtractionError (not_found, site_blocked, etc.)
 	}
 
-	// Check for multiple JSON-LD recipes before extracting
+	// Check for multiple recipes (JSON-LD first, then AI fallback)
 	if resolver != nil {
-		cards := extractAllJSONLDRecipes(html, rawURL)
-		if len(cards) > 1 {
-			log.Info("multi-recipe page detected on click", zap.Int("recipe_count", len(cards)))
-			entry := resolver.ResolveFromHTML(rawURL, html)
-			if entry != nil {
-				return &PreviewResult{
-					IsMulti:    true,
-					MultiID:    entry.ID,
-					MultiCards: entry.GetCards(),
-				}, nil
-			}
+		entry := resolver.ResolveFromHTML(ctx, rawURL, html)
+		if entry != nil {
+			return &PreviewResult{
+				IsMulti:    true,
+				MultiID:    entry.ID,
+				MultiCards: entry.GetCards(),
+			}, nil
 		}
 	}
 
