@@ -290,13 +290,14 @@ Page content:
 		return nil
 	}
 
+	const maxCards = 20 // cap to prevent runaway extraction from malformed responses
 	lines := strings.Split(response, "\n")
 	var cards []MultiRecipeCard
 	seen := make(map[string]bool)
 	for _, line := range lines {
 		title := strings.TrimSpace(line)
-		// Skip empty lines, "SINGLE", and common non-recipe patterns
-		if title == "" || title == "SINGLE" || len(title) < 3 || seen[title] {
+		// Skip empty lines, "SINGLE", and noisy/too-long lines
+		if title == "" || title == "SINGLE" || len(title) < 3 || len(title) > 200 || seen[title] {
 			continue
 		}
 		seen[title] = true
@@ -305,6 +306,9 @@ Page content:
 			SourceURL:        sourceURL,
 			ExtractionStatus: "pending",
 		})
+		if len(cards) >= maxCards {
+			break
+		}
 	}
 
 	if len(cards) <= 1 {
