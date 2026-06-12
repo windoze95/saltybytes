@@ -10,9 +10,9 @@ import (
 
 // AIOperation describes an in-flight AI call for middleware inspection.
 type AIOperation struct {
-	Name      string    // e.g. "GenerateRecipe", "AnalyzeAllergens"
-	Provider  string    // e.g. "anthropic"
-	Model     string    // e.g. "claude-3-5-sonnet-20241022"
+	Name      string // e.g. "GenerateRecipe", "AnalyzeAllergens"
+	Provider  string // e.g. "anthropic"
+	Model     string // e.g. "claude-3-5-sonnet-20241022"
 	StartTime time.Time
 }
 

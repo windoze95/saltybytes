@@ -78,6 +78,17 @@ func NewMultiRecipeRegistry() *MultiRecipeRegistry {
 	return r
 }
 
+// shouldEvictEntry reports whether a registry entry in the given state is
+// eligible for eviction at time now. Entries still resolving are never
+// evicted; terminal entries (resolved/failed) are evicted once older than
+// the TTL.
+func shouldEvictEntry(status string, detectedAt time.Time, now time.Time) bool {
+	if status != "resolved" && status != "failed" {
+		return false
+	}
+	return now.Sub(detectedAt) > registryEvictionTTL
+}
+
 // evictionLoop periodically removes resolved/failed entries older than the TTL.
 func (r *MultiRecipeRegistry) evictionLoop() {
 	ticker := time.NewTicker(5 * time.Minute)
@@ -92,7 +103,7 @@ func (r *MultiRecipeRegistry) evictionLoop() {
 			status := entry.Status
 			detected := entry.DetectedAt
 			entry.mu.RUnlock()
-			if (status == "resolved" || status == "failed") && time.Since(detected) > registryEvictionTTL {
+			if shouldEvictEntry(status, detected, time.Now()) {
 				toEvict = append(toEvict, url)
 			}
 		}
