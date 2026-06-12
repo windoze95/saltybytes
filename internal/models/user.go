@@ -12,11 +12,11 @@ import (
 // User is the model for a user.
 type User struct {
 	gorm.Model
-	Username  string    `gorm:"unique;index"`
-	FirstName string    `gorm:"default:null"`
-	Email     string    `gorm:"unique;default:null"`
-	Auth         *UserAuth     `gorm:"foreignKey:UserID"`
-	Subscription *Subscription `gorm:"foreignKey:UserID"`
+	Username         string           `gorm:"unique;index"`
+	FirstName        string           `gorm:"default:null"`
+	Email            string           `gorm:"unique;default:null"`
+	Auth             *UserAuth        `gorm:"foreignKey:UserID"`
+	Subscription     *Subscription    `gorm:"foreignKey:UserID"`
 	Settings         *UserSettings    `gorm:"foreignKey:UserID"`
 	Personalization  *Personalization `gorm:"foreignKey:UserID"`
 	CollectedRecipes []*Recipe        `gorm:"many2many:user_collected_recipes;"`
@@ -88,9 +88,9 @@ type Subscription struct {
 	UserID               uint             `gorm:"uniqueIndex;not null"`
 	Tier                 SubscriptionTier `gorm:"type:text;default:'free'"`
 	ExpiresAt            *time.Time
-	AllergenAnalysesUsed int              `gorm:"default:0"`
-	WebSearchesUsed      int              `gorm:"default:0"`
-	AIGenerationsUsed    int              `gorm:"default:0"`
+	AllergenAnalysesUsed int `gorm:"default:0"`
+	WebSearchesUsed      int `gorm:"default:0"`
+	AIGenerationsUsed    int `gorm:"default:0"`
 	MonthlyResetAt       time.Time
 }
 
@@ -156,10 +156,10 @@ type UserSettings struct {
 // Personalization is the model for a user's personalization settings.
 type Personalization struct {
 	gorm.Model
-	UserID         uint      `gorm:"unique;index"`
-	UnitSystem     string    `gorm:"type:text;default:'us_customary'"`
-	Requirements   string    // Additional instructions or guidelines
-	CookingContext string    `json:"cooking_context" gorm:"type:text"` // free-form cooking preferences injected into AI prompts
+	UserID         uint   `gorm:"unique;index"`
+	UnitSystem     string `gorm:"type:text;default:'us_customary'"`
+	Requirements   string // Additional instructions or guidelines
+	CookingContext string `json:"cooking_context" gorm:"type:text"` // free-form cooking preferences injected into AI prompts
 	UID            uuid.UUID
 }
 

@@ -91,8 +91,8 @@ func createRecipeTool(summaryPrompt string) anthropic.ToolUnionParam {
 						"items": map[string]interface{}{
 							"type": "object",
 							"properties": map[string]interface{}{
-								"name":   map[string]interface{}{"type": "string", "description": "Name of the ingredient, do not include unit or amount in this field"},
-								"unit":   map[string]interface{}{"type": "string", "description": "Unit for the ingredient, comply with UnitSystem specified.", "enum": []string{"pieces", "tsp", "tbsp", "fl oz", "cup", "pt", "qt", "gal", "oz", "lb", "mL", "L", "mg", "g", "kg", "pinch", "dash", "drop", "bushel"}},
+								"name":          map[string]interface{}{"type": "string", "description": "Name of the ingredient, do not include unit or amount in this field"},
+								"unit":          map[string]interface{}{"type": "string", "description": "Unit for the ingredient, comply with UnitSystem specified.", "enum": []string{"pieces", "tsp", "tbsp", "fl oz", "cup", "pt", "qt", "gal", "oz", "lb", "mL", "L", "mg", "g", "kg", "pinch", "dash", "drop", "bushel"}},
 								"amount":        map[string]interface{}{"type": "number", "description": "Amount of the ingredient"},
 								"metric_unit":   map[string]interface{}{"type": "string", "description": "Metric equivalent unit. Always metric (g, kg, mL, L, mg). Duplicate primary if already metric.", "enum": []string{"mg", "g", "kg", "mL", "L"}},
 								"metric_amount": map[string]interface{}{"type": "number", "description": "Metric equivalent amount. Use accurate cooking conversions (1 cup flour=120g, 1 cup butter=227g, 1 cup water=240mL). Round to practical amounts."},

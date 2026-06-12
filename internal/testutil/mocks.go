@@ -16,15 +16,15 @@ import (
 
 // MockTextProvider is a mock implementation of ai.TextProvider.
 type MockTextProvider struct {
-	GenerateRecipeFunc          func(ctx context.Context, req ai.RecipeRequest) (*ai.RecipeResult, error)
-	RegenerateRecipeFunc        func(ctx context.Context, req ai.RegenerateRequest) (*ai.RecipeResult, error)
-	ForkRecipeFunc              func(ctx context.Context, req ai.ForkRequest) (*ai.RecipeResult, error)
-	AnalyzeAllergensFunc        func(ctx context.Context, req ai.AllergenRequest) (*ai.AllergenResult, error)
-	ClassifyVoiceIntentFunc     func(ctx context.Context, transcript string) (*ai.VoiceIntent, error)
-	EstimatePortionsFunc        func(ctx context.Context, recipeDef interface{}) (*ai.PortionEstimate, error)
-	ExtractRecipeFromTextFunc   func(ctx context.Context, text string, unitSystem string) (*ai.RecipeResult, error)
-	CookingQAFunc               func(ctx context.Context, question string, recipeContext string) (string, error)
-	DietaryInterviewFunc        func(ctx context.Context, messages []ai.Message, memberName string) (*ai.DietaryInterviewResult, error)
+	GenerateRecipeFunc        func(ctx context.Context, req ai.RecipeRequest) (*ai.RecipeResult, error)
+	RegenerateRecipeFunc      func(ctx context.Context, req ai.RegenerateRequest) (*ai.RecipeResult, error)
+	ForkRecipeFunc            func(ctx context.Context, req ai.ForkRequest) (*ai.RecipeResult, error)
+	AnalyzeAllergensFunc      func(ctx context.Context, req ai.AllergenRequest) (*ai.AllergenResult, error)
+	ClassifyVoiceIntentFunc   func(ctx context.Context, transcript string) (*ai.VoiceIntent, error)
+	EstimatePortionsFunc      func(ctx context.Context, recipeDef interface{}) (*ai.PortionEstimate, error)
+	ExtractRecipeFromTextFunc func(ctx context.Context, text string, unitSystem string) (*ai.RecipeResult, error)
+	CookingQAFunc             func(ctx context.Context, question string, recipeContext string) (string, error)
+	DietaryInterviewFunc      func(ctx context.Context, messages []ai.Message, memberName string) (*ai.DietaryInterviewResult, error)
 }
 
 func (m *MockTextProvider) GenerateRecipe(ctx context.Context, req ai.RecipeRequest) (*ai.RecipeResult, error) {
@@ -136,25 +136,25 @@ func (m *MockSpeechProvider) TranscribeAudio(ctx context.Context, audioData []by
 
 // MockRecipeRepo is an in-memory mock implementation of repository.RecipeRepo.
 type MockRecipeRepo struct {
-	mu       sync.Mutex
-	Recipes  map[uint]*models.Recipe
-	Tags     map[string]*models.Tag
-	Trees    map[uint]*models.RecipeTree
-	Nodes    map[uint]*models.RecipeNode
-	NextID   uint
-	NextTagID uint
+	mu         sync.Mutex
+	Recipes    map[uint]*models.Recipe
+	Tags       map[string]*models.Tag
+	Trees      map[uint]*models.RecipeTree
+	Nodes      map[uint]*models.RecipeNode
+	NextID     uint
+	NextTagID  uint
 	NextTreeID uint
 	NextNodeID uint
 
 	// Error overrides: set these to force specific methods to return errors.
-	CreateRecipeErr              error
-	GetRecipeByIDErr             error
-	DeleteRecipeErr              error
-	UpdateRecipeTitleErr         error
-	UpdateRecipeImageURLErr      error
-	UpdateRecipeDefErr           error
-	CreateRecipeTreeErr          error
-	AddNodeToTreeErr             error
+	CreateRecipeErr         error
+	GetRecipeByIDErr        error
+	DeleteRecipeErr         error
+	UpdateRecipeTitleErr    error
+	UpdateRecipeImageURLErr error
+	UpdateRecipeDefErr      error
+	CreateRecipeTreeErr     error
+	AddNodeToTreeErr        error
 }
 
 // NewMockRecipeRepo creates a new MockRecipeRepo with initialized maps.

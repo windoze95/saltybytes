@@ -42,8 +42,8 @@ type RecipeResponse struct {
 	SourceURL       string             `json:"sourceUrl,omitempty"`
 	CreatedAt       string             `json:"createdAt"`
 	UpdatedAt       string             `json:"updatedAt"`
-	UnitSystem      string  `json:"unitSystem"`
-	Status          string  `json:"status"`
+	UnitSystem      string             `json:"unitSystem"`
+	Status          string             `json:"status"`
 	// Additional detail fields
 	ParentRecipeID *string `json:"parentRecipeId,omitempty"`
 }
