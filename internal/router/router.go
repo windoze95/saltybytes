@@ -82,11 +82,6 @@ func SetupRouter(cfg *config.Config, database *gorm.DB) *gin.Engine {
 		apiPublic.POST("/auth/login", userHandler.LoginUser)
 		// Refresh an access token
 		apiPublic.POST("/auth/refresh", userHandler.RefreshToken)
-
-		// Recipe-related routes
-
-		// Get a single recipe by it's ID
-		apiPublic.GET("/recipes/:recipe_id", recipeHandler.GetRecipe)
 	}
 
 	// Group for API routes that require token verification
@@ -106,6 +101,10 @@ func SetupRouter(cfg *config.Config, database *gorm.DB) *gin.Engine {
 
 		// Recipe-related routes
 
+		// Get a single recipe by its ID (any authenticated user may view any
+		// recipe; kept out of the public group to prevent anonymous
+		// sequential-ID enumeration)
+		apiProtected.GET("/recipes/:recipe_id", middleware.AttachUserToContext(userService), recipeHandler.GetRecipe)
 		// List the authenticated user's recipes
 		apiProtected.GET("/recipes", middleware.AttachUserToContext(userService), recipeHandler.ListRecipes)
 		// Generate a new recipe with chat
@@ -129,6 +128,8 @@ func SetupRouter(cfg *config.Config, database *gorm.DB) *gin.Engine {
 
 		// Recipe tree/branching routes
 		treeService := service.NewRecipeTreeService(cfg, recipeRepo)
+		treeService.EmbedProvider = embedProvider
+		treeService.VectorRepo = vectorRepo
 		treeHandler := handlers.NewRecipeTreeHandler(treeService)
 
 		apiProtected.GET("/recipes/:recipe_id/tree", middleware.AttachUserToContext(userService), treeHandler.GetTree)
@@ -176,6 +177,9 @@ func SetupRouter(cfg *config.Config, database *gorm.DB) *gin.Engine {
 	searchService.EmbedProvider = embedProvider
 	searchService.StartBackgroundTasks()
 	importService.StartCanonicalBackgroundTasks()
+
+	// Backfill missing recipe/canonical embeddings in the background
+	service.StartEmbeddingBackfill(vectorRepo, embedProvider)
 
 	// Multi-recipe resolution (detection happens on click via preview, not search)
 	multiRegistry := service.NewMultiRecipeRegistry()

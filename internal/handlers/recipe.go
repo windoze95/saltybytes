@@ -50,7 +50,17 @@ func (h *RecipeHandler) ListRecipes(c *gin.Context) {
 		}
 	}
 
-	recipes, total, err := h.Service.GetUserRecipes(user.ID, page, pageSize)
+	var recipes []service.RecipeListItem
+	var total int64
+
+	// When a search query is present (>= 2 chars), perform a semantic search
+	// over the user's own recipes instead of a plain listing.
+	q := strings.TrimSpace(c.Query("q"))
+	if len([]rune(q)) >= 2 {
+		recipes, total, err = h.Service.SearchUserRecipes(c.Request.Context(), user.ID, q, page, pageSize)
+	} else {
+		recipes, total, err = h.Service.GetUserRecipes(user.ID, page, pageSize)
+	}
 	if err != nil {
 		logger.Get().Error("failed to list recipes", zap.Uint("user_id", user.ID), zap.Error(err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list recipes"})

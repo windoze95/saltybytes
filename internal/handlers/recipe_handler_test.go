@@ -1,7 +1,9 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -143,6 +145,159 @@ func TestListRecipes_Unauthorized(t *testing.T) {
 
 	if w.Code != http.StatusUnauthorized {
 		t.Errorf("status = %d, want %d", w.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestListRecipes_SemanticSearchMergesVectorAndTitleHits(t *testing.T) {
+	repo := testutil.NewMockRecipeRepo()
+	svc := newRecipeService(repo)
+
+	vectorHit := similarRecipe(1, "Classic Pancakes")
+	titleHit := similarRecipe(2, "Pancake Casserole")
+	duplicateOfVectorHit := similarRecipe(1, "Classic Pancakes")
+
+	vectorRepo := &testutil.MockVectorRepo{
+		SearchUserRecipesByEmbeddingFunc: func(userID uint, embeddingLiteral string, limit int) ([]models.Recipe, error) {
+			return []models.Recipe{vectorHit}, nil
+		},
+		SearchUserRecipesByTitleFunc: func(userID uint, query string, onlyMissingEmbedding bool, limit int) ([]models.Recipe, error) {
+			return []models.Recipe{duplicateOfVectorHit, titleHit}, nil
+		},
+	}
+	svc.VectorRepo = vectorRepo
+	svc.EmbedProvider = &testutil.MockEmbeddingProvider{
+		GenerateEmbeddingFunc: func(ctx context.Context, text string) ([]float32, error) {
+			return []float32{0.1, 0.2}, nil
+		},
+	}
+
+	handler := NewRecipeHandler(svc)
+	user := testutil.TestUser()
+	r := gin.New()
+	r.GET("/recipes", setUser(user), handler.ListRecipes)
+
+	req := httptest.NewRequest("GET", "/recipes?q=pancakes", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d. body: %s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	var body map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &body)
+	recipes, ok := body["recipes"].([]interface{})
+	if !ok {
+		t.Fatalf("response should contain 'recipes' array, body: %s", w.Body.String())
+	}
+	if len(recipes) != 2 {
+		t.Fatalf("recipes len = %d, want 2 (deduped)", len(recipes))
+	}
+	first := recipes[0].(map[string]interface{})
+	second := recipes[1].(map[string]interface{})
+	if first["id"] != "1" {
+		t.Errorf("first result id = %v, want \"1\" (vector hits rank first)", first["id"])
+	}
+	if second["id"] != "2" {
+		t.Errorf("second result id = %v, want \"2\"", second["id"])
+	}
+	if body["total"].(float64) != 2 {
+		t.Errorf("total = %v, want 2", body["total"])
+	}
+
+	// The title pass should only cover recipes lacking embeddings when the
+	// vector search succeeded.
+	if len(vectorRepo.SearchUserRecipesByTitleCalls) != 1 {
+		t.Fatalf("title search calls = %d, want 1", len(vectorRepo.SearchUserRecipesByTitleCalls))
+	}
+	if !vectorRepo.SearchUserRecipesByTitleCalls[0].OnlyMissingEmbedding {
+		t.Error("title search should be scoped to recipes missing embeddings after a vector hit")
+	}
+	if vectorRepo.SearchUserRecipesByTitleCalls[0].Query != "pancakes" {
+		t.Errorf("title search query = %q, want \"pancakes\"", vectorRepo.SearchUserRecipesByTitleCalls[0].Query)
+	}
+}
+
+func TestListRecipes_SearchFallsBackToTitleOnEmbedFailure(t *testing.T) {
+	repo := testutil.NewMockRecipeRepo()
+	svc := newRecipeService(repo)
+
+	vectorRepo := &testutil.MockVectorRepo{
+		SearchUserRecipesByTitleFunc: func(userID uint, query string, onlyMissingEmbedding bool, limit int) ([]models.Recipe, error) {
+			return []models.Recipe{similarRecipe(3, "Pancake Muffins")}, nil
+		},
+	}
+	svc.VectorRepo = vectorRepo
+	svc.EmbedProvider = &testutil.MockEmbeddingProvider{
+		GenerateEmbeddingFunc: func(ctx context.Context, text string) ([]float32, error) {
+			return nil, fmt.Errorf("embedding service down")
+		},
+	}
+
+	handler := NewRecipeHandler(svc)
+	user := testutil.TestUser()
+	r := gin.New()
+	r.GET("/recipes", setUser(user), handler.ListRecipes)
+
+	req := httptest.NewRequest("GET", "/recipes?q=pancakes", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d. body: %s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	var body map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &body)
+	recipes := body["recipes"].([]interface{})
+	if len(recipes) != 1 {
+		t.Fatalf("recipes len = %d, want 1", len(recipes))
+	}
+	if recipes[0].(map[string]interface{})["id"] != "3" {
+		t.Errorf("result id = %v, want \"3\"", recipes[0].(map[string]interface{})["id"])
+	}
+
+	// Pure ILIKE fallback must NOT be scoped to missing-embedding rows.
+	if len(vectorRepo.SearchUserRecipesByTitleCalls) != 1 {
+		t.Fatalf("title search calls = %d, want 1", len(vectorRepo.SearchUserRecipesByTitleCalls))
+	}
+	if vectorRepo.SearchUserRecipesByTitleCalls[0].OnlyMissingEmbedding {
+		t.Error("pure ILIKE fallback should search ALL of the user's recipes")
+	}
+}
+
+func TestListRecipes_ShortQueryUsesPlainListing(t *testing.T) {
+	repo := testutil.NewMockRecipeRepo()
+	recipe := testutil.TestRecipe()
+	recipe.CreatedAt = time.Now()
+	recipe.UpdatedAt = time.Now()
+	repo.Recipes[recipe.ID] = recipe
+
+	svc := newRecipeService(repo)
+	vectorRepo := &testutil.MockVectorRepo{}
+	svc.VectorRepo = vectorRepo
+	svc.EmbedProvider = &testutil.MockEmbeddingProvider{}
+
+	handler := NewRecipeHandler(svc)
+	user := testutil.TestUser()
+	r := gin.New()
+	r.GET("/recipes", setUser(user), handler.ListRecipes)
+
+	req := httptest.NewRequest("GET", "/recipes?q=a", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d. body: %s", w.Code, http.StatusOK, w.Body.String())
+	}
+	if len(vectorRepo.SearchUserRecipesByEmbeddingCalls) != 0 || len(vectorRepo.SearchUserRecipesByTitleCalls) != 0 {
+		t.Error("a query under 2 chars should use the plain listing, not search")
+	}
+
+	var body map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &body)
+	if body["total"].(float64) != 1 {
+		t.Errorf("total = %v, want 1", body["total"])
 	}
 }
 

@@ -32,6 +32,15 @@ type RecipeRepo interface {
 	MaterializeRecipeFromCanonical(recipeID uint, data models.RecipeDef) error
 }
 
+// VectorRepo is the interface for pgvector similarity search operations.
+type VectorRepo interface {
+	FindSimilar(embeddingLiteral string, excludeRecipeID uint, limit int) ([]models.Recipe, error)
+	GetRecipeEmbedding(recipeID uint) (*string, error)
+	UpdateEmbedding(recipeID uint, embedding []float32) error
+	SearchUserRecipesByEmbedding(userID uint, embeddingLiteral string, limit int) ([]models.Recipe, error)
+	SearchUserRecipesByTitle(userID uint, query string, onlyMissingEmbedding bool, limit int) ([]models.Recipe, error)
+}
+
 // CanonicalRecipeRepo is the interface for canonical recipe repository operations.
 type CanonicalRecipeRepo interface {
 	GetByID(id uint) (*models.CanonicalRecipe, error)

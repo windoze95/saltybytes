@@ -114,6 +114,24 @@ var safeHTTPClient = &http.Client{
 	},
 }
 
+// canonicalEmbedding generates an embedding literal for a canonical recipe
+// from its title and ingredient names. Best-effort: returns nil when no
+// embedding provider is configured or generation fails.
+func (s *ImportService) canonicalEmbedding(ctx context.Context, recipeDef *models.RecipeDef) *string {
+	if s.RecipeService == nil || s.RecipeService.EmbedProvider == nil {
+		return nil
+	}
+
+	embedding, err := s.RecipeService.EmbedProvider.GenerateEmbedding(ctx, embeddingText(recipeDef))
+	if err != nil {
+		logger.Get().Warn("failed to generate canonical embedding", zap.String("title", recipeDef.Title), zap.Error(err))
+		return nil
+	}
+
+	literal := repository.PgvectorLiteral(embedding)
+	return &literal
+}
+
 // ImportFromURL fetches a page, tries JSON-LD extraction first, falls back to AI.
 // When a CanonicalRepo is configured, it checks the canonical cache first and
 // saves extractions for future deduplication.
@@ -159,6 +177,7 @@ func (s *ImportService) ImportFromURL(ctx context.Context, rawURL string, user *
 				FetchedAt:        now,
 				LastAccessedAt:   now,
 				PromptVersion:    promptVersion,
+				Embedding:        s.canonicalEmbedding(ctx, recipeDef),
 			}
 			if upsertErr := s.CanonicalRepo.Upsert(entry); upsertErr == nil {
 				canonicalID = &entry.ID
@@ -665,6 +684,7 @@ func (s *ImportService) PreviewFromURL(ctx context.Context, rawURL string) (*mod
 				FetchedAt:        now,
 				LastAccessedAt:   now,
 				PromptVersion:    promptVersion,
+				Embedding:        s.canonicalEmbedding(ctx, recipeDef),
 			}
 			if upsertErr := s.CanonicalRepo.Upsert(entry); upsertErr == nil {
 				canonicalID = &entry.ID
@@ -785,6 +805,7 @@ func (s *ImportService) PreviewFromURLWithMultiCheck(ctx context.Context, rawURL
 				ExtractionMethod: method,
 				FetchedAt:        now,
 				LastAccessedAt:   now,
+				Embedding:        s.canonicalEmbedding(ctx, recipeDef),
 			}
 			if upsertErr := s.CanonicalRepo.Upsert(entry); upsertErr == nil {
 				canonicalID = &entry.ID
@@ -898,6 +919,7 @@ func (s *ImportService) refreshStaleCanonicals() {
 		entry.ExtractionMethod = method
 		entry.FetchedAt = now
 		entry.LastAccessedAt = now
+		entry.Embedding = s.canonicalEmbedding(context.Background(), recipeDef)
 		if err := s.CanonicalRepo.Upsert(&entry); err != nil {
 			log.Warn("failed to upsert refreshed canonical", zap.String("url", entry.OriginalURL), zap.Error(err))
 		}

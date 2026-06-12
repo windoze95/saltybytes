@@ -1,9 +1,11 @@
 package service
 
 import (
+	"context"
 	"errors"
 	"fmt"
 
+	"github.com/windoze95/saltybytes-api/internal/ai"
 	"github.com/windoze95/saltybytes-api/internal/config"
 	"github.com/windoze95/saltybytes-api/internal/models"
 	"github.com/windoze95/saltybytes-api/internal/repository"
@@ -13,6 +15,10 @@ import (
 type RecipeTreeService struct {
 	Cfg  *config.Config
 	Repo *repository.RecipeRepository
+	// Optional: set these to keep recipe embeddings in sync when switching
+	// the active node rewrites the recipe definition.
+	EmbedProvider ai.EmbeddingProvider
+	VectorRepo    repository.VectorRepo
 }
 
 // NewRecipeTreeService creates a new RecipeTreeService.
@@ -101,6 +107,10 @@ func (s *RecipeTreeService) SetActiveNode(recipeID uint, nodeID uint) error {
 		if err := s.Repo.UpdateRecipeFromNode(recipeID, node); err != nil {
 			return fmt.Errorf("failed to update recipe from node: %w", err)
 		}
+
+		// The recipe definition changed, so the stored embedding is stale.
+		// Regenerate it best-effort (warn-and-continue on failure).
+		generateAndStoreRecipeEmbedding(context.Background(), s.EmbedProvider, s.VectorRepo, recipeID, node.Response)
 	}
 
 	return nil
