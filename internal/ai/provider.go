@@ -30,9 +30,10 @@ type ImageProvider interface {
 	GenerateImage(ctx context.Context, prompt string) ([]byte, error)
 }
 
-// SpeechProvider handles speech-to-text (Whisper).
+// SpeechProvider handles speech-to-text (Whisper). format is the audio
+// container format (e.g. "webm", "m4a"); empty defaults to webm.
 type SpeechProvider interface {
-	TranscribeAudio(ctx context.Context, audioData []byte) (string, error)
+	TranscribeAudio(ctx context.Context, audioData []byte, format string) (string, error)
 }
 
 // EmbeddingProvider handles vector embeddings.

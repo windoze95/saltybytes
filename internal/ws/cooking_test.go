@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -30,12 +33,7 @@ func setupTestCookingHandler() (*CookingHandler, *testutil.MockTextProvider, *te
 // websocket.Conn. This works because the handler methods write to client.Send
 // rather than Conn directly.
 func newTestClient(hub *Hub, roomID string, userID uint) *Client {
-	return &Client{
-		Hub:    hub,
-		Send:   make(chan []byte, 256),
-		RoomID: roomID,
-		UserID: userID,
-	}
+	return NewClient(hub, nil, roomID, userID)
 }
 
 // readMessage reads a single WSMessage from the client's Send channel with a
@@ -150,9 +148,12 @@ func TestHandleVoiceTranscript_WithAudioData(t *testing.T) {
 	ch, mockText, mockSpeech := setupTestCookingHandler()
 	client := newTestClient(ch.Hub, "recipe-1", 42)
 
-	mockSpeech.TranscribeAudioFunc = func(ctx context.Context, audioData []byte) (string, error) {
+	mockSpeech.TranscribeAudioFunc = func(ctx context.Context, audioData []byte, format string) (string, error) {
 		if string(audioData) != "fake-audio-bytes" {
 			t.Errorf("unexpected audio data: %q", string(audioData))
+		}
+		if format != "" {
+			t.Errorf("expected empty format, got %q", format)
 		}
 		return "scroll down please", nil
 	}
@@ -499,6 +500,304 @@ func TestHandleMessage_RoutesVoiceTranscript(t *testing.T) {
 	if msg.Type != MsgTypeVoiceIntent {
 		t.Fatalf("expected type %q, got %q", MsgTypeVoiceIntent, msg.Type)
 	}
+}
+
+// --- ping / pong tests ---
+
+func TestHandleMessage_PingPong(t *testing.T) {
+	ch, _, _ := setupTestCookingHandler()
+	client := newTestClient(ch.Hub, "recipe-1", 42)
+
+	data, _ := json.Marshal(WSMessage{
+		Type:    MsgTypePing,
+		Payload: json.RawMessage(`{}`),
+	})
+	ch.handleMessage(client, data)
+
+	msg := readMessage(t, client)
+	if msg.Type != MsgTypePong {
+		t.Fatalf("expected type %q, got %q", MsgTypePong, msg.Type)
+	}
+	assertNoMoreMessages(t, client)
+}
+
+func TestHandleMessage_PingWithoutPayload(t *testing.T) {
+	ch, _, _ := setupTestCookingHandler()
+	client := newTestClient(ch.Hub, "recipe-1", 42)
+
+	ch.handleMessage(client, []byte(`{"type":"ping"}`))
+
+	msg := readMessage(t, client)
+	if msg.Type != MsgTypePong {
+		t.Fatalf("expected type %q, got %q", MsgTypePong, msg.Type)
+	}
+}
+
+// --- step_change tests ---
+
+func TestHandleMessage_StepChange_UpdatesClientState(t *testing.T) {
+	ch, _, _ := setupTestCookingHandler()
+	client := newTestClient(ch.Hub, "recipe-1", 42)
+
+	if _, ok := client.CurrentStep(); ok {
+		t.Fatal("expected no current step before step_change")
+	}
+
+	payload, _ := json.Marshal(StepChangePayload{Step: 3})
+	data, _ := json.Marshal(WSMessage{
+		Type:    MsgTypeStepChange,
+		Payload: payload,
+	})
+	ch.handleMessage(client, data)
+
+	step, ok := client.CurrentStep()
+	if !ok {
+		t.Fatal("expected current step to be set after step_change")
+	}
+	if step != 3 {
+		t.Errorf("expected step 3, got %d", step)
+	}
+	// step_change produces no response message
+	assertNoMoreMessages(t, client)
+}
+
+func TestHandleStepChange_InvalidPayload(t *testing.T) {
+	ch, _, _ := setupTestCookingHandler()
+	client := newTestClient(ch.Hub, "recipe-1", 42)
+
+	ch.handleStepChange(client, json.RawMessage(`{"step":"three"}`))
+
+	msg := readMessage(t, client)
+	if msg.Type != MsgTypeError {
+		t.Fatalf("expected error type, got %q", msg.Type)
+	}
+	var errPayload ErrorPayload
+	if err := json.Unmarshal(msg.Payload, &errPayload); err != nil {
+		t.Fatalf("failed to unmarshal ErrorPayload: %v", err)
+	}
+	if errPayload.Message != "invalid step change payload" {
+		t.Errorf("unexpected error message: %q", errPayload.Message)
+	}
+}
+
+func TestHandleStepChange_NegativeStep(t *testing.T) {
+	ch, _, _ := setupTestCookingHandler()
+	client := newTestClient(ch.Hub, "recipe-1", 42)
+
+	ch.handleStepChange(client, json.RawMessage(`{"step":-1}`))
+
+	msg := readMessage(t, client)
+	if msg.Type != MsgTypeError {
+		t.Fatalf("expected error type, got %q", msg.Type)
+	}
+	if _, ok := client.CurrentStep(); ok {
+		t.Error("negative step should not be stored")
+	}
+}
+
+func TestStepChange_ThreadsIntoQAContext(t *testing.T) {
+	ch, mockText, _ := setupTestCookingHandler()
+	client := newTestClient(ch.Hub, "recipe-1", 42)
+
+	// Report the current step first.
+	stepPayload, _ := json.Marshal(StepChangePayload{Step: 4})
+	stepData, _ := json.Marshal(WSMessage{
+		Type:    MsgTypeStepChange,
+		Payload: stepPayload,
+	})
+	ch.handleMessage(client, stepData)
+
+	contextCh := make(chan string, 1)
+	mockText.CookingQAFunc = func(ctx context.Context, question, recipeContext string) (string, error) {
+		contextCh <- recipeContext
+		return "Stir until combined.", nil
+	}
+
+	chatPayload, _ := json.Marshal(ChatMessagePayload{
+		Message:       "what now?",
+		RecipeContext: "pasta recipe",
+	})
+	chatData, _ := json.Marshal(WSMessage{
+		Type:    MsgTypeChatMessage,
+		Payload: chatPayload,
+	})
+	ch.handleMessage(client, chatData)
+
+	msg := readMessage(t, client)
+	if msg.Type != MsgTypeChatResponse {
+		t.Fatalf("expected type %q, got %q", MsgTypeChatResponse, msg.Type)
+	}
+
+	recipeContext := <-contextCh
+	if !strings.Contains(recipeContext, "pasta recipe") {
+		t.Errorf("expected recipe context to keep the original context, got %q", recipeContext)
+	}
+	if !strings.Contains(recipeContext, "The user is currently on step 4.") {
+		t.Errorf("expected recipe context to mention step 4, got %q", recipeContext)
+	}
+}
+
+func TestHandleVoiceTranscript_QuestionIncludesStepContext(t *testing.T) {
+	ch, mockText, _ := setupTestCookingHandler()
+	client := newTestClient(ch.Hub, "recipe-1", 42)
+	client.SetCurrentStep(7)
+
+	mockText.ClassifyVoiceIntentFunc = func(ctx context.Context, transcript string) (*ai.VoiceIntent, error) {
+		return &ai.VoiceIntent{
+			Type: "question",
+			Text: "is it done yet",
+		}, nil
+	}
+	contextCh := make(chan string, 1)
+	mockText.CookingQAFunc = func(ctx context.Context, question, recipeContext string) (string, error) {
+		contextCh <- recipeContext
+		return "Almost.", nil
+	}
+
+	payload, _ := json.Marshal(VoiceTranscriptPayload{
+		Transcript: "is it done yet",
+	})
+	ch.handleVoiceTranscript(client, payload)
+
+	// VoiceIntent, then ChatResponse
+	msg := readMessage(t, client)
+	if msg.Type != MsgTypeVoiceIntent {
+		t.Fatalf("expected type %q, got %q", MsgTypeVoiceIntent, msg.Type)
+	}
+	msg2 := readMessage(t, client)
+	if msg2.Type != MsgTypeChatResponse {
+		t.Fatalf("expected type %q, got %q", MsgTypeChatResponse, msg2.Type)
+	}
+
+	recipeContext := <-contextCh
+	if recipeContext != "The user is currently on step 7." {
+		t.Errorf("expected step-only context, got %q", recipeContext)
+	}
+}
+
+// --- voice format plumbing tests ---
+
+func TestHandleVoiceTranscript_AudioFormatPassedToSpeechProvider(t *testing.T) {
+	ch, mockText, mockSpeech := setupTestCookingHandler()
+	client := newTestClient(ch.Hub, "recipe-1", 42)
+
+	var gotFormat string
+	mockSpeech.TranscribeAudioFunc = func(ctx context.Context, audioData []byte, format string) (string, error) {
+		gotFormat = format
+		return "scroll down", nil
+	}
+	mockText.ClassifyVoiceIntentFunc = func(ctx context.Context, transcript string) (*ai.VoiceIntent, error) {
+		return &ai.VoiceIntent{Type: "ignore"}, nil
+	}
+
+	payload, _ := json.Marshal(VoiceTranscriptPayload{
+		AudioData: []byte("fake-audio"),
+		Format:    "m4a",
+	})
+	ch.handleVoiceTranscript(client, payload)
+
+	msg := readMessage(t, client)
+	if msg.Type != MsgTypeVoiceIntent {
+		t.Fatalf("expected type %q, got %q", MsgTypeVoiceIntent, msg.Type)
+	}
+	if gotFormat != "m4a" {
+		t.Errorf("expected format m4a to reach the speech provider, got %q", gotFormat)
+	}
+}
+
+// --- CheckOrigin tests ---
+
+func TestCheckOrigin(t *testing.T) {
+	cases := []struct {
+		origin string
+		want   bool
+	}{
+		{"", true}, // native clients (Flutter) send no Origin header
+		{"https://saltybytes.ai", true},
+		{"https://www.saltybytes.ai", true},
+		{"https://api.saltybytes.ai", true},
+		{"http://localhost", true},
+		{"http://localhost:3000", true},
+		{"https://evil.example.com", false},
+		{"http://saltybytes.ai.evil.com", false},
+	}
+
+	for _, tc := range cases {
+		req := httptest.NewRequest(http.MethodGet, "/v1/ws/cook/1", nil)
+		if tc.origin != "" {
+			req.Header.Set("Origin", tc.origin)
+		}
+		if got := upgrader.CheckOrigin(req); got != tc.want {
+			t.Errorf("CheckOrigin(origin=%q) = %v, want %v", tc.origin, got, tc.want)
+		}
+	}
+}
+
+// --- async dispatch tests ---
+
+func TestDispatchAsync_BoundedConcurrency(t *testing.T) {
+	ch, mockText, _ := setupTestCookingHandler()
+	client := newTestClient(ch.Hub, "recipe-1", 42)
+
+	started := make(chan struct{}, 4)
+	release := make(chan struct{})
+	mockText.CookingQAFunc = func(ctx context.Context, question, recipeContext string) (string, error) {
+		started <- struct{}{}
+		<-release
+		return "done", nil
+	}
+
+	chatPayload, _ := json.Marshal(ChatMessagePayload{Message: "question"})
+	chatData, _ := json.Marshal(WSMessage{
+		Type:    MsgTypeChatMessage,
+		Payload: chatPayload,
+	})
+
+	// Two slow handlers may run concurrently without blocking handleMessage.
+	ch.handleMessage(client, chatData)
+	ch.handleMessage(client, chatData)
+	for i := 0; i < 2; i++ {
+		select {
+		case <-started:
+		case <-time.After(2 * time.Second):
+			t.Fatal("async handler did not start")
+		}
+	}
+
+	// A third request is rejected immediately while two are in flight.
+	ch.handleMessage(client, chatData)
+	msg := readMessage(t, client)
+	if msg.Type != MsgTypeError {
+		t.Fatalf("expected error type for third in-flight request, got %q", msg.Type)
+	}
+	var errPayload ErrorPayload
+	if err := json.Unmarshal(msg.Payload, &errPayload); err != nil {
+		t.Fatalf("failed to unmarshal ErrorPayload: %v", err)
+	}
+	if errPayload.Message != "too many requests in flight; please wait" {
+		t.Errorf("unexpected error message: %q", errPayload.Message)
+	}
+
+	// Cheap messages are still processed inline while slow handlers run.
+	stepPayload, _ := json.Marshal(StepChangePayload{Step: 2})
+	stepData, _ := json.Marshal(WSMessage{
+		Type:    MsgTypeStepChange,
+		Payload: stepPayload,
+	})
+	ch.handleMessage(client, stepData)
+	if step, ok := client.CurrentStep(); !ok || step != 2 {
+		t.Errorf("expected step_change to be handled while handlers in flight, got step=%d ok=%v", step, ok)
+	}
+
+	// Release the blocked handlers; both responses arrive.
+	close(release)
+	for i := 0; i < 2; i++ {
+		resp := readMessage(t, client)
+		if resp.Type != MsgTypeChatResponse {
+			t.Fatalf("expected type %q, got %q", MsgTypeChatResponse, resp.Type)
+		}
+	}
+	assertNoMoreMessages(t, client)
 }
 
 func TestHandleVoiceTranscript_QuestionIntent_AnswerError(t *testing.T) {

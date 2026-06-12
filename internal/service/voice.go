@@ -25,8 +25,10 @@ func NewVoiceService(cfg *config.Config, textProvider ai.TextProvider, speechPro
 }
 
 // ProcessVoiceCommand transcribes audio and classifies the user's intent.
-func (s *VoiceService) ProcessVoiceCommand(ctx context.Context, audioData []byte) (*ai.VoiceIntent, error) {
-	transcript, err := s.SpeechProvider.TranscribeAudio(ctx, audioData)
+// format is the audio container format (e.g. "webm", "m4a"); empty defaults
+// to webm.
+func (s *VoiceService) ProcessVoiceCommand(ctx context.Context, audioData []byte, format string) (*ai.VoiceIntent, error) {
+	transcript, err := s.SpeechProvider.TranscribeAudio(ctx, audioData, format)
 	if err != nil {
 		return nil, fmt.Errorf("transcribe audio: %w", err)
 	}

@@ -122,12 +122,12 @@ func (m *MockImageProvider) GenerateImage(ctx context.Context, prompt string) ([
 
 // MockSpeechProvider is a mock implementation of ai.SpeechProvider.
 type MockSpeechProvider struct {
-	TranscribeAudioFunc func(ctx context.Context, audioData []byte) (string, error)
+	TranscribeAudioFunc func(ctx context.Context, audioData []byte, format string) (string, error)
 }
 
-func (m *MockSpeechProvider) TranscribeAudio(ctx context.Context, audioData []byte) (string, error) {
+func (m *MockSpeechProvider) TranscribeAudio(ctx context.Context, audioData []byte, format string) (string, error) {
 	if m.TranscribeAudioFunc != nil {
-		return m.TranscribeAudioFunc(ctx, audioData)
+		return m.TranscribeAudioFunc(ctx, audioData, format)
 	}
 	return "", fmt.Errorf("TranscribeAudio not configured")
 }
