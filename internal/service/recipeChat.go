@@ -202,7 +202,7 @@ func (s *RecipeService) StreamGenerateRecipe(ctx context.Context, user *models.U
 	ai.TrySendEvent(ctx, events, ai.StreamEvent{Type: ai.StreamEventStarted, RecipeID: recipe.ID})
 
 	// Type-assert to get streaming capability
-	anthropicProvider, ok := s.TextProvider.(*ai.AnthropicProvider)
+	streamProvider, ok := s.TextProvider.(ai.StreamingTextProvider)
 	if !ok {
 		// Fall back to non-streaming generation
 		log.Info("provider does not support streaming, falling back to sync generation")
@@ -230,7 +230,7 @@ func (s *RecipeService) StreamGenerateRecipe(ctx context.Context, user *models.U
 		CookingContext: user.Personalization.CookingContextPrompt(),
 	}
 
-	result, err := anthropicProvider.StreamGenerateRecipe(ctx, req, events)
+	result, err := streamProvider.StreamGenerateRecipe(ctx, req, events)
 	if err != nil {
 		log.Error("streaming recipe generation failed", zap.Uint("recipe_id", recipe.ID), zap.Error(err))
 		s.Repo.UpdateRecipeStatus(recipe.ID, "failed")

@@ -147,14 +147,70 @@ type MockRecipeRepo struct {
 	NextNodeID uint
 
 	// Error overrides: set these to force specific methods to return errors.
-	CreateRecipeErr         error
-	GetRecipeByIDErr        error
-	DeleteRecipeErr         error
-	UpdateRecipeTitleErr    error
-	UpdateRecipeImageURLErr error
-	UpdateRecipeDefErr      error
-	CreateRecipeTreeErr     error
-	AddNodeToTreeErr        error
+	CreateRecipeErr                   error
+	GetRecipeByIDErr                  error
+	DeleteRecipeErr                   error
+	UpdateRecipeTitleErr              error
+	UpdateRecipeImageURLErr           error
+	UpdateRecipeDefErr                error
+	CreateRecipeTreeErr               error
+	AddNodeToTreeErr                  error
+	GetTreeByRecipeIDErr              error
+	GetTreeWithNodesErr               error
+	GetActiveNodeErr                  error
+	GetNodeByIDErr                    error
+	GetNodeAncestorsErr               error
+	SetActiveNodeErr                  error
+	UpdateRecipeFromNodeErr           error
+	MaterializeRecipeFromCanonicalErr error
+
+	// Call records (guarded by mu; read via the snapshot accessors). These
+	// survive recipe deletion, so tests can assert on transient state like a
+	// "failed" status set just before cleanup, or async image URL updates.
+	statusUpdates   []MockStatusUpdate
+	imageURLUpdates []MockImageURLUpdate
+}
+
+// MockStatusUpdate records a single UpdateRecipeStatus invocation.
+type MockStatusUpdate struct {
+	RecipeID uint
+	Status   string
+}
+
+// MockImageURLUpdate records a single UpdateRecipeImageURL invocation.
+type MockImageURLUpdate struct {
+	RecipeID uint
+	ImageURL string
+}
+
+// StatusUpdates returns a race-safe snapshot of UpdateRecipeStatus calls.
+func (m *MockRecipeRepo) StatusUpdates() []MockStatusUpdate {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]MockStatusUpdate, len(m.statusUpdates))
+	copy(out, m.statusUpdates)
+	return out
+}
+
+// ImageURLUpdates returns a race-safe snapshot of UpdateRecipeImageURL calls.
+func (m *MockRecipeRepo) ImageURLUpdates() []MockImageURLUpdate {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]MockImageURLUpdate, len(m.imageURLUpdates))
+	copy(out, m.imageURLUpdates)
+	return out
+}
+
+// RecipeSnapshot returns a race-safe copy of a stored recipe, or nil if absent.
+func (m *MockRecipeRepo) RecipeSnapshot(recipeID uint) *models.Recipe {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	r, ok := m.Recipes[recipeID]
+	if !ok {
+		return nil
+	}
+	cp := *r
+	return &cp
 }
 
 // NewMockRecipeRepo creates a new MockRecipeRepo with initialized maps.
@@ -261,6 +317,7 @@ func (m *MockRecipeRepo) UpdateRecipeStatus(recipeID uint, status string) error 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	m.statusUpdates = append(m.statusUpdates, MockStatusUpdate{RecipeID: recipeID, Status: status})
 	if r, ok := m.Recipes[recipeID]; ok {
 		r.Status = status
 	}
@@ -274,6 +331,7 @@ func (m *MockRecipeRepo) UpdateRecipeImageURL(recipeID uint, imageURL string) er
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	m.imageURLUpdates = append(m.imageURLUpdates, MockImageURLUpdate{RecipeID: recipeID, ImageURL: imageURL})
 	if r, ok := m.Recipes[recipeID]; ok {
 		r.ImageURL = imageURL
 	}
@@ -352,6 +410,9 @@ func (m *MockRecipeRepo) CreateRecipeTree(recipeID uint, rootNode *models.Recipe
 }
 
 func (m *MockRecipeRepo) GetTreeByRecipeID(recipeID uint) (*models.RecipeTree, error) {
+	if m.GetTreeByRecipeIDErr != nil {
+		return nil, m.GetTreeByRecipeIDErr
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -364,6 +425,9 @@ func (m *MockRecipeRepo) GetTreeByRecipeID(recipeID uint) (*models.RecipeTree, e
 }
 
 func (m *MockRecipeRepo) GetTreeWithNodes(treeID uint) (*models.RecipeTree, error) {
+	if m.GetTreeWithNodesErr != nil {
+		return nil, m.GetTreeWithNodesErr
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -382,6 +446,9 @@ func (m *MockRecipeRepo) GetTreeWithNodes(treeID uint) (*models.RecipeTree, erro
 }
 
 func (m *MockRecipeRepo) GetActiveNode(treeID uint) (*models.RecipeNode, error) {
+	if m.GetActiveNodeErr != nil {
+		return nil, m.GetActiveNodeErr
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -394,6 +461,9 @@ func (m *MockRecipeRepo) GetActiveNode(treeID uint) (*models.RecipeNode, error) 
 }
 
 func (m *MockRecipeRepo) GetNodeByID(nodeID uint) (*models.RecipeNode, error) {
+	if m.GetNodeByIDErr != nil {
+		return nil, m.GetNodeByIDErr
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -418,6 +488,9 @@ func (m *MockRecipeRepo) GetNodeChildren(nodeID uint) ([]models.RecipeNode, erro
 }
 
 func (m *MockRecipeRepo) GetNodeAncestors(nodeID uint) ([]models.RecipeNode, error) {
+	if m.GetNodeAncestorsErr != nil {
+		return nil, m.GetNodeAncestorsErr
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -459,6 +532,9 @@ func (m *MockRecipeRepo) AddNodeToTree(node *models.RecipeNode, setActive bool) 
 }
 
 func (m *MockRecipeRepo) SetActiveNode(treeID uint, nodeID uint) error {
+	if m.SetActiveNodeErr != nil {
+		return m.SetActiveNodeErr
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -471,6 +547,9 @@ func (m *MockRecipeRepo) SetActiveNode(treeID uint, nodeID uint) error {
 }
 
 func (m *MockRecipeRepo) UpdateRecipeFromNode(recipeID uint, node *models.RecipeNode) error {
+	if m.UpdateRecipeFromNodeErr != nil {
+		return m.UpdateRecipeFromNodeErr
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -481,6 +560,9 @@ func (m *MockRecipeRepo) UpdateRecipeFromNode(recipeID uint, node *models.Recipe
 }
 
 func (m *MockRecipeRepo) MaterializeRecipeFromCanonical(recipeID uint, data models.RecipeDef) error {
+	if m.MaterializeRecipeFromCanonicalErr != nil {
+		return m.MaterializeRecipeFromCanonicalErr
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
