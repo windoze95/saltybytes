@@ -24,15 +24,15 @@ const promptVersion = "v1"
 // AllergenService is the business logic layer for allergen analysis operations.
 type AllergenService struct {
 	Cfg          *config.Config
-	AllergenRepo *repository.AllergenRepository
-	FamilyRepo   *repository.FamilyRepository
-	RecipeRepo   *repository.RecipeRepository
+	AllergenRepo repository.AllergenRepo
+	FamilyRepo   repository.FamilyRepo
+	RecipeRepo   repository.RecipeRepo
 	AIProvider   ai.TextProvider
 	SubService   *SubscriptionService
 }
 
 // NewAllergenService is the constructor function for initializing a new AllergenService.
-func NewAllergenService(cfg *config.Config, allergenRepo *repository.AllergenRepository, familyRepo *repository.FamilyRepository, recipeRepo *repository.RecipeRepository, aiProvider ai.TextProvider, subService *SubscriptionService) *AllergenService {
+func NewAllergenService(cfg *config.Config, allergenRepo repository.AllergenRepo, familyRepo repository.FamilyRepo, recipeRepo repository.RecipeRepo, aiProvider ai.TextProvider, subService *SubscriptionService) *AllergenService {
 	return &AllergenService{
 		Cfg:          cfg,
 		AllergenRepo: allergenRepo,

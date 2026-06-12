@@ -581,7 +581,8 @@ type MockUserRepo struct {
 	Users  map[uint]*models.User
 	NextID uint
 
-	CreateUserErr error
+	CreateUserErr         error
+	CreateSubscriptionErr error
 }
 
 // NewMockUserRepo creates a new MockUserRepo with initialized maps.
@@ -718,6 +719,9 @@ func (m *MockUserRepo) IncrementTokenVersion(userID uint) error {
 }
 
 func (m *MockUserRepo) CreateSubscription(sub *models.Subscription) error {
+	if m.CreateSubscriptionErr != nil {
+		return m.CreateSubscriptionErr
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 

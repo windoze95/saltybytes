@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"errors"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -77,10 +78,10 @@ func (h *AllergenHandler) AnalyzeRecipe(c *gin.Context) {
 	result, err := h.Service.AnalyzeRecipe(c.Request.Context(), recipeID, isPremium)
 	if err != nil {
 		logger.Get().Error("allergen analysis failed", zap.String("recipe_id", recipeIDStr), zap.Error(err))
-		switch err.(type) {
-		case repository.NotFoundError:
+		var notFound repository.NotFoundError
+		if errors.As(err, &notFound) {
 			c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
-		default:
+		} else {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "allergen analysis failed"})
 		}
 		return
@@ -126,10 +127,10 @@ func (h *AllergenHandler) GetAnalysis(c *gin.Context) {
 	result, err := h.Service.GetAnalysis(c.Request.Context(), recipeID)
 	if err != nil {
 		logger.Get().Error("failed to get allergen analysis", zap.String("recipe_id", recipeIDStr), zap.Error(err))
-		switch err.(type) {
-		case repository.NotFoundError:
+		var notFound repository.NotFoundError
+		if errors.As(err, &notFound) {
 			c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
-		default:
+		} else {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get allergen analysis"})
 		}
 		return
@@ -168,10 +169,10 @@ func (h *AllergenHandler) CheckFamily(c *gin.Context) {
 	result, err := h.Service.CheckFamily(c.Request.Context(), recipeID, user.ID)
 	if err != nil {
 		logger.Get().Error("family allergen check failed", zap.String("recipe_id", recipeIDStr), zap.Uint("user_id", user.ID), zap.Error(err))
-		switch err.(type) {
-		case repository.NotFoundError:
+		var notFound repository.NotFoundError
+		if errors.As(err, &notFound) {
 			c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
-		default:
+		} else {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "family allergen check failed"})
 		}
 		return

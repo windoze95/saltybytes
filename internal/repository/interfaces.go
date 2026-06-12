@@ -72,6 +72,15 @@ type FamilyRepo interface {
 	GetOrCreateDietaryProfile(memberID uint) (*models.DietaryProfile, error)
 }
 
+// AllergenRepo is the interface for allergen analysis repository operations.
+type AllergenRepo interface {
+	CreateAnalysis(analysis *models.AllergenAnalysis) error
+	GetAnalysisByRecipeID(recipeID uint) (*models.AllergenAnalysis, error)
+	GetAnalysisByNodeID(nodeID uint) (*models.AllergenAnalysis, error)
+	UpdateAnalysis(analysis *models.AllergenAnalysis) error
+	DeleteAnalysisByRecipeID(recipeID uint) error
+}
+
 // UserRepo is the interface for user repository operations.
 type UserRepo interface {
 	CreateUser(user *models.User) (*models.User, error)
@@ -92,3 +101,4 @@ type UserRepo interface {
 // Compile-time check that the concrete repository satisfies the interface.
 var _ UserRepo = (*UserRepository)(nil)
 var _ FamilyRepo = (*FamilyRepository)(nil)
+var _ AllergenRepo = (*AllergenRepository)(nil)
