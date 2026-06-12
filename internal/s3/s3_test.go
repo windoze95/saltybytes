@@ -74,6 +74,21 @@ func TestS3KeyFromURL(t *testing.T) {
 			want: "uploads/1/images/my image.png",
 		},
 		{
+			name: "legacy path style without region",
+			url:  "https://s3.amazonaws.com/my-bucket/recipes/2/images/recipe_image_2.jpg",
+			want: "recipes/2/images/recipe_image_2.jpg",
+		},
+		{
+			name: "legacy dashed path style",
+			url:  "https://s3-us-west-2.amazonaws.com/my-bucket/recipes/2/images/recipe_image_2.jpg",
+			want: "recipes/2/images/recipe_image_2.jpg",
+		},
+		{
+			name: "virtual-hosted bucket named with s3- prefix keeps full key",
+			url:  "https://s3-images.s3.us-east-2.amazonaws.com/recipes/1/images/recipe_image_1.png",
+			want: "recipes/1/images/recipe_image_1.png",
+		},
+		{
 			name: "empty",
 			url:  "",
 			want: "",
@@ -89,6 +104,60 @@ func TestS3KeyFromURL(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := S3KeyFromURL(tt.url); got != tt.want {
 				t.Errorf("S3KeyFromURL(%q) = %q, want %q", tt.url, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRecipeImageKeyFromURL(t *testing.T) {
+	tests := []struct {
+		name     string
+		url      string
+		recipeID uint
+		want     string
+	}{
+		{
+			name:     "own recipe prefix is allowed",
+			url:      "https://my-bucket.s3.us-east-2.amazonaws.com/recipes/7/images/recipe_image_7_1700000000.png",
+			recipeID: 7,
+			want:     "recipes/7/images/recipe_image_7_1700000000.png",
+		},
+		{
+			name:     "another recipe's key is rejected",
+			url:      "https://my-bucket.s3.us-east-2.amazonaws.com/recipes/99/images/recipe_image_99_1700000000.png",
+			recipeID: 7,
+			want:     "",
+		},
+		{
+			name:     "prefix must match the whole ID segment",
+			url:      "https://my-bucket.s3.us-east-2.amazonaws.com/recipes/77/images/recipe_image_77.png",
+			recipeID: 7,
+			want:     "",
+		},
+		{
+			name:     "external (non-S3) image URL is rejected",
+			url:      "https://example.com/some/image.png",
+			recipeID: 7,
+			want:     "",
+		},
+		{
+			name:     "upload-prefixed key is rejected",
+			url:      "https://my-bucket.s3.us-east-2.amazonaws.com/uploads/3/images/abc.png",
+			recipeID: 7,
+			want:     "",
+		},
+		{
+			name:     "empty URL",
+			url:      "",
+			recipeID: 7,
+			want:     "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := RecipeImageKeyFromURL(tt.url, tt.recipeID); got != tt.want {
+				t.Errorf("RecipeImageKeyFromURL(%q, %d) = %q, want %q", tt.url, tt.recipeID, got, tt.want)
 			}
 		})
 	}

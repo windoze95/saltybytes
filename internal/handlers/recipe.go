@@ -321,9 +321,6 @@ func (h *RecipeHandler) StreamGenerateRecipe(c *gin.Context) {
 	if !h.checkAIGenerationLimit(c, user.ID) {
 		return
 	}
-	// The generation is launched below; count it now since SSE headers make
-	// it impossible to report a gating error once streaming starts.
-	h.incrementAIGenerationUsage(user.ID)
 
 	// Set SSE headers
 	c.Header("Content-Type", "text/event-stream")
@@ -338,6 +335,7 @@ func (h *RecipeHandler) StreamGenerateRecipe(c *gin.Context) {
 
 	go func() {
 		defer close(events)
+		defer util.RecoverPanic("stream generate recipe")
 		h.Service.StreamGenerateRecipe(ctx, user, prompt, genImage, events)
 	}()
 
@@ -346,6 +344,14 @@ func (h *RecipeHandler) StreamGenerateRecipe(c *gin.Context) {
 		case event, ok := <-events:
 			if !ok {
 				return false
+			}
+			// Usage is counted only when generation actually completes, so
+			// failed generations (provider errors, content-quality
+			// rejections) don't burn the user's monthly quota — matching
+			// the non-streaming endpoints, which increment after a
+			// successful init.
+			if event.Type == ai.StreamEventComplete {
+				h.incrementAIGenerationUsage(user.ID)
 			}
 			data, _ := json.Marshal(event)
 			c.SSEvent(string(event.Type), string(data))

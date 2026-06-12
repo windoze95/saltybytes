@@ -3,16 +3,20 @@ package middleware
 import (
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"golang.org/x/time/rate"
 )
 
-// limiterInfo is a struct that holds a rate limiter and the last time it was seen.
+// limiterInfo is a struct that holds a rate limiter and the last time it was
+// seen. lastSeenNano is accessed atomically (UnixNano) because request
+// handlers write it while the cleanup goroutine reads it concurrently;
+// sync.Map only synchronizes the map slots, not the stored struct's fields.
 type limiterInfo struct {
-	limiter  *rate.Limiter
-	lastSeen time.Time
+	limiter      *rate.Limiter
+	lastSeenNano atomic.Int64
 }
 
 // RateLimitByIP applies rate limiting to requests per IP address. Each IP
@@ -25,7 +29,8 @@ func RateLimitByIP(perMinute int, burst int, cleanupInterval time.Duration, expi
 	go func() {
 		for range time.Tick(cleanupInterval) {
 			limiters.Range(func(key, value interface{}) bool {
-				if time.Since(value.(*limiterInfo).lastSeen) > expiration {
+				lastSeen := time.Unix(0, value.(*limiterInfo).lastSeenNano.Load())
+				if time.Since(lastSeen) > expiration {
 					limiters.Delete(key)
 				}
 				return true
@@ -39,13 +44,11 @@ func RateLimitByIP(perMinute int, burst int, cleanupInterval time.Duration, expi
 		ip := c.ClientIP()
 
 		// Use LoadOrStore to ensure thread safety
-		actual, _ := limiters.LoadOrStore(ip, &limiterInfo{
-			limiter:  rate.NewLimiter(limit, burst),
-			lastSeen: time.Now(),
-		})
+		fresh := &limiterInfo{limiter: rate.NewLimiter(limit, burst)}
+		actual, _ := limiters.LoadOrStore(ip, fresh)
 
 		info := actual.(*limiterInfo)
-		info.lastSeen = time.Now()
+		info.lastSeenNano.Store(time.Now().UnixNano())
 
 		if !info.limiter.Allow() {
 			// Too many requests

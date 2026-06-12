@@ -16,6 +16,7 @@ import (
 	"github.com/windoze95/saltybytes-api/internal/logger"
 	"github.com/windoze95/saltybytes-api/internal/models"
 	"github.com/windoze95/saltybytes-api/internal/service"
+	"github.com/windoze95/saltybytes-api/internal/util"
 	"go.uber.org/zap"
 )
 
@@ -318,6 +319,10 @@ func (ch *CookingHandler) dispatchAsync(client *Client, payload json.RawMessage,
 	}
 	go func() {
 		defer client.releaseHandlerSlot()
+		// Recover here: gin's Recovery middleware does not cover detached
+		// goroutines, so a panic in one session's handler would otherwise
+		// crash the whole process.
+		defer util.RecoverPanic("cooking ws async handler")
 		handler(client, payload)
 	}()
 }

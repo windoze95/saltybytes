@@ -59,6 +59,45 @@ func TestDeleteRecipe_S3FailureStillSucceeds(t *testing.T) {
 	}
 }
 
+func TestDeleteRecipe_ForeignImageURLNeverDeletesOtherRecipesObject(t *testing.T) {
+	repo := testutil.NewMockRecipeRepo()
+	recipe := testutil.TestRecipe()
+	// A stored ImageURL pointing at ANOTHER recipe's S3 object (e.g. supplied
+	// via manual import image_url) must never be used as a delete key.
+	recipe.ImageURL = "https://bucket.s3.us-east-2.amazonaws.com/recipes/999/images/recipe_image_999_1700000000.png"
+	repo.Recipes[recipe.ID] = recipe
+
+	deletedKeys := stubS3Delete(t, nil)
+
+	svc := newTestRecipeService(repo)
+	if err := svc.DeleteRecipe(context.Background(), recipe.ID); err != nil {
+		t.Fatalf("DeleteRecipe() error = %v", err)
+	}
+
+	if len(*deletedKeys) != 0 {
+		t.Errorf("S3 delete keys = %v, want none for a key outside this recipe's own prefix", *deletedKeys)
+	}
+}
+
+func TestDeleteRecipe_ExternalImageURLSkipsS3Delete(t *testing.T) {
+	repo := testutil.NewMockRecipeRepo()
+	recipe := testutil.TestRecipe()
+	// JSON-LD imports store the page's external image URL; it is not ours to delete.
+	recipe.ImageURL = "https://example.com/photos/bread.jpg"
+	repo.Recipes[recipe.ID] = recipe
+
+	deletedKeys := stubS3Delete(t, nil)
+
+	svc := newTestRecipeService(repo)
+	if err := svc.DeleteRecipe(context.Background(), recipe.ID); err != nil {
+		t.Fatalf("DeleteRecipe() error = %v", err)
+	}
+
+	if len(*deletedKeys) != 0 {
+		t.Errorf("S3 delete keys = %v, want none for an external image URL", *deletedKeys)
+	}
+}
+
 func TestDeleteRecipe_CleansUpTreeAndNodes(t *testing.T) {
 	repo := testutil.NewMockRecipeRepo()
 	recipe := testutil.TestRecipe()

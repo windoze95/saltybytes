@@ -8,6 +8,7 @@ import (
 	"github.com/windoze95/saltybytes-api/internal/ai"
 	"github.com/windoze95/saltybytes-api/internal/logger"
 	"github.com/windoze95/saltybytes-api/internal/models"
+	"github.com/windoze95/saltybytes-api/internal/util"
 	"go.uber.org/zap"
 )
 
@@ -17,6 +18,11 @@ const embeddingBackfillBatchSize = 25
 // embeddingBackfillDelay is the pause between embedding API calls to avoid
 // hammering the provider. Package-level var so tests can shorten it.
 var embeddingBackfillDelay = 200 * time.Millisecond
+
+// embeddingCallTimeout bounds a single embedding API call made with a
+// background context. Without it a stalled provider connection would wedge
+// background loops (backfill, canonical refresh) indefinitely.
+const embeddingCallTimeout = 30 * time.Second
 
 // EmbeddingBackfillRepo is the subset of VectorRepository needed by the
 // embedding backfill task.
@@ -36,6 +42,8 @@ func StartEmbeddingBackfill(repo EmbeddingBackfillRepo, embedProvider ai.Embeddi
 	}
 
 	go func() {
+		defer util.RecoverPanic("embedding backfill")
+
 		backfillRecipeEmbeddings(repo, embedProvider)
 		backfillCanonicalEmbeddings(repo, embedProvider)
 	}()
@@ -68,7 +76,9 @@ func backfillRecipeEmbeddings(repo EmbeddingBackfillRepo, embedProvider ai.Embed
 				continue
 			}
 
-			embedding, err := embedProvider.GenerateEmbedding(context.Background(), text)
+			embedCtx, cancel := context.WithTimeout(context.Background(), embeddingCallTimeout)
+			embedding, err := embedProvider.GenerateEmbedding(embedCtx, text)
+			cancel()
 			if err != nil {
 				log.Warn("embedding backfill: failed to embed recipe", zap.Uint("recipe_id", recipe.ID), zap.Error(err))
 				skipped++
@@ -122,7 +132,9 @@ func backfillCanonicalEmbeddings(repo EmbeddingBackfillRepo, embedProvider ai.Em
 				continue
 			}
 
-			embedding, err := embedProvider.GenerateEmbedding(context.Background(), text)
+			embedCtx, cancel := context.WithTimeout(context.Background(), embeddingCallTimeout)
+			embedding, err := embedProvider.GenerateEmbedding(embedCtx, text)
+			cancel()
 			if err != nil {
 				log.Warn("embedding backfill: failed to embed canonical", zap.Uint("canonical_id", entry.ID), zap.Error(err))
 				skipped++

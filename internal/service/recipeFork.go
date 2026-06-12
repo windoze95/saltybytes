@@ -9,6 +9,7 @@ import (
 	"github.com/windoze95/saltybytes-api/internal/ai"
 	"github.com/windoze95/saltybytes-api/internal/logger"
 	"github.com/windoze95/saltybytes-api/internal/models"
+	"github.com/windoze95/saltybytes-api/internal/util"
 	"go.uber.org/zap"
 )
 
@@ -48,11 +49,15 @@ func (s *RecipeService) InitGenerateRecipeWithFork(user *models.User, forkedReci
 // FinishGenerateRecipeWithFork finishes generating a recipe with fork.
 // sourceRecipe is the original recipe being forked (used for AI conversation context).
 func (s *RecipeService) FinishGenerateRecipeWithFork(recipe *models.Recipe, sourceRecipe *models.Recipe, user *models.User, userPrompt string, genImage bool) {
+	defer util.RecoverPanic("finish generate recipe with fork")
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	recipeErrChan := make(chan error)
-	imageErrChan := make(chan error, 1) // buffered to prevent goroutine leak when genImage is false
+	// Both channels are buffered so the worker goroutines' single send never
+	// blocks (and leaks the goroutine) when the parent returns on ctx.Done().
+	recipeErrChan := make(chan error, 1)
+	imageErrChan := make(chan error, 1)
 
 	// Resolve effective RecipeDef from canonical for fork context (read-only)
 	effectiveDef := effectiveRecipeDef(sourceRecipe)
@@ -81,6 +86,8 @@ func (s *RecipeService) FinishGenerateRecipeWithFork(recipe *models.Recipe, sour
 
 	// Goroutine to handle recipe generation
 	go func(ctx context.Context, recipeErrChan chan<- error, imageErrChan chan<- error) {
+		defer util.RecoverPanic("fork recipe worker")
+
 		result, err := s.TextProvider.ForkRecipe(ctx, req)
 		if err != nil {
 			recipeErrChan <- err
@@ -101,6 +108,8 @@ func (s *RecipeService) FinishGenerateRecipeWithFork(recipe *models.Recipe, sour
 
 		// Goroutine to handle image generation and upload
 		go func(ctx context.Context, imageErrChan chan<- error) {
+			defer util.RecoverPanic("fork recipe image worker")
+
 			if genImage && result.ImagePrompt != "" {
 				imageBytes, imgErr := s.ImageProvider.GenerateImage(ctx, result.ImagePrompt)
 				if imgErr != nil {

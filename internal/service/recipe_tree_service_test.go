@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/windoze95/saltybytes-api/internal/config"
 	"github.com/windoze95/saltybytes-api/internal/models"
@@ -244,7 +245,15 @@ func TestRecipeTreeService_SetActiveNode_RewritesDefAndRegeneratesEmbedding(t *t
 			return []float32{0.9}, nil
 		},
 	}
-	vector := &testutil.MockVectorRepo{}
+	// The embedding refresh runs in a background goroutine; the channel both
+	// signals completion and establishes happens-before for the assertions.
+	embeddingStored := make(chan struct{})
+	vector := &testutil.MockVectorRepo{
+		UpdateEmbeddingFunc: func(recipeID uint, embedding []float32) error {
+			close(embeddingStored)
+			return nil
+		},
+	}
 
 	svc := NewRecipeTreeService(&config.Config{}, repo)
 	svc.EmbedProvider = embed
@@ -266,6 +275,11 @@ func TestRecipeTreeService_SetActiveNode_RewritesDefAndRegeneratesEmbedding(t *t
 		t.Errorf("recipe Title = %q, want def rewritten from the node's response", stored.Title)
 	}
 
+	select {
+	case <-embeddingStored:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the background embedding refresh")
+	}
 	if len(vector.UpdateEmbeddingCalls) != 1 || vector.UpdateEmbeddingCalls[0] != 7 {
 		t.Errorf("UpdateEmbeddingCalls = %v, want [7]", vector.UpdateEmbeddingCalls)
 	}
@@ -295,9 +309,11 @@ func TestRecipeTreeService_SetActiveNode_EmbeddingFailureNonFatal(t *testing.T) 
 	_, child := seedTreeServiceFixture(t, repo)
 
 	vector := &testutil.MockVectorRepo{}
+	embedCalled := make(chan struct{})
 	svc := NewRecipeTreeService(&config.Config{}, repo)
 	svc.EmbedProvider = &testutil.MockEmbeddingProvider{
 		GenerateEmbeddingFunc: func(ctx context.Context, text string) ([]float32, error) {
+			defer close(embedCalled)
 			return nil, errors.New("embedding api down")
 		},
 	}
@@ -305,6 +321,14 @@ func TestRecipeTreeService_SetActiveNode_EmbeddingFailureNonFatal(t *testing.T) 
 
 	if err := svc.SetActiveNode(7, child.ID); err != nil {
 		t.Fatalf("SetActiveNode() error = %v, want embedding failure to be best-effort", err)
+	}
+
+	// Wait for the background refresh to hit the failing provider; on
+	// failure it must skip the vector store entirely.
+	select {
+	case <-embedCalled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the background embedding refresh")
 	}
 	if len(vector.UpdateEmbeddingCalls) != 0 {
 		t.Errorf("UpdateEmbeddingCalls = %v, want none after embed failure", vector.UpdateEmbeddingCalls)

@@ -261,8 +261,11 @@ func (s *RecipeService) DeleteRecipe(ctx context.Context, recipeID uint) error {
 		return fmt.Errorf("failed to delete recipe: %w", err)
 	}
 
-	// Best-effort S3 image cleanup.
-	if s3Key := s3.S3KeyFromURL(imageURL); s3Key != "" {
+	// Best-effort S3 image cleanup. The key is scoped to this recipe's own
+	// "recipes/<id>/" prefix: ImageURL can be client-supplied (manual import)
+	// or scraped (JSON-LD), so a key derived from it must never be allowed to
+	// reference another recipe's objects.
+	if s3Key := s3.RecipeImageKeyFromURL(imageURL, recipeID); s3Key != "" {
 		if err := deleteImageFromS3(ctx, s.Cfg, s3Key); err != nil {
 			logger.Get().Warn("failed to delete recipe image from S3",
 				zap.Uint("recipe_id", recipeID),
@@ -324,8 +327,10 @@ func uploadRecipeImage(ctx context.Context, recipeID uint, oldImageURL string, i
 		return "", errors.New("failed to upload image to S3: " + err.Error())
 	}
 
-	// Best-effort cleanup of the previous image object behind the old URL.
-	if oldKey := s3.S3KeyFromURL(oldImageURL); oldKey != "" && oldKey != s3Key {
+	// Best-effort cleanup of the previous image object behind the old URL,
+	// scoped to this recipe's own prefix (the stored URL may be
+	// client-supplied or external and must not name another recipe's object).
+	if oldKey := s3.RecipeImageKeyFromURL(oldImageURL, recipeID); oldKey != "" && oldKey != s3Key {
 		if delErr := deleteImageFromS3(ctx, cfg, oldKey); delErr != nil {
 			logger.Get().Warn("failed to delete previous recipe image from S3",
 				zap.Uint("recipe_id", recipeID),

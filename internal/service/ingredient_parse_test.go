@@ -39,6 +39,9 @@ func TestParseIngredientLine(t *testing.T) {
 		{"hyphen range", "1-2 tbsp olive oil", 1, "tbsp", "olive oil", true},
 		{"spaced hyphen range", "2 - 3 cups stock", 2, "cup", "stock", true},
 		{"to range", "1 to 2 tsp vanilla", 1, "tsp", "vanilla", true},
+		{"fraction-to-fraction range", "1/2-3/4 cup butter", 0.5, "cup", "butter", true},
+		{"unicode fraction range", "½-¾ cup sugar", 0.5, "cup", "sugar", true},
+		{"decimal-led hyphen range", "1.5-2 cups stock", 1.5, "cup", "stock", true},
 		// unit aliases
 		{"tablespoon long form", "2 tablespoons butter", 2, "tbsp", "butter", true},
 		{"teaspoon long form", "1 teaspoon vanilla", 1, "tsp", "vanilla", true},

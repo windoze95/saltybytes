@@ -162,11 +162,16 @@ func parseNumberToken(tok string) (float64, bool) {
 				return 0, false
 			}
 			right := tok[idx+len(sep):]
-			if frac, fracOK := parseFractionToken(right); fracOK {
-				return low + frac, true // mixed number, e.g. "1-1/2"
+			// A fractional right side is a mixed number only when the left
+			// side is a whole integer ("1-1/2" = 1.5). With a fractional
+			// left side it is a range ("1/2-3/4") and the low value is kept.
+			if isWholeIntegerToken(tok[:idx]) {
+				if frac, fracOK := parseFractionToken(right); fracOK {
+					return low + frac, true // mixed number, e.g. "1-1/2"
+				}
 			}
 			if _, highOK := parseNumberToken(right); highOK {
-				return low, true // range, e.g. "1-2" — use the low value
+				return low, true // range, e.g. "1-2" or "1/2-3/4" — use the low value
 			}
 			return 0, false
 		}
@@ -192,6 +197,20 @@ func parseNumberToken(tok string) (float64, bool) {
 		return 0, false
 	}
 	return v, true
+}
+
+// isWholeIntegerToken reports whether a token is a plain whole integer
+// (digits only — no fraction slash, decimal point, or unicode fraction).
+func isWholeIntegerToken(tok string) bool {
+	if tok == "" {
+		return false
+	}
+	for _, r := range tok {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // parseFractionToken parses a token that is purely a fraction: "1/2" or "½".

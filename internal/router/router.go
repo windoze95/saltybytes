@@ -13,6 +13,7 @@ import (
 	"github.com/windoze95/saltybytes-api/internal/repository"
 	"github.com/windoze95/saltybytes-api/internal/service"
 	"github.com/windoze95/saltybytes-api/internal/ws"
+	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
 
@@ -20,6 +21,15 @@ import (
 func SetupRouter(cfg *config.Config, database *gorm.DB) *gin.Engine {
 	// Create default Gin router
 	r := gin.Default()
+
+	// Trust only the load balancer in front of the app (private VPC ranges).
+	// Gin's default trusts every hop, which lets clients spoof
+	// X-Forwarded-For and defeat the per-IP rate limiting below. With this
+	// set, ClientIP() resolves to the rightmost non-private address in the
+	// chain (the real client as seen by the ALB).
+	if err := r.SetTrustedProxies([]string{"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "127.0.0.1", "::1"}); err != nil {
+		logger.Get().Error("failed to set trusted proxies", zap.Error(err))
+	}
 
 	config := cors.DefaultConfig()
 	config.AllowCredentials = true

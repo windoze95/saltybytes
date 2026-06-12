@@ -4,6 +4,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -181,6 +182,17 @@ func (h *ImportHandler) ImportManual(c *gin.Context) {
 	if request.UnitSystem != "" && request.UnitSystem != "us_customary" && request.UnitSystem != "metric" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "unit_system must be 'us_customary' or 'metric'"})
 		return
+	}
+
+	// image_url is stored verbatim and later served to any authenticated
+	// viewer of the recipe, so reject anything that isn't a plain http(s)
+	// URL (e.g. javascript:, data:, or garbage).
+	if request.ImageURL != "" {
+		u, err := url.Parse(request.ImageURL)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "image_url must be a valid http(s) URL"})
+			return
+		}
 	}
 
 	// Convert request to RecipeDef

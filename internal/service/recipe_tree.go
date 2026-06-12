@@ -9,6 +9,7 @@ import (
 	"github.com/windoze95/saltybytes-api/internal/config"
 	"github.com/windoze95/saltybytes-api/internal/models"
 	"github.com/windoze95/saltybytes-api/internal/repository"
+	"github.com/windoze95/saltybytes-api/internal/util"
 )
 
 // RecipeTreeService is the business logic layer for recipe tree operations.
@@ -109,8 +110,17 @@ func (s *RecipeTreeService) SetActiveNode(recipeID uint, nodeID uint) error {
 		}
 
 		// The recipe definition changed, so the stored embedding is stale.
-		// Regenerate it best-effort (warn-and-continue on failure).
-		generateAndStoreRecipeEmbedding(context.Background(), s.EmbedProvider, s.VectorRepo, recipeID, node.Response)
+		// Regenerate it best-effort (warn-and-continue on failure) in the
+		// background with a bounded timeout, so the user-facing branch
+		// switch is not blocked on an external embedding API call.
+		response := node.Response
+		go func() {
+			defer util.RecoverPanic("recipe tree embedding refresh")
+
+			ctx, cancel := context.WithTimeout(context.Background(), embeddingCallTimeout)
+			defer cancel()
+			generateAndStoreRecipeEmbedding(ctx, s.EmbedProvider, s.VectorRepo, recipeID, response)
+		}()
 	}
 
 	return nil

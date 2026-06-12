@@ -125,7 +125,7 @@ func S3KeyFromURL(imageURL string) string {
 	// Path-style URLs (https://s3.<region>.amazonaws.com/<bucket>/<key>)
 	// include the bucket as the first path segment; strip it. Virtual-hosted
 	// URLs (https://<bucket>.s3.<region>.amazonaws.com/<key>) do not.
-	if strings.HasPrefix(u.Host, "s3.") || strings.HasPrefix(u.Host, "s3-") {
+	if isPathStyleS3Host(u.Host) {
 		if i := strings.Index(key, "/"); i >= 0 {
 			key = key[i+1:]
 		}
@@ -135,5 +135,48 @@ func S3KeyFromURL(imageURL string) string {
 		key = unescaped
 	}
 
+	return key
+}
+
+// isPathStyleS3Host reports whether the host is a bare S3 service endpoint
+// (path-style: "s3.<region>.amazonaws.com", "s3-<region>.amazonaws.com", or
+// "s3.amazonaws.com"). Virtual-hosted hosts carry the bucket as a subdomain
+// ("<bucket>.s3.<region>.amazonaws.com") — including buckets whose own name
+// starts with "s3-" — and must not have a path segment stripped.
+func isPathStyleS3Host(host string) bool {
+	if host == "s3.amazonaws.com" {
+		return true
+	}
+	rest, ok := strings.CutSuffix(host, ".amazonaws.com")
+	if !ok {
+		return false
+	}
+	var region string
+	switch {
+	case strings.HasPrefix(rest, "s3."):
+		region = rest[len("s3."):]
+	case strings.HasPrefix(rest, "s3-"):
+		region = rest[len("s3-"):]
+	default:
+		return false
+	}
+	// A bucket subdomain would introduce extra dots before the s3 label.
+	return region != "" && !strings.Contains(region, ".")
+}
+
+// RecipeImageKeyFromURL derives the deletable S3 key for a recipe's image
+// from its stored URL, returning "" unless the key lies under the recipe's
+// own "recipes/<recipeID>/" prefix. A recipe's ImageURL can be
+// client-supplied (manual import) or scraped from external pages (JSON-LD),
+// so a key derived from it must never be trusted to reference objects
+// outside the recipe's own folder.
+func RecipeImageKeyFromURL(imageURL string, recipeID uint) string {
+	key := S3KeyFromURL(imageURL)
+	if key == "" {
+		return ""
+	}
+	if !strings.HasPrefix(key, fmt.Sprintf("recipes/%d/", recipeID)) {
+		return ""
+	}
 	return key
 }

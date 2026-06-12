@@ -135,6 +135,15 @@ func TestLoginUser_UserNotFound(t *testing.T) {
 	}
 }
 
+func TestLoginUser_DummyHashIsValidBcrypt(t *testing.T) {
+	// The constant-time dummy compare only equalizes timing if the hash is a
+	// well-formed bcrypt hash: a malformed one fails fast on parsing.
+	err := bcrypt.CompareHashAndPassword(dummyBcryptHash, []byte("any password"))
+	if !errors.Is(err, bcrypt.ErrMismatchedHashAndPassword) {
+		t.Errorf("CompareHashAndPassword(dummyBcryptHash) = %v, want ErrMismatchedHashAndPassword (valid hash, wrong password)", err)
+	}
+}
+
 func TestLogoutUser_IncrementsTokenVersion(t *testing.T) {
 	repo := testutil.NewMockUserRepo()
 	user := testutil.TestUser()

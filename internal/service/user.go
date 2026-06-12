@@ -101,14 +101,20 @@ func (s *UserService) CreateUser(username, firstName, email, password string) (*
 // used to enumerate usernames and never leaks internal error details.
 var ErrInvalidCredentials = errors.New("invalid username or password")
 
+// dummyBcryptHash is a cost-10 bcrypt hash (of a fixed throwaway string) that
+// is compared against when the username does not exist, so unknown-user and
+// wrong-password failures take comparable time. Without it, the early return
+// skips the ~50-100ms bcrypt compare and response latency leaks whether a
+// username exists.
+var dummyBcryptHash = []byte("$2a$10$eTN04vDBzQvPQeH2t2QGHe/dB4sezgOEiN7Jd9/BB4cv7Hkgimei6")
+
 // LoginUser logs in a user.
 func (s *UserService) LoginUser(username, password string) (*models.User, error) {
 	user, err := s.Repo.GetUserAuthByUsername(username)
-	if err != nil {
-		return nil, ErrInvalidCredentials
-	}
-
-	if user.Auth == nil {
+	if err != nil || user == nil || user.Auth == nil {
+		// Burn a bcrypt compare so this path takes as long as a real
+		// password check (prevents username enumeration via timing).
+		_ = bcrypt.CompareHashAndPassword(dummyBcryptHash, []byte(password))
 		return nil, ErrInvalidCredentials
 	}
 

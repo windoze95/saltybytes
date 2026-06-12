@@ -940,7 +940,11 @@ func (s *ImportService) refreshStaleCanonicals() {
 		entry.ExtractionMethod = method
 		entry.FetchedAt = now
 		entry.LastAccessedAt = now
-		entry.Embedding = s.canonicalEmbedding(context.Background(), recipeDef)
+		// The extract context above is already cancelled; bound the embedding
+		// call separately so a stalled provider can't wedge the refresh loop.
+		embedCtx, embedCancel := context.WithTimeout(context.Background(), embeddingCallTimeout)
+		entry.Embedding = s.canonicalEmbedding(embedCtx, recipeDef)
+		embedCancel()
 		if err := s.CanonicalRepo.Upsert(&entry); err != nil {
 			log.Warn("failed to upsert refreshed canonical", zap.String("url", entry.OriginalURL), zap.Error(err))
 		}

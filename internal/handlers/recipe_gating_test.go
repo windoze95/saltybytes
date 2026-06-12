@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -8,6 +9,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/windoze95/saltybytes-api/internal/ai"
 	"github.com/windoze95/saltybytes-api/internal/config"
 	"github.com/windoze95/saltybytes-api/internal/models"
 	"github.com/windoze95/saltybytes-api/internal/service"
@@ -140,6 +142,83 @@ func TestGenerateRecipe_NilSubscriptionUser_GatedWithFreeDefaults(t *testing.T) 
 	}
 	if sub.AIGenerationsUsed != 1 {
 		t.Errorf("AIGenerationsUsed = %d, want 1", sub.AIGenerationsUsed)
+	}
+}
+
+// closeNotifyRecorder adds the http.CloseNotifier interface that gin's
+// c.Stream requires but httptest.ResponseRecorder does not implement.
+type closeNotifyRecorder struct {
+	*httptest.ResponseRecorder
+	closed chan bool
+}
+
+func newCloseNotifyRecorder() *closeNotifyRecorder {
+	return &closeNotifyRecorder{httptest.NewRecorder(), make(chan bool, 1)}
+}
+
+func (r *closeNotifyRecorder) CloseNotify() <-chan bool { return r.closed }
+
+func TestStreamGenerateRecipe_FailureDoesNotChargeQuota(t *testing.T) {
+	user := testutil.TestUser()
+	user.Subscription = &models.Subscription{
+		Model:             gorm.Model{ID: 1},
+		UserID:            user.ID,
+		Tier:              models.TierFree,
+		AIGenerationsUsed: 3,
+		MonthlyResetAt:    time.Now().Add(time.Hour),
+	}
+	userRepo := testutil.NewMockUserRepo()
+	userRepo.Users[user.ID] = user
+
+	// MockTextProvider does not implement streaming, so the handler falls
+	// back to sync generation — which is not configured and therefore fails.
+	handler, _ := newGatedRecipeHandler(userRepo)
+
+	r := gin.New()
+	r.POST("/recipes/chat/stream", setUser(user), handler.StreamGenerateRecipe)
+
+	req := httptest.NewRequest("POST", "/recipes/chat/stream", strings.NewReader(`{"user_prompt": "pancakes", "gen_image": false}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := newCloseNotifyRecorder()
+	r.ServeHTTP(w, req)
+
+	if got := userRepo.Users[user.ID].Subscription.AIGenerationsUsed; got != 3 {
+		t.Errorf("AIGenerationsUsed = %d, want 3 (failed generation must not be charged)", got)
+	}
+}
+
+func TestStreamGenerateRecipe_CompleteChargesQuota(t *testing.T) {
+	user := testutil.TestUser()
+	user.Subscription = &models.Subscription{
+		Model:             gorm.Model{ID: 1},
+		UserID:            user.ID,
+		Tier:              models.TierFree,
+		AIGenerationsUsed: 3,
+		MonthlyResetAt:    time.Now().Add(time.Hour),
+	}
+	userRepo := testutil.NewMockUserRepo()
+	userRepo.Users[user.ID] = user
+
+	recipeRepo := testutil.NewMockRecipeRepo()
+	provider := &testutil.MockTextProvider{
+		GenerateRecipeFunc: func(ctx context.Context, req ai.RecipeRequest) (*ai.RecipeResult, error) {
+			return testutil.TestRecipeResult(), nil
+		},
+	}
+	svc := service.NewRecipeService(&config.Config{}, recipeRepo, provider, &testutil.MockImageProvider{})
+	handler := NewRecipeHandler(svc)
+	handler.SubService = service.NewSubscriptionService(&config.Config{}, userRepo)
+
+	r := gin.New()
+	r.POST("/recipes/chat/stream", setUser(user), handler.StreamGenerateRecipe)
+
+	req := httptest.NewRequest("POST", "/recipes/chat/stream", strings.NewReader(`{"user_prompt": "pancakes", "gen_image": false}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := newCloseNotifyRecorder()
+	r.ServeHTTP(w, req)
+
+	if got := userRepo.Users[user.ID].Subscription.AIGenerationsUsed; got != 4 {
+		t.Errorf("AIGenerationsUsed = %d, want 4 (charged once on completion). body: %s", got, w.Body.String())
 	}
 }
 
