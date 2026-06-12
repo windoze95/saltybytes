@@ -181,3 +181,98 @@ func TestLoginUser_Handler_MissingFields(t *testing.T) {
 		t.Errorf("status = %d, want %d", w.Code, http.StatusBadRequest)
 	}
 }
+
+// --- UpdatePersonalization (partial update) ---
+
+func newPersonalizationTestRouter(repo *testutil.MockUserRepo, user *models.User) (*gin.Engine, *UserHandler) {
+	cfg := &config.Config{EnvVars: config.EnvVars{JwtSecretKey: "test-jwt-secret-key"}}
+	svc := service.NewUserService(cfg, repo)
+	handler := NewUserHandler(svc)
+
+	r := gin.New()
+	r.PUT("/users/me/personalization", setUser(user), handler.UpdatePersonalization)
+	return r, handler
+}
+
+func TestUpdatePersonalization_PartialUpdate_PreservesCookingContext(t *testing.T) {
+	repo := testutil.NewMockUserRepo()
+	user := testutil.TestUser()
+	user.Personalization.CookingContext = "induction stove, small kitchen"
+	user.Personalization.Requirements = "No peanuts"
+	repo.Users[user.ID] = user
+
+	r, _ := newPersonalizationTestRouter(repo, user)
+
+	// Only unit_system is sent — a unit toggle must not wipe other fields.
+	body := `{"unit_system": "metric"}`
+	req := httptest.NewRequest("PUT", "/users/me/personalization", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d. body: %s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	p := repo.Users[user.ID].Personalization
+	if p.UnitSystem != "metric" {
+		t.Errorf("UnitSystem = %q, want 'metric'", p.UnitSystem)
+	}
+	if p.CookingContext != "induction stove, small kitchen" {
+		t.Errorf("CookingContext = %q, want preserved value", p.CookingContext)
+	}
+	if p.Requirements != "No peanuts" {
+		t.Errorf("Requirements = %q, want preserved value", p.Requirements)
+	}
+}
+
+func TestUpdatePersonalization_UpdatesOnlyProvidedFields(t *testing.T) {
+	repo := testutil.NewMockUserRepo()
+	user := testutil.TestUser()
+	user.Personalization.CookingContext = "gas stove"
+	repo.Users[user.ID] = user
+
+	r, _ := newPersonalizationTestRouter(repo, user)
+
+	body := `{"cooking_context": "electric oven", "requirements": "vegetarian"}`
+	req := httptest.NewRequest("PUT", "/users/me/personalization", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d. body: %s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	p := repo.Users[user.ID].Personalization
+	if p.CookingContext != "electric oven" {
+		t.Errorf("CookingContext = %q, want 'electric oven'", p.CookingContext)
+	}
+	if p.Requirements != "vegetarian" {
+		t.Errorf("Requirements = %q, want 'vegetarian'", p.Requirements)
+	}
+	if p.UnitSystem != "us_customary" {
+		t.Errorf("UnitSystem = %q, want unchanged 'us_customary'", p.UnitSystem)
+	}
+}
+
+func TestUpdatePersonalization_InvalidUnitSystem(t *testing.T) {
+	repo := testutil.NewMockUserRepo()
+	user := testutil.TestUser()
+	repo.Users[user.ID] = user
+
+	r, _ := newPersonalizationTestRouter(repo, user)
+
+	body := `{"unit_system": "imperial"}`
+	req := httptest.NewRequest("PUT", "/users/me/personalization", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusBadRequest)
+	}
+	if repo.Users[user.ID].Personalization.UnitSystem != "us_customary" {
+		t.Errorf("UnitSystem should be unchanged after invalid request")
+	}
+}

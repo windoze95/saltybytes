@@ -105,8 +105,10 @@ func (r *UserRepository) UpdateUserSettingsKeepScreenAwake(userID uint, keepScre
 	return err
 }
 
-// UpdatePersonalization updates a user's personalization settings.
-func (r *UserRepository) UpdatePersonalization(userID uint, updatedPersonalization *models.Personalization) error {
+// UpdatePersonalization partially updates a user's personalization settings.
+// Only non-nil fields in the update are written; nil fields keep their
+// current values.
+func (r *UserRepository) UpdatePersonalization(userID uint, update *models.PersonalizationUpdate) error {
 	var existingPersonalization models.Personalization
 
 	// First, find the existing record
@@ -117,11 +119,19 @@ func (r *UserRepository) UpdatePersonalization(userID uint, updatedPersonalizati
 		return err
 	}
 
-	// Update fields
-	existingPersonalization.UnitSystem = updatedPersonalization.UnitSystem
-	existingPersonalization.Requirements = updatedPersonalization.Requirements
-	existingPersonalization.CookingContext = updatedPersonalization.CookingContext
-	existingPersonalization.UID = updatedPersonalization.UID
+	// Apply only the fields present in the update
+	if update.UnitSystem != nil {
+		existingPersonalization.UnitSystem = *update.UnitSystem
+	}
+	if update.Requirements != nil {
+		existingPersonalization.Requirements = *update.Requirements
+	}
+	if update.CookingContext != nil {
+		existingPersonalization.CookingContext = *update.CookingContext
+	}
+	if update.UID != nil {
+		existingPersonalization.UID = *update.UID
+	}
 
 	// Perform the update
 	err = r.DB.Save(&existingPersonalization).Error

@@ -564,12 +564,26 @@ func (m *MockUserRepo) UpdateUserSettingsKeepScreenAwake(userID uint, keepScreen
 	return nil
 }
 
-func (m *MockUserRepo) UpdatePersonalization(userID uint, updatedPersonalization *models.Personalization) error {
+func (m *MockUserRepo) UpdatePersonalization(userID uint, update *models.PersonalizationUpdate) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	if u, ok := m.Users[userID]; ok {
-		u.Personalization = updatedPersonalization
+		if u.Personalization == nil {
+			u.Personalization = &models.Personalization{UserID: userID}
+		}
+		if update.UnitSystem != nil {
+			u.Personalization.UnitSystem = *update.UnitSystem
+		}
+		if update.Requirements != nil {
+			u.Personalization.Requirements = *update.Requirements
+		}
+		if update.CookingContext != nil {
+			u.Personalization.CookingContext = *update.CookingContext
+		}
+		if update.UID != nil {
+			u.Personalization.UID = *update.UID
+		}
 	}
 	return nil
 }

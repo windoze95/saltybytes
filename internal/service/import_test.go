@@ -266,7 +266,7 @@ func TestExtractJSONLD_ValidRecipe(t *testing.T) {
 	</script>
 	</head><body></body></html>`
 
-	def, _, err := extractJSONLD(html)
+	def, _, _, err := extractJSONLD(html)
 	if err != nil {
 		t.Fatalf("extractJSONLD valid recipe: unexpected error: %v", err)
 	}
@@ -299,7 +299,7 @@ func TestExtractJSONLD_GraphContainer(t *testing.T) {
 	</script>
 	</head><body></body></html>`
 
-	def, _, err := extractJSONLD(html)
+	def, _, _, err := extractJSONLD(html)
 	if err != nil {
 		t.Fatalf("extractJSONLD @graph: unexpected error: %v", err)
 	}
@@ -310,7 +310,7 @@ func TestExtractJSONLD_GraphContainer(t *testing.T) {
 
 func TestExtractJSONLD_NoJSONLD(t *testing.T) {
 	html := `<html><head><title>No JSON-LD</title></head><body></body></html>`
-	_, _, err := extractJSONLD(html)
+	_, _, _, err := extractJSONLD(html)
 	if err == nil {
 		t.Error("extractJSONLD with no JSON-LD should return error")
 	}
@@ -323,7 +323,7 @@ func TestExtractJSONLD_NonRecipeType(t *testing.T) {
 	</script>
 	</head><body></body></html>`
 
-	_, _, err := extractJSONLD(html)
+	_, _, _, err := extractJSONLD(html)
 	if err == nil {
 		t.Error("extractJSONLD with non-Recipe type should return error")
 	}
@@ -342,7 +342,7 @@ func TestExtractJSONLD_UsesTotalTimeAsFallback(t *testing.T) {
 	</script>
 	</head><body></body></html>`
 
-	def, _, err := extractJSONLD(html)
+	def, _, _, err := extractJSONLD(html)
 	if err != nil {
 		t.Fatalf("extractJSONLD totalTime fallback: unexpected error: %v", err)
 	}
@@ -429,7 +429,7 @@ func TestJsonLDToRecipeDef_Valid(t *testing.T) {
 		Keywords:     "italian, pasta, easy",
 	}
 
-	def, hashtags, err := jsonLDToRecipeDef(recipe)
+	def, hashtags, _, err := jsonLDToRecipeDef(recipe)
 	if err != nil {
 		t.Fatalf("jsonLDToRecipeDef valid: %v", err)
 	}
@@ -462,7 +462,7 @@ func TestJsonLDToRecipeDef_EmptyName(t *testing.T) {
 		Name:        "",
 		Ingredients: []string{"flour"},
 	}
-	_, _, err := jsonLDToRecipeDef(recipe)
+	_, _, _, err := jsonLDToRecipeDef(recipe)
 	if err == nil {
 		t.Error("jsonLDToRecipeDef with empty name should return error")
 	}
@@ -474,7 +474,7 @@ func TestJsonLDToRecipeDef_TotalTimeFallback(t *testing.T) {
 		TotalTime:   "PT1H",
 		Ingredients: []string{"water"},
 	}
-	def, _, err := jsonLDToRecipeDef(recipe)
+	def, _, _, err := jsonLDToRecipeDef(recipe)
 	if err != nil {
 		t.Fatalf("jsonLDToRecipeDef totalTime fallback: %v", err)
 	}
@@ -648,7 +648,7 @@ func TestJsonLDToRecipeDef_DetectsUnitSystem(t *testing.T) {
 		Instructions: []interface{}{"Mix"},
 	}
 
-	def, _, err := jsonLDToRecipeDef(recipe)
+	def, _, _, err := jsonLDToRecipeDef(recipe)
 	if err != nil {
 		t.Fatalf("jsonLDToRecipeDef: %v", err)
 	}
@@ -664,7 +664,7 @@ func TestJsonLDToRecipeDef_DetectsCompactMetric(t *testing.T) {
 		Instructions: []interface{}{"Mix"},
 	}
 
-	def, _, err := jsonLDToRecipeDef(recipe)
+	def, _, _, err := jsonLDToRecipeDef(recipe)
 	if err != nil {
 		t.Fatalf("jsonLDToRecipeDef compact metric: %v", err)
 	}

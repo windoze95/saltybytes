@@ -141,9 +141,13 @@ func (s *UserService) GetUserByID(userID uint) (*models.User, error) {
 	return s.Repo.GetUserByID(userID)
 }
 
-// UpdatePersonalization updates a user's personalization settings.
-func (s *UserService) UpdatePersonalization(user *models.User, updatedPersonalization *models.Personalization) error {
-	return s.Repo.UpdatePersonalization(user.ID, updatedPersonalization)
+// UpdatePersonalization partially updates a user's personalization settings.
+// Nil fields in the update are left unchanged.
+func (s *UserService) UpdatePersonalization(user *models.User, update *models.PersonalizationUpdate) error {
+	if update.UnitSystem != nil && *update.UnitSystem != "us_customary" && *update.UnitSystem != "metric" {
+		return fmt.Errorf("unit_system must be 'us_customary' or 'metric'")
+	}
+	return s.Repo.UpdatePersonalization(user.ID, update)
 }
 
 // UpdateUser updates a user's profile fields (first name, email).

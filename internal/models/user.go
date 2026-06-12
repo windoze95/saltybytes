@@ -158,6 +158,15 @@ type Personalization struct {
 	UID            uuid.UUID
 }
 
+// PersonalizationUpdate carries a partial update to a user's Personalization.
+// Nil fields are left unchanged.
+type PersonalizationUpdate struct {
+	UnitSystem     *string
+	Requirements   *string
+	CookingContext *string
+	UID            *uuid.UUID
+}
+
 // UnitSystemText returns the display text for the current UnitSystem.
 func (p *Personalization) UnitSystemText() string {
 	switch p.UnitSystem {

@@ -7,6 +7,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/google/uuid"
 	"github.com/windoze95/saltybytes-api/internal/logger"
 	"github.com/windoze95/saltybytes-api/internal/models"
 	"github.com/windoze95/saltybytes-api/internal/service"
@@ -284,7 +285,9 @@ func (h *UserHandler) UpdateSettings(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Settings updated successfully"})
 }
 
-// UpdatePersonalization updates a user's personalization settings.
+// UpdatePersonalization partially updates a user's personalization settings.
+// Only fields present in the request body are written; omitted fields keep
+// their current values.
 func (h *UserHandler) UpdatePersonalization(c *gin.Context) {
 	user, err := util.GetUserFromContext(c)
 	if err != nil {
@@ -293,23 +296,36 @@ func (h *UserHandler) UpdatePersonalization(c *gin.Context) {
 	}
 
 	var req struct {
-		UnitSystem     string `json:"unit_system"`
-		Requirements   string `json:"requirements"`
-		CookingContext string `json:"cooking_context"`
+		UnitSystem     *string `json:"unit_system"`
+		Requirements   *string `json:"requirements"`
+		CookingContext *string `json:"cooking_context"`
+		UID            *string `json:"uid"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
 		return
 	}
 
-	updatedPersonalization := &models.Personalization{
+	if req.UnitSystem != nil && *req.UnitSystem != "us_customary" && *req.UnitSystem != "metric" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "unit_system must be 'us_customary' or 'metric'"})
+		return
+	}
+
+	update := &models.PersonalizationUpdate{
 		UnitSystem:     req.UnitSystem,
 		Requirements:   req.Requirements,
 		CookingContext: req.CookingContext,
-		UID:            user.Personalization.UID,
+	}
+	if req.UID != nil {
+		uid, parseErr := uuid.Parse(*req.UID)
+		if parseErr != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "uid must be a valid UUID"})
+			return
+		}
+		update.UID = &uid
 	}
 
-	if err := h.Service.UpdatePersonalization(user, updatedPersonalization); err != nil {
+	if err := h.Service.UpdatePersonalization(user, update); err != nil {
 		logger.Get().Error("failed to update personalization", zap.Uint("user_id", user.ID), zap.Error(err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update personalization"})
 		return

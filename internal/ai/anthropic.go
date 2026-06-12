@@ -1021,7 +1021,7 @@ func (p *AnthropicProvider) ExtractRecipeFromText(ctx context.Context, text stri
 		var promptTemplate string
 		var templateData map[string]interface{}
 
-		if unitSystem == "preserve source" {
+		if unitSystem == UnitSystemPreserveSource {
 			sysPrefix = p.prompts.Import.URL.SystemPrefix
 			promptTemplate = p.prompts.Import.URL.System
 			templateData = map[string]interface{}{

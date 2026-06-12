@@ -67,6 +67,8 @@ func SetupRouter(cfg *config.Config, database *gorm.DB) *gin.Engine {
 	canonicalRepo := repository.NewCanonicalRecipeRepository(database)
 	importService := service.NewImportService(cfg, recipeRepo, recipeService, textProvider, textProvider, previewProvider)
 	importService.CanonicalRepo = canonicalRepo
+	// Portion estimation for imports that lack a serving count (cheap Haiku task)
+	importService.Normalize = service.NewNormalizeService(cfg, previewProvider)
 	importHandler := handlers.NewImportHandler(importService)
 	// MultiResolver is wired later after search setup; set via field
 

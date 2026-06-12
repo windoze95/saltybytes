@@ -2,6 +2,11 @@ package ai
 
 import "context"
 
+// UnitSystemPreserveSource is a sentinel unit-system value that instructs
+// extraction to keep the source's original measurements instead of converting,
+// reporting the detected system via the unit_system tool field.
+const UnitSystemPreserveSource = "preserve source"
+
 // TextProvider handles all text/reasoning tasks (Claude).
 type TextProvider interface {
 	GenerateRecipe(ctx context.Context, req RecipeRequest) (*RecipeResult, error)
