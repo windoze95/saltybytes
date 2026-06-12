@@ -13,17 +13,17 @@ import (
 
 // DomainStats tracks extraction success/failure rates for a domain.
 type DomainStats struct {
-	Domain              string
-	TotalAttempts       int
-	JSONLDSuccesses     int
-	JSONLDFailures      int
-	DirectFetchBlocked  int
-	FirecrawlSuccesses  int
-	FirecrawlFailures   int
-	AISuccesses         int
-	AIFailures          int
-	LastAttempt         time.Time
-	LastSuccess         time.Time
+	Domain             string
+	TotalAttempts      int
+	JSONLDSuccesses    int
+	JSONLDFailures     int
+	DirectFetchBlocked int
+	FirecrawlSuccesses int
+	FirecrawlFailures  int
+	AISuccesses        int
+	AIFailures         int
+	LastAttempt        time.Time
+	LastSuccess        time.Time
 }
 
 // ImportPolicy tracks per-domain extraction outcomes and recommends strategies.

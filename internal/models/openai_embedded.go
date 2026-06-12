@@ -17,10 +17,10 @@ type RecipeDef struct {
 	CookTime          int            `json:"cook_time" gorm:"column:cook_time"`
 	ImagePrompt       string         `json:"image_prompt" gorm:"column:image_prompt"`
 	LinkedSuggestions pq.StringArray `json:"linked_recipe_suggestions" gorm:"type:text[];column:linked_recipe_suggestions"`
-	Portions         int            `json:"portions,omitempty" gorm:"column:portions"`
-	PortionSize      string         `json:"portion_size,omitempty" gorm:"column:portion_size"`
-	SourceURL        string         `json:"source_url,omitempty" gorm:"column:source_url"`
-	UnitSystem       string         `json:"unit_system,omitempty" gorm:"column:unit_system"`
+	Portions          int            `json:"portions,omitempty" gorm:"column:portions"`
+	PortionSize       string         `json:"portion_size,omitempty" gorm:"column:portion_size"`
+	SourceURL         string         `json:"source_url,omitempty" gorm:"column:source_url"`
+	UnitSystem        string         `json:"unit_system,omitempty" gorm:"column:unit_system"`
 }
 
 // Scan is a GORM hook that scans jsonb into a RecipeDef.
