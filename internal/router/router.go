@@ -1,6 +1,8 @@
 package router
 
 import (
+	"time"
+
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 	"github.com/windoze95/saltybytes-api/internal/ai"
@@ -27,6 +29,7 @@ func SetupRouter(cfg *config.Config, database *gorm.DB) *gin.Engine {
 		"https://saltybytes.ai",
 		"https://www.saltybytes.ai",
 	}
+	config.AddAllowHeaders("Authorization", "X-SaltyBytes-Identifier")
 	r.Use(cors.New(config))
 
 	// Add request ID middleware for request correlation
@@ -44,6 +47,10 @@ func SetupRouter(cfg *config.Config, database *gorm.DB) *gin.Engine {
 	userService := service.NewUserService(cfg, userRepo)
 	userHandler := handlers.NewUserHandler(userService)
 
+	// Subscription service (shared by AI-generation, allergen, search and
+	// subscription routes for usage gating)
+	subService := service.NewSubscriptionService(cfg, userRepo)
+
 	// AI provider setup
 	textProvider := ai.NewAnthropicProvider(cfg.EnvVars.AnthropicAPIKey, cfg.Prompts)
 	imageProvider := ai.NewDALLEProvider(cfg.EnvVars.OpenAIAPIKey)
@@ -60,6 +67,7 @@ func SetupRouter(cfg *config.Config, database *gorm.DB) *gin.Engine {
 	recipeService.EmbedProvider = embedProvider
 	recipeService.VectorRepo = vectorRepo
 	recipeHandler := handlers.NewRecipeHandler(recipeService)
+	recipeHandler.SubService = subService
 
 	// Import-related routes setup
 	previewProvider := ai.NewAnthropicLightProvider(cfg.EnvVars.AnthropicAPIKey, cfg.Prompts)
@@ -75,6 +83,9 @@ func SetupRouter(cfg *config.Config, database *gorm.DB) *gin.Engine {
 	// Group for API routes that don't require token verification
 	apiPublic := r.Group("/v1")
 	apiPublic.Use(middleware.CheckIDHeader(cfg.EnvVars.IDHeader))
+	// Rate-limit the public auth endpoints per IP (5 req/min, burst 10) to
+	// slow down credential stuffing and signup abuse.
+	apiPublic.Use(middleware.RateLimitByIP(5, 10, 5*time.Minute, 15*time.Minute))
 	{
 		// User-related routes
 
@@ -94,6 +105,8 @@ func SetupRouter(cfg *config.Config, database *gorm.DB) *gin.Engine {
 
 		// User-related routes
 
+		// Log out: revoke all outstanding refresh tokens
+		apiProtected.POST("/auth/logout", middleware.AttachUserToContext(userService), userHandler.Logout)
 		// Verify a user's token
 		apiProtected.GET("/users/verify", middleware.AttachUserToContext(userService), userHandler.VerifyToken)
 		// Get a user by their ID
@@ -151,9 +164,6 @@ func SetupRouter(cfg *config.Config, database *gorm.DB) *gin.Engine {
 	apiProtected.DELETE("/family/members/:member_id", middleware.AttachUserToContext(userService), familyHandler.DeleteMember)
 	apiProtected.PUT("/family/members/:member_id/dietary", middleware.AttachUserToContext(userService), familyHandler.UpdateDietaryProfile)
 	apiProtected.POST("/family/members/:member_id/dietary/interview", middleware.AttachUserToContext(userService), familyHandler.DietaryInterview)
-
-	// Subscription service (shared by allergen + subscription routes)
-	subService := service.NewSubscriptionService(cfg, userRepo)
 
 	// Allergen analysis routes setup
 	allergenRepo := repository.NewAllergenRepository(database)

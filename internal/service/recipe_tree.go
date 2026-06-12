@@ -14,7 +14,7 @@ import (
 // RecipeTreeService is the business logic layer for recipe tree operations.
 type RecipeTreeService struct {
 	Cfg  *config.Config
-	Repo *repository.RecipeRepository
+	Repo repository.RecipeRepo
 	// Optional: set these to keep recipe embeddings in sync when switching
 	// the active node rewrites the recipe definition.
 	EmbedProvider ai.EmbeddingProvider
@@ -22,7 +22,7 @@ type RecipeTreeService struct {
 }
 
 // NewRecipeTreeService creates a new RecipeTreeService.
-func NewRecipeTreeService(cfg *config.Config, repo *repository.RecipeRepository) *RecipeTreeService {
+func NewRecipeTreeService(cfg *config.Config, repo repository.RecipeRepo) *RecipeTreeService {
 	return &RecipeTreeService{
 		Cfg:  cfg,
 		Repo: repo,

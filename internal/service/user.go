@@ -96,18 +96,38 @@ func (s *UserService) CreateUser(username, firstName, email, password string) (*
 	return user, nil
 }
 
+// ErrInvalidCredentials is returned for every login failure mode (unknown
+// username, missing auth record, or wrong password) so the API cannot be
+// used to enumerate usernames and never leaks internal error details.
+var ErrInvalidCredentials = errors.New("invalid username or password")
+
 // LoginUser logs in a user.
 func (s *UserService) LoginUser(username, password string) (*models.User, error) {
 	user, err := s.Repo.GetUserAuthByUsername(username)
 	if err != nil {
-		return nil, err
+		return nil, ErrInvalidCredentials
+	}
+
+	if user.Auth == nil {
+		return nil, ErrInvalidCredentials
 	}
 
 	if err := bcrypt.CompareHashAndPassword([]byte(user.Auth.HashedPassword), []byte(password)); err != nil {
-		return nil, errors.New("invalid username or password")
+		return nil, ErrInvalidCredentials
 	}
 
 	return user, nil
+}
+
+// GetUserWithAuthByID gets a user with their auth record (token version) loaded.
+func (s *UserService) GetUserWithAuthByID(userID uint) (*models.User, error) {
+	return s.Repo.GetUserWithAuthByID(userID)
+}
+
+// LogoutUser revokes all outstanding refresh tokens for a user by
+// incrementing their token version.
+func (s *UserService) LogoutUser(userID uint) error {
+	return s.Repo.IncrementTokenVersion(userID)
 }
 
 // ToUserResponse converts a User to a UserResponse.

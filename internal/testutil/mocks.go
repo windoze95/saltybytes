@@ -522,6 +522,17 @@ func (m *MockUserRepo) GetUserByID(userID uint) (*models.User, error) {
 	return u, nil
 }
 
+func (m *MockUserRepo) GetUserWithAuthByID(userID uint) (*models.User, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	u, ok := m.Users[userID]
+	if !ok {
+		return nil, fmt.Errorf("user not found")
+	}
+	return u, nil
+}
+
 func (m *MockUserRepo) GetUserAuthByUsername(username string) (*models.User, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -598,6 +609,66 @@ func (m *MockUserRepo) UsernameExists(username string) (bool, error) {
 		}
 	}
 	return false, nil
+}
+
+func (m *MockUserRepo) IncrementTokenVersion(userID uint) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	u, ok := m.Users[userID]
+	if !ok || u.Auth == nil {
+		return fmt.Errorf("no auth record found for user")
+	}
+	u.Auth.TokenVersion++
+	return nil
+}
+
+func (m *MockUserRepo) CreateSubscription(sub *models.Subscription) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	u, ok := m.Users[sub.UserID]
+	if !ok {
+		return fmt.Errorf("user not found")
+	}
+	u.Subscription = sub
+	return nil
+}
+
+func (m *MockUserRepo) IncrementSubscriptionUsage(userID uint, column string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	u, ok := m.Users[userID]
+	if !ok || u.Subscription == nil {
+		return fmt.Errorf("no subscription found for user")
+	}
+	switch column {
+	case "allergen_analyses_used":
+		u.Subscription.AllergenAnalysesUsed++
+	case "web_searches_used":
+		u.Subscription.WebSearchesUsed++
+	case "ai_generations_used":
+		u.Subscription.AIGenerationsUsed++
+	default:
+		return fmt.Errorf("unknown usage column: %s", column)
+	}
+	return nil
+}
+
+func (m *MockUserRepo) ResetSubscriptionUsage(userID uint, nextReset time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	u, ok := m.Users[userID]
+	if !ok || u.Subscription == nil {
+		return fmt.Errorf("no subscription found for user")
+	}
+	u.Subscription.AllergenAnalysesUsed = 0
+	u.Subscription.WebSearchesUsed = 0
+	u.Subscription.AIGenerationsUsed = 0
+	u.Subscription.MonthlyResetAt = nextReset
+	return nil
 }
 
 // --- MockSearchProvider ---

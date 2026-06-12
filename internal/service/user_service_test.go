@@ -1,6 +1,7 @@
 package service
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/windoze95/saltybytes-api/internal/config"
@@ -114,6 +115,9 @@ func TestLoginUser_WrongPassword(t *testing.T) {
 	if err == nil {
 		t.Fatal("LoginUser with wrong password should return error")
 	}
+	if !errors.Is(err, ErrInvalidCredentials) {
+		t.Errorf("err = %v, want ErrInvalidCredentials", err)
+	}
 }
 
 func TestLoginUser_UserNotFound(t *testing.T) {
@@ -123,6 +127,26 @@ func TestLoginUser_UserNotFound(t *testing.T) {
 	_, err := svc.LoginUser("nonexistent", "Password1!")
 	if err == nil {
 		t.Fatal("LoginUser with nonexistent user should return error")
+	}
+	// Same generic error as a bad password, so the API cannot leak which
+	// usernames exist or surface raw repository errors.
+	if !errors.Is(err, ErrInvalidCredentials) {
+		t.Errorf("err = %v, want ErrInvalidCredentials", err)
+	}
+}
+
+func TestLogoutUser_IncrementsTokenVersion(t *testing.T) {
+	repo := testutil.NewMockUserRepo()
+	user := testutil.TestUser()
+	repo.Users[user.ID] = user
+
+	svc := newTestUserService(repo)
+
+	if err := svc.LogoutUser(user.ID); err != nil {
+		t.Fatalf("LogoutUser error: %v", err)
+	}
+	if got := repo.Users[user.ID].Auth.TokenVersion; got != 1 {
+		t.Errorf("TokenVersion = %d, want 1", got)
 	}
 }
 

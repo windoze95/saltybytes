@@ -28,6 +28,11 @@ type UserAuth struct {
 	UserID         uint `gorm:"unique;index"`
 	HashedPassword string
 	AuthType       UserAuthType `gorm:"type:text"`
+	// TokenVersion is embedded in refresh tokens as the "token_version" claim.
+	// Incrementing it (e.g. on logout) revokes all outstanding refresh tokens.
+	// Defaults to 0 so refresh tokens issued before this field existed (which
+	// carry no claim) remain valid.
+	TokenVersion int `gorm:"default:0"`
 }
 
 // UserAuthType is the type for the UserAuthType enum.
