@@ -266,6 +266,55 @@ func estimatePortionsTool() anthropic.ToolUnionParam {
 	}
 }
 
+// saveDietaryProfileTool builds the Claude tool definition for saving a
+// completed dietary profile at the end of a dietary interview. The input
+// schema mirrors models.DietaryProfile's snake_case JSON shape.
+func saveDietaryProfileTool() anthropic.ToolUnionParam {
+	return anthropic.ToolUnionParam{
+		OfTool: &anthropic.ToolParam{
+			Name:        "save_dietary_profile",
+			Description: anthropic.String("Save the completed dietary profile. Call this ONLY once the interview has gathered enough information to fill out the profile (allergies, intolerances, restrictions, and preferences have all been asked about)."),
+			InputSchema: anthropic.ToolInputSchemaParam{
+				Type: "object",
+				Properties: map[string]interface{}{
+					"allergies": map[string]interface{}{
+						"type":        "array",
+						"description": "Food allergies. Empty array if none.",
+						"items": map[string]interface{}{
+							"type": "object",
+							"properties": map[string]interface{}{
+								"name":      map[string]interface{}{"type": "string", "description": "Name of the allergen (e.g. 'peanuts', 'shellfish')"},
+								"severity":  map[string]interface{}{"type": "string", "description": "Severity of the allergy", "enum": []string{"mild", "moderate", "severe", "life_threatening"}},
+								"sub_forms": map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Specific forms or sub-ingredients that trigger the allergy (e.g. 'raw egg' but not 'baked egg'). Empty array if it applies to all forms."},
+								"notes":     map[string]interface{}{"type": "string", "description": "Additional notes about the allergy (reactions, cross-contamination concerns, etc.)"},
+							},
+						},
+					},
+					"intolerances": map[string]interface{}{
+						"type":        "array",
+						"description": "Food intolerances (e.g. 'lactose', 'gluten'). Empty array if none.",
+						"items":       map[string]interface{}{"type": "string"},
+					},
+					"restrictions": map[string]interface{}{
+						"type":        "array",
+						"description": "Dietary restrictions including lifestyle, cultural, or religious (e.g. 'vegetarian', 'halal', 'keto'). Empty array if none.",
+						"items":       map[string]interface{}{"type": "string"},
+					},
+					"preferences": map[string]interface{}{
+						"type":        "array",
+						"description": "Food preferences and dislikes (e.g. 'dislikes cilantro', 'loves spicy food'). Empty array if none.",
+						"items":       map[string]interface{}{"type": "string"},
+					},
+					"medical_notes": map[string]interface{}{
+						"type":        "string",
+						"description": "Medically relevant dietary notes (e.g. 'low sodium for hypertension'). Empty string if none.",
+					},
+				},
+			},
+		},
+	}
+}
+
 // allergenToolResult is the JSON structure returned by the analyze_allergens tool call.
 type allergenToolResult struct {
 	IngredientAnalyses []ingredientAnalysisToolRes `json:"ingredient_analyses"`
@@ -295,6 +344,23 @@ type portionToolResult struct {
 	Portions    int     `json:"portions"`
 	PortionSize string  `json:"portion_size"`
 	Confidence  float64 `json:"confidence"`
+}
+
+// dietaryProfileToolResult is the JSON structure returned by the
+// save_dietary_profile tool call.
+type dietaryProfileToolResult struct {
+	Allergies    []dietaryAllergyToolRes `json:"allergies"`
+	Intolerances []string                `json:"intolerances"`
+	Restrictions []string                `json:"restrictions"`
+	Preferences  []string                `json:"preferences"`
+	MedicalNotes string                  `json:"medical_notes"`
+}
+
+type dietaryAllergyToolRes struct {
+	Name     string   `json:"name"`
+	Severity string   `json:"severity"`
+	SubForms []string `json:"sub_forms"`
+	Notes    string   `json:"notes"`
 }
 
 func toolResultToAllergenResult(tr *allergenToolResult) *AllergenResult {
@@ -330,6 +396,25 @@ func toolResultToPortionEstimate(tr *portionToolResult) *PortionEstimate {
 		Portions:    tr.Portions,
 		PortionSize: tr.PortionSize,
 		Confidence:  tr.Confidence,
+	}
+}
+
+func toolResultToDietaryProfile(tr *dietaryProfileToolResult) *DietaryProfileResult {
+	allergies := make([]DietaryAllergyResult, len(tr.Allergies))
+	for i, a := range tr.Allergies {
+		allergies[i] = DietaryAllergyResult{
+			Name:     a.Name,
+			Severity: a.Severity,
+			SubForms: a.SubForms,
+			Notes:    a.Notes,
+		}
+	}
+	return &DietaryProfileResult{
+		Allergies:    allergies,
+		Intolerances: tr.Intolerances,
+		Restrictions: tr.Restrictions,
+		Preferences:  tr.Preferences,
+		MedicalNotes: tr.MedicalNotes,
 	}
 }
 
@@ -521,6 +606,52 @@ func extractPortionFromToolUse(msg *anthropic.Message) (*PortionEstimate, error)
 		}
 	}
 	return nil, errors.New("no tool_use block found in Claude response")
+}
+
+// dietaryWrapUpFallback is used when the model calls save_dietary_profile
+// without any accompanying wrap-up text.
+const dietaryWrapUpFallback = "Thanks! I have everything I need and saved the dietary profile."
+
+// extractDietaryInterviewFromMessage parses a dietary interview response.
+// When the response contains a save_dietary_profile tool-use block, the
+// interview is complete and the structured profile is returned alongside the
+// model's wrap-up text. Otherwise the text content (the next interview
+// question) is returned with Complete=false.
+func extractDietaryInterviewFromMessage(msg *anthropic.Message) (*DietaryInterviewResult, error) {
+	var text string
+	var profile *DietaryProfileResult
+
+	for _, block := range msg.Content {
+		switch block.Type {
+		case "text":
+			text += block.Text
+		case "tool_use":
+			if block.Name != "save_dietary_profile" {
+				continue
+			}
+			raw, err := json.Marshal(block.Input)
+			if err != nil {
+				return nil, NewAIError(FailureContentParse, fmt.Errorf("failed to marshal tool input: %w", err), "failed to parse dietary profile tool result")
+			}
+			var tr dietaryProfileToolResult
+			if err := json.Unmarshal(raw, &tr); err != nil {
+				return nil, NewAIError(FailureContentParse, fmt.Errorf("failed to unmarshal dietary profile: %w", err), "failed to parse dietary profile tool result")
+			}
+			profile = toolResultToDietaryProfile(&tr)
+		}
+	}
+
+	if profile != nil {
+		if text == "" {
+			text = dietaryWrapUpFallback
+		}
+		return &DietaryInterviewResult{Response: text, Complete: true, Profile: profile}, nil
+	}
+
+	if text == "" {
+		return nil, NewAIError(FailureContentEmpty, errors.New("no text content in Claude response"), "no text content in response")
+	}
+	return &DietaryInterviewResult{Response: text}, nil
 }
 
 // extractTextContent returns the concatenated text blocks from a Claude response.
@@ -1126,8 +1257,11 @@ func (p *AnthropicProvider) CookingQA(ctx context.Context, question string, reci
 	})
 }
 
-// DietaryInterview conducts a multi-turn dietary interview.
-func (p *AnthropicProvider) DietaryInterview(ctx context.Context, messages []Message, memberName string) (string, error) {
+// DietaryInterview conducts a multi-turn dietary interview. The model is
+// given the save_dietary_profile tool with tool choice left on auto: it keeps
+// asking questions (plain text turns) until it has gathered enough
+// information, then calls the tool to emit the structured profile.
+func (p *AnthropicProvider) DietaryInterview(ctx context.Context, messages []Message, memberName string) (*DietaryInterviewResult, error) {
 	op := AIOperation{
 		Name:      "DietaryInterview",
 		Provider:  "anthropic",
@@ -1135,29 +1269,32 @@ func (p *AnthropicProvider) DietaryInterview(ctx context.Context, messages []Mes
 		StartTime: time.Now(),
 	}
 
-	return runWithMiddleware(ctx, p.middleware, op, func(ctx context.Context) (string, error) {
+	return runWithMiddleware(ctx, p.middleware, op, func(ctx context.Context) (*DietaryInterviewResult, error) {
 		sysSuffix, err := config.RenderPrompt(p.prompts.DietaryInterview.System, map[string]interface{}{
 			"MemberName": memberName,
 		})
 		if err != nil {
-			return "", fmt.Errorf("render system prompt: %w", err)
+			return nil, fmt.Errorf("render system prompt: %w", err)
 		}
 
 		_, msgParams := messagesToAnthropicParams(messages)
 
+		// No ToolChoice is set: the default ("auto") lets the model decide
+		// when the interview has enough information to call the tool.
 		params := anthropic.MessageNewParams{
 			Model:     p.model,
 			MaxTokens: 1024,
 			System:    buildCachedSystemPrompt(p.prompts.DietaryInterview.SystemPrefix, sysSuffix),
 			Messages:  msgParams,
+			Tools:     []anthropic.ToolUnionParam{saveDietaryProfileTool()},
 		}
 
 		resp, err := p.createMessageWithRetry(ctx, params)
 		if err != nil {
-			return "", err
+			return nil, err
 		}
 
-		return extractTextContent(resp)
+		return extractDietaryInterviewFromMessage(resp)
 	})
 }
 

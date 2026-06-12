@@ -60,6 +60,18 @@ type SearchCacheRepo interface {
 	DeleteStale(maxAge time.Duration) (int64, error)
 }
 
+// FamilyRepo is the interface for family repository operations.
+type FamilyRepo interface {
+	CreateFamily(family *models.Family) error
+	GetFamilyByOwnerID(ownerID uint) (*models.Family, error)
+	CreateFamilyMember(member *models.FamilyMember) error
+	GetFamilyMemberByID(id uint) (*models.FamilyMember, error)
+	UpdateFamilyMember(member *models.FamilyMember) error
+	DeleteFamilyMember(id uint) error
+	UpdateDietaryProfile(profile *models.DietaryProfile) error
+	GetOrCreateDietaryProfile(memberID uint) (*models.DietaryProfile, error)
+}
+
 // UserRepo is the interface for user repository operations.
 type UserRepo interface {
 	CreateUser(user *models.User) (*models.User, error)
@@ -79,3 +91,4 @@ type UserRepo interface {
 
 // Compile-time check that the concrete repository satisfies the interface.
 var _ UserRepo = (*UserRepository)(nil)
+var _ FamilyRepo = (*FamilyRepository)(nil)

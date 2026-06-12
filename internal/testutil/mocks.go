@@ -24,7 +24,7 @@ type MockTextProvider struct {
 	EstimatePortionsFunc        func(ctx context.Context, recipeDef interface{}) (*ai.PortionEstimate, error)
 	ExtractRecipeFromTextFunc   func(ctx context.Context, text string, unitSystem string) (*ai.RecipeResult, error)
 	CookingQAFunc               func(ctx context.Context, question string, recipeContext string) (string, error)
-	DietaryInterviewFunc        func(ctx context.Context, messages []ai.Message, memberName string) (string, error)
+	DietaryInterviewFunc        func(ctx context.Context, messages []ai.Message, memberName string) (*ai.DietaryInterviewResult, error)
 }
 
 func (m *MockTextProvider) GenerateRecipe(ctx context.Context, req ai.RecipeRequest) (*ai.RecipeResult, error) {
@@ -83,11 +83,11 @@ func (m *MockTextProvider) CookingQA(ctx context.Context, question string, recip
 	return "", fmt.Errorf("CookingQA not configured")
 }
 
-func (m *MockTextProvider) DietaryInterview(ctx context.Context, messages []ai.Message, memberName string) (string, error) {
+func (m *MockTextProvider) DietaryInterview(ctx context.Context, messages []ai.Message, memberName string) (*ai.DietaryInterviewResult, error) {
 	if m.DietaryInterviewFunc != nil {
 		return m.DietaryInterviewFunc(ctx, messages, memberName)
 	}
-	return "", fmt.Errorf("DietaryInterview not configured")
+	return nil, fmt.Errorf("DietaryInterview not configured")
 }
 
 // --- MockVisionProvider ---
@@ -765,6 +765,76 @@ func (m *MockSearchCacheRepo) DeleteStale(maxAge time.Duration) (int64, error) {
 	return 0, nil
 }
 
+// --- MockFamilyRepo ---
+
+// MockFamilyRepo mocks repository.FamilyRepo for testing.
+type MockFamilyRepo struct {
+	CreateFamilyFunc              func(family *models.Family) error
+	GetFamilyByOwnerIDFunc        func(ownerID uint) (*models.Family, error)
+	CreateFamilyMemberFunc        func(member *models.FamilyMember) error
+	GetFamilyMemberByIDFunc       func(id uint) (*models.FamilyMember, error)
+	UpdateFamilyMemberFunc        func(member *models.FamilyMember) error
+	DeleteFamilyMemberFunc        func(id uint) error
+	UpdateDietaryProfileFunc      func(profile *models.DietaryProfile) error
+	GetOrCreateDietaryProfileFunc func(memberID uint) (*models.DietaryProfile, error)
+}
+
+func (m *MockFamilyRepo) CreateFamily(family *models.Family) error {
+	if m.CreateFamilyFunc != nil {
+		return m.CreateFamilyFunc(family)
+	}
+	return nil
+}
+
+func (m *MockFamilyRepo) GetFamilyByOwnerID(ownerID uint) (*models.Family, error) {
+	if m.GetFamilyByOwnerIDFunc != nil {
+		return m.GetFamilyByOwnerIDFunc(ownerID)
+	}
+	return nil, fmt.Errorf("GetFamilyByOwnerID not configured")
+}
+
+func (m *MockFamilyRepo) CreateFamilyMember(member *models.FamilyMember) error {
+	if m.CreateFamilyMemberFunc != nil {
+		return m.CreateFamilyMemberFunc(member)
+	}
+	return nil
+}
+
+func (m *MockFamilyRepo) GetFamilyMemberByID(id uint) (*models.FamilyMember, error) {
+	if m.GetFamilyMemberByIDFunc != nil {
+		return m.GetFamilyMemberByIDFunc(id)
+	}
+	return nil, fmt.Errorf("GetFamilyMemberByID not configured")
+}
+
+func (m *MockFamilyRepo) UpdateFamilyMember(member *models.FamilyMember) error {
+	if m.UpdateFamilyMemberFunc != nil {
+		return m.UpdateFamilyMemberFunc(member)
+	}
+	return nil
+}
+
+func (m *MockFamilyRepo) DeleteFamilyMember(id uint) error {
+	if m.DeleteFamilyMemberFunc != nil {
+		return m.DeleteFamilyMemberFunc(id)
+	}
+	return nil
+}
+
+func (m *MockFamilyRepo) UpdateDietaryProfile(profile *models.DietaryProfile) error {
+	if m.UpdateDietaryProfileFunc != nil {
+		return m.UpdateDietaryProfileFunc(profile)
+	}
+	return nil
+}
+
+func (m *MockFamilyRepo) GetOrCreateDietaryProfile(memberID uint) (*models.DietaryProfile, error) {
+	if m.GetOrCreateDietaryProfileFunc != nil {
+		return m.GetOrCreateDietaryProfileFunc(memberID)
+	}
+	return &models.DietaryProfile{MemberID: memberID}, nil
+}
+
 // --- MockCanonicalRecipeRepo ---
 
 // MockCanonicalRecipeRepo mocks repository.CanonicalRecipeRepo for testing.
@@ -823,3 +893,4 @@ var _ repository.RecipeRepo = (*MockRecipeRepo)(nil)
 var _ repository.UserRepo = (*MockUserRepo)(nil)
 var _ repository.SearchCacheRepo = (*MockSearchCacheRepo)(nil)
 var _ repository.CanonicalRecipeRepo = (*MockCanonicalRecipeRepo)(nil)
+var _ repository.FamilyRepo = (*MockFamilyRepo)(nil)
