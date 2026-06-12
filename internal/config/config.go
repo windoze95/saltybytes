@@ -25,11 +25,18 @@ type EnvVars struct {
 	S3Bucket           string `env:"S3_BUCKET"`
 	IDHeader           string `env:"ID_HEADER"`
 	AnthropicAPIKey    string `env:"ANTHROPIC_API_KEY"`
-	OpenAIAPIKey       string `env:"OPENAI_API_KEY"`
-	GoogleSearchKey    string `env:"GOOGLE_SEARCH_KEY" optional:"true"`
-	GoogleSearchCX     string `env:"GOOGLE_SEARCH_CX" optional:"true"`
-	BraveSearchKey     string `env:"BRAVE_SEARCH_KEY" optional:"true"`
-	FirecrawlAPIKey    string `env:"FIRECRAWL_API_KEY" optional:"true"`
+	// AnthropicModel and AnthropicLightModel override the Claude model IDs
+	// used for full-quality and cheap preview/extraction tasks respectively.
+	AnthropicModel      string `env:"ANTHROPIC_MODEL" envDefault:"claude-sonnet-4-6" optional:"true"`
+	AnthropicLightModel string `env:"ANTHROPIC_LIGHT_MODEL" envDefault:"claude-haiku-4-5-20251001" optional:"true"`
+	OpenAIAPIKey        string `env:"OPENAI_API_KEY"`
+	// PromptsPath overrides the location of the prompts YAML file, which is
+	// cwd-relative by default and only resolves from the Docker workdir.
+	PromptsPath     string `env:"PROMPTS_PATH" envDefault:"configs/prompts.yaml" optional:"true"`
+	GoogleSearchKey string `env:"GOOGLE_SEARCH_KEY" optional:"true"`
+	GoogleSearchCX  string `env:"GOOGLE_SEARCH_CX" optional:"true"`
+	BraveSearchKey  string `env:"BRAVE_SEARCH_KEY" optional:"true"`
+	FirecrawlAPIKey string `env:"FIRECRAWL_API_KEY" optional:"true"`
 }
 
 // LoadConfig parses environment variables into the Config struct.

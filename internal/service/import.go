@@ -587,7 +587,7 @@ func (s *ImportService) ImportFromPhoto(ctx context.Context, imageData []byte, u
 
 	// Upload original image to S3
 	s3Key := fmt.Sprintf("recipes/%d/images/original_import.jpg", recipeID)
-	imageURL, err := s3.UploadRecipeImageToS3(ctx, s.Cfg, imageData, s3Key)
+	imageURL, err := s3.UploadRecipeImageToS3(ctx, s.Cfg, imageData, s3Key, "image/jpeg")
 	if err != nil {
 		log.Error("failed to upload original import image", zap.Uint("recipe_id", recipeID), zap.Error(err))
 		// Non-fatal: recipe was still created

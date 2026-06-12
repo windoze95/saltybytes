@@ -228,6 +228,18 @@ func (m *MockRecipeRepo) DeleteRecipe(recipeID uint) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	// Mirror the real repository: deleting a recipe also removes its tree and nodes.
+	for treeID, tree := range m.Trees {
+		if tree.RecipeID == recipeID {
+			for nodeID, node := range m.Nodes {
+				if node.TreeID == treeID {
+					delete(m.Nodes, nodeID)
+				}
+			}
+			delete(m.Trees, treeID)
+		}
+	}
+
 	delete(m.Recipes, recipeID)
 	return nil
 }

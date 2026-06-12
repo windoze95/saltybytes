@@ -108,7 +108,7 @@ func (s *RecipeService) FinishGenerateRecipeWithFork(recipe *models.Recipe, sour
 					return
 				}
 
-				imageURL, uploadErr := uploadRecipeImage(ctx, recipe.ID, imageBytes, s.Cfg)
+				imageURL, uploadErr := uploadRecipeImage(ctx, recipe.ID, recipe.ImageURL, imageBytes, s.Cfg)
 				if uploadErr != nil {
 					imageErrChan <- uploadErr
 					return

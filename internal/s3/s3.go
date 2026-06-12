@@ -4,12 +4,16 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"net/url"
+	"strings"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/google/uuid"
 	"github.com/windoze95/saltybytes-api/internal/config"
 )
 
@@ -37,8 +41,10 @@ func newS3Client(ctx context.Context, cfg *config.Config) (*s3.Client, error) {
 	return s3.NewFromConfig(awsCfg), nil
 }
 
-// UploadRecipeImageToS3 uploads a given byte array to an S3 bucket and returns the location URL.
-func UploadRecipeImageToS3(ctx context.Context, cfg *config.Config, imgBytes []byte, s3Key string) (string, error) {
+// UploadRecipeImageToS3 uploads a given byte array to an S3 bucket and returns
+// the location URL. contentType, when non-empty, is stored as the object's
+// Content-Type so browsers and CDNs serve the image correctly.
+func UploadRecipeImageToS3(ctx context.Context, cfg *config.Config, imgBytes []byte, s3Key string, contentType string) (string, error) {
 	client, err := newS3Client(ctx, cfg)
 	if err != nil {
 		return "", err
@@ -46,11 +52,16 @@ func UploadRecipeImageToS3(ctx context.Context, cfg *config.Config, imgBytes []b
 
 	uploader := manager.NewUploader(client)
 
-	result, err := uploader.Upload(ctx, &s3.PutObjectInput{
+	input := &s3.PutObjectInput{
 		Bucket: aws.String(cfg.EnvVars.S3Bucket),
 		Key:    aws.String(s3Key),
 		Body:   bytes.NewReader(imgBytes),
-	})
+	}
+	if contentType != "" {
+		input.ContentType = aws.String(contentType)
+	}
+
+	result, err := uploader.Upload(ctx, input)
 	if err != nil {
 		return "", fmt.Errorf("failed to upload to S3: %v", err)
 	}
@@ -76,7 +87,53 @@ func DeleteRecipeImageFromS3(ctx context.Context, cfg *config.Config, s3Key stri
 	return nil
 }
 
-// GenerateS3Key generates the S3 key for a recipe image, given the recipe ID.
+// GenerateS3Key generates a timestamp-versioned S3 key for a generated recipe
+// image. Versioning the key gives regenerated images a fresh URL so URL-keyed
+// caches (Flutter cached_network_image, CDNs) pick up the new image. Generated
+// images are DALL-E PNG bytes, hence the .png extension.
 func GenerateS3Key(recipeID uint) string {
-	return fmt.Sprintf("recipes/%d/images/recipe_image_%d.jpg", recipeID, recipeID)
+	return generateS3KeyAt(recipeID, time.Now().Unix())
+}
+
+// generateS3KeyAt is the deterministic core of GenerateS3Key, split out for testing.
+func generateS3KeyAt(recipeID uint, unixTS int64) string {
+	return fmt.Sprintf("recipes/%d/images/recipe_image_%d_%d.png", recipeID, recipeID, unixTS)
+}
+
+// GenerateUploadKey generates a collision-free S3 key for a user-uploaded
+// image. The key is server-generated (never derived from the client filename)
+// so uploads cannot overwrite each other or smuggle path segments. ext must
+// include the leading dot (e.g. ".png").
+func GenerateUploadKey(userID uint, ext string) string {
+	return fmt.Sprintf("uploads/%d/images/%s%s", userID, uuid.NewString(), ext)
+}
+
+// S3KeyFromURL derives the S3 object key from an object URL previously
+// returned by an upload. Returns "" when the URL is empty or cannot be parsed.
+func S3KeyFromURL(imageURL string) string {
+	if imageURL == "" {
+		return ""
+	}
+
+	u, err := url.Parse(imageURL)
+	if err != nil {
+		return ""
+	}
+
+	key := strings.TrimPrefix(u.Path, "/")
+
+	// Path-style URLs (https://s3.<region>.amazonaws.com/<bucket>/<key>)
+	// include the bucket as the first path segment; strip it. Virtual-hosted
+	// URLs (https://<bucket>.s3.<region>.amazonaws.com/<key>) do not.
+	if strings.HasPrefix(u.Host, "s3.") || strings.HasPrefix(u.Host, "s3-") {
+		if i := strings.Index(key, "/"); i >= 0 {
+			key = key[i+1:]
+		}
+	}
+
+	if unescaped, err := url.PathUnescape(key); err == nil {
+		key = unescaped
+	}
+
+	return key
 }

@@ -237,17 +237,38 @@ func (s *RecipeService) GetRecipeByID(recipeID uint) (*RecipeResponse, error) {
 	return recipeResponse, nil
 }
 
-// DeleteRecipe deletes a recipe by its ID.
+// uploadImageToS3 and deleteImageFromS3 are indirections over the s3 package
+// so tests can stub out network calls.
+var (
+	uploadImageToS3   = s3.UploadRecipeImageToS3
+	deleteImageFromS3 = s3.DeleteRecipeImageFromS3
+)
+
+// DeleteRecipe deletes a recipe by its ID, along with its tree/nodes and S3
+// image. S3 cleanup is best-effort: the row is already gone by then, so a
+// failed S3 delete is logged but does not fail the request.
 func (s *RecipeService) DeleteRecipe(ctx context.Context, recipeID uint) error {
-	// Delete the recipe from the database
+	// Capture the image URL before the row is deleted so the S3 object can be
+	// cleaned up afterwards. Image keys are timestamp-versioned, so the key
+	// must be derived from the stored URL rather than regenerated.
+	var imageURL string
+	if recipe, err := s.Repo.GetRecipeByID(recipeID); err == nil {
+		imageURL = recipe.ImageURL
+	}
+
+	// Delete the recipe (and its tree + nodes) from the database.
 	if err := s.Repo.DeleteRecipe(recipeID); err != nil {
 		return fmt.Errorf("failed to delete recipe: %w", err)
 	}
 
-	// Delete the recipe image from S3
-	s3Key := s3.GenerateS3Key(recipeID)
-	if err := s3.DeleteRecipeImageFromS3(ctx, s.Cfg, s3Key); err != nil {
-		return fmt.Errorf("failed to delete recipe image from S3: %w", err)
+	// Best-effort S3 image cleanup.
+	if s3Key := s3.S3KeyFromURL(imageURL); s3Key != "" {
+		if err := deleteImageFromS3(ctx, s.Cfg, s3Key); err != nil {
+			logger.Get().Warn("failed to delete recipe image from S3",
+				zap.Uint("recipe_id", recipeID),
+				zap.String("s3_key", s3Key),
+				zap.Error(err))
+		}
 	}
 
 	return nil
@@ -292,12 +313,25 @@ func validateRecipeCoreFields(recipe *models.Recipe) error {
 	return nil
 }
 
-// uploadRecipeImage uploads the recipe image to S3 and returns the new image URL.
-func uploadRecipeImage(ctx context.Context, recipeID uint, imageBytes []byte, cfg *config.Config) (string, error) {
+// uploadRecipeImage uploads a generated recipe image (DALL-E PNG bytes) to S3
+// under a timestamp-versioned key and returns the new image URL. After a
+// successful upload, the previous image object (derived from oldImageURL) is
+// deleted best-effort so stale objects don't accumulate.
+func uploadRecipeImage(ctx context.Context, recipeID uint, oldImageURL string, imageBytes []byte, cfg *config.Config) (string, error) {
 	s3Key := s3.GenerateS3Key(recipeID)
-	imageURL, err := s3.UploadRecipeImageToS3(ctx, cfg, imageBytes, s3Key)
+	imageURL, err := uploadImageToS3(ctx, cfg, imageBytes, s3Key, "image/png")
 	if err != nil {
 		return "", errors.New("failed to upload image to S3: " + err.Error())
+	}
+
+	// Best-effort cleanup of the previous image object behind the old URL.
+	if oldKey := s3.S3KeyFromURL(oldImageURL); oldKey != "" && oldKey != s3Key {
+		if delErr := deleteImageFromS3(ctx, cfg, oldKey); delErr != nil {
+			logger.Get().Warn("failed to delete previous recipe image from S3",
+				zap.Uint("recipe_id", recipeID),
+				zap.String("s3_key", oldKey),
+				zap.Error(delErr))
+		}
 	}
 
 	return imageURL, nil

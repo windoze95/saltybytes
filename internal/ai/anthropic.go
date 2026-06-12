@@ -29,25 +29,44 @@ func (p *AnthropicProvider) WithMiddleware(mw AIMiddleware) {
 	p.middleware = mw
 }
 
-// NewAnthropicProvider creates a new AnthropicProvider with the given API key
-// and prompt configuration.
-func NewAnthropicProvider(apiKey string, prompts *config.Prompts) *AnthropicProvider {
+// Default Anthropic model IDs used when no override is configured.
+// claude-3-5-sonnet-20241022 (the previous default) was retired on 2025-10-28;
+// claude-sonnet-4-6 is its recommended replacement. The vendored SDK version
+// predates the 4.6 family, so these are string literals rather than SDK
+// constants. The code is already 4.6-compatible: it never sets temperature or
+// top_p, never prefills a trailing assistant turn, uses no extended-thinking
+// config, and parses tool inputs via json.Unmarshal.
+const (
+	DefaultAnthropicModel      = "claude-sonnet-4-6"
+	DefaultAnthropicLightModel = "claude-haiku-4-5-20251001"
+)
+
+// NewAnthropicProvider creates a new AnthropicProvider with the given API key,
+// model ID and prompt configuration. An empty model falls back to
+// DefaultAnthropicModel.
+func NewAnthropicProvider(apiKey string, model string, prompts *config.Prompts) *AnthropicProvider {
+	if model == "" {
+		model = DefaultAnthropicModel
+	}
 	client := anthropic.NewClient(option.WithAPIKey(apiKey))
 	return &AnthropicProvider{
 		client:  client,
-		model:   anthropic.ModelClaude3_5Sonnet20241022,
+		model:   anthropic.Model(model),
 		prompts: prompts,
 	}
 }
 
 // NewAnthropicLightProvider creates an AnthropicProvider using the cheaper
 // Haiku model. Suitable for preview/extraction tasks where cost matters more
-// than maximum quality.
-func NewAnthropicLightProvider(apiKey string, prompts *config.Prompts) *AnthropicProvider {
+// than maximum quality. An empty model falls back to DefaultAnthropicLightModel.
+func NewAnthropicLightProvider(apiKey string, model string, prompts *config.Prompts) *AnthropicProvider {
+	if model == "" {
+		model = DefaultAnthropicLightModel
+	}
 	client := anthropic.NewClient(option.WithAPIKey(apiKey))
 	return &AnthropicProvider{
 		client:  client,
-		model:   anthropic.Model("claude-haiku-4-5-20251001"),
+		model:   anthropic.Model(model),
 		prompts: prompts,
 	}
 }

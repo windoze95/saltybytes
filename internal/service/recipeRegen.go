@@ -99,7 +99,7 @@ func (s *RecipeService) FinishRegenerateRecipe(recipe *models.Recipe, user *mode
 					return
 				}
 
-				imageURL, uploadErr := uploadRecipeImage(ctx, recipe.ID, imageBytes, s.Cfg)
+				imageURL, uploadErr := uploadRecipeImage(ctx, recipe.ID, recipe.ImageURL, imageBytes, s.Cfg)
 				if uploadErr != nil {
 					imageErrChan <- uploadErr
 					return

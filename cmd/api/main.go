@@ -39,10 +39,11 @@ func main() {
 		logger.Get().Fatal("missing required config fields", zap.Error(err))
 	}
 
-	// Load prompts from YAML
-	prompts, err := config.LoadPrompts("configs/prompts.yaml")
+	// Load prompts from YAML. The path defaults to the Docker workdir-relative
+	// configs/prompts.yaml and can be overridden via PROMPTS_PATH.
+	prompts, err := config.LoadPrompts(cfg.EnvVars.PromptsPath)
 	if err != nil {
-		logger.Get().Fatal("failed to load prompts", zap.Error(err))
+		logger.Get().Fatal("failed to load prompts", zap.String("path", cfg.EnvVars.PromptsPath), zap.Error(err))
 	}
 	cfg.Prompts = prompts
 

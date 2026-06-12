@@ -83,7 +83,7 @@ func (s *RecipeService) FinishGenerateRecipe(recipe *models.Recipe, user *models
 					return
 				}
 
-				imageURL, uploadErr := uploadRecipeImage(ctx, recipe.ID, imageBytes, s.Cfg)
+				imageURL, uploadErr := uploadRecipeImage(ctx, recipe.ID, recipe.ImageURL, imageBytes, s.Cfg)
 				if uploadErr != nil {
 					imageErrChan <- uploadErr
 					return
@@ -298,7 +298,7 @@ func (s *RecipeService) finishStreamedRecipe(ctx context.Context, recipe *models
 				log.Error("background image generation failed", zap.Error(err))
 				return
 			}
-			imageURL, err := uploadRecipeImage(imgCtx, recipe.ID, imageBytes, s.Cfg)
+			imageURL, err := uploadRecipeImage(imgCtx, recipe.ID, recipe.ImageURL, imageBytes, s.Cfg)
 			if err != nil {
 				log.Error("background image upload failed", zap.Error(err))
 				return
