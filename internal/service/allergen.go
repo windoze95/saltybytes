@@ -154,7 +154,8 @@ func (s *AllergenService) AnalyzeRecipe(ctx context.Context, recipeID uint, isPr
 
 	// 7. Save to DB (update if existing, create if not)
 	if existing != nil {
-		analysis.Model = existing.Model
+		analysis.ID = existing.ID
+		analysis.CreatedAt = existing.CreatedAt
 		if err := s.AllergenRepo.UpdateAnalysis(analysis); err != nil {
 			logger.Get().Error("failed to update allergen analysis", zap.Uint("recipe_id", recipeID), zap.Error(err))
 			return nil, fmt.Errorf("failed to save allergen analysis: %w", err)

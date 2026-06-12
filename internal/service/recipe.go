@@ -305,11 +305,16 @@ func (s *RecipeService) GetRecipeTree(recipeID uint) (*TreeResponse, error) {
 		return nil, fmt.Errorf("failed to get tree nodes: %w", err)
 	}
 
+	if treeWithNodes.Nodes == nil {
+		treeWithNodes.Nodes = []models.RecipeNode{}
+	}
+
 	return &TreeResponse{
-		TreeID:     treeWithNodes.ID,
-		RecipeID:   treeWithNodes.RecipeID,
-		RootNodeID: treeWithNodes.RootNodeID,
-		Nodes:      treeWithNodes.Nodes,
+		TreeID:       treeWithNodes.ID,
+		RecipeID:     treeWithNodes.RecipeID,
+		RootNodeID:   treeWithNodes.RootNodeID,
+		ActiveNodeID: activeNodeID(treeWithNodes.Nodes),
+		Nodes:        treeWithNodes.Nodes,
 	}, nil
 }
 
@@ -355,12 +360,25 @@ func (s *RecipeService) SwitchToNode(recipeID uint, nodeID uint) error {
 	return nil
 }
 
-// TreeResponse is the response object for recipe tree operations.
+// TreeResponse is the response object for recipe tree operations. Nodes is a
+// flat array; clients rebuild the tree structure from each node's parent_id.
 type TreeResponse struct {
-	TreeID     uint                `json:"tree_id"`
-	RecipeID   uint                `json:"recipe_id"`
-	RootNodeID *uint               `json:"root_node_id"`
-	Nodes      []models.RecipeNode `json:"nodes"`
+	TreeID       uint                `json:"tree_id"`
+	RecipeID     uint                `json:"recipe_id"`
+	RootNodeID   *uint               `json:"root_node_id"`
+	ActiveNodeID *uint               `json:"active_node_id"`
+	Nodes        []models.RecipeNode `json:"nodes"`
+}
+
+// activeNodeID returns the ID of the active node in a flat node list, or nil.
+func activeNodeID(nodes []models.RecipeNode) *uint {
+	for i := range nodes {
+		if nodes[i].IsActive {
+			id := nodes[i].ID
+			return &id
+		}
+	}
+	return nil
 }
 
 // effectiveRecipeDef resolves the effective RecipeDef for a recipe, using the

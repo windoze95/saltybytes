@@ -38,11 +38,13 @@ func connectToDatabaseWithRetry(databaseURL string) (*gorm.DB, error) {
 	}
 
 	// Enable pgvector extension for embedding similarity search
-	database.Exec("CREATE EXTENSION IF NOT EXISTS vector")
+	if execErr := database.Exec("CREATE EXTENSION IF NOT EXISTS vector").Error; execErr != nil {
+		logger.Get().Warn("failed to create pgvector extension", zap.Error(execErr))
+	}
 
 	// AutoMigrate all models. RecipeTree.Nodes and RecipeNode.Children use gorm:"-"
 	// to avoid circular FK issues during migration.
-	database.AutoMigrate(
+	if migrateErr := database.AutoMigrate(
 		&models.User{},
 		&models.UserAuth{},
 		&models.Subscription{},
@@ -58,23 +60,47 @@ func connectToDatabaseWithRetry(databaseURL string) (*gorm.DB, error) {
 		&models.AllergenAnalysis{},
 		&models.SearchCache{},
 		&models.CanonicalRecipe{},
-	)
+	); migrateErr != nil {
+		return nil, fmt.Errorf("database auto-migration failed: %w", migrateErr)
+	}
 
 	// HNSW index for vector similarity on search cache embeddings
-	database.Exec(`CREATE INDEX IF NOT EXISTS idx_search_caches_embedding ON search_caches USING hnsw (embedding vector_cosine_ops)`)
+	if execErr := database.Exec(`CREATE INDEX IF NOT EXISTS idx_search_caches_embedding ON search_caches USING hnsw (embedding vector_cosine_ops)`).Error; execErr != nil {
+		logger.Get().Warn("failed to create idx_search_caches_embedding index", zap.Error(execErr))
+	}
 
 	// HNSW index for vector similarity on canonical recipe embeddings
-	database.Exec(`CREATE INDEX IF NOT EXISTS idx_canonical_recipes_embedding ON canonical_recipes USING hnsw (embedding vector_cosine_ops)`)
+	if execErr := database.Exec(`CREATE INDEX IF NOT EXISTS idx_canonical_recipes_embedding ON canonical_recipes USING hnsw (embedding vector_cosine_ops)`).Error; execErr != nil {
+		logger.Get().Warn("failed to create idx_canonical_recipes_embedding index", zap.Error(execErr))
+	}
+
+	// HNSW index for vector similarity on user recipe embeddings
+	if execErr := database.Exec(`CREATE INDEX IF NOT EXISTS idx_recipes_embedding ON recipes USING hnsw (embedding vector_cosine_ops)`).Error; execErr != nil {
+		logger.Get().Warn("failed to create idx_recipes_embedding index", zap.Error(execErr))
+	}
 
 	// Composite index for GetUserRecipes query (created_by_id, created_at DESC)
-	database.Exec(`CREATE INDEX IF NOT EXISTS idx_recipes_user_created ON recipes (created_by_id, created_at DESC)`)
+	if execErr := database.Exec(`CREATE INDEX IF NOT EXISTS idx_recipes_user_created ON recipes (created_by_id, created_at DESC)`).Error; execErr != nil {
+		logger.Get().Warn("failed to create idx_recipes_user_created index", zap.Error(execErr))
+	}
 
 	// Add the FK from recipe_nodes.tree_id → recipe_trees.id that gorm:"-" skipped.
-	database.Exec(`ALTER TABLE recipe_nodes ADD CONSTRAINT IF NOT EXISTS fk_recipe_nodes_tree
-		FOREIGN KEY (tree_id) REFERENCES recipe_trees(id)
-		ON UPDATE CASCADE ON DELETE CASCADE`)
+	// Postgres does not support ADD CONSTRAINT IF NOT EXISTS, so guard with a
+	// pg_constraint existence check.
+	if execErr := database.Exec(`DO $$
+	BEGIN
+		IF NOT EXISTS (
+			SELECT 1 FROM pg_constraint WHERE conname = 'fk_recipe_nodes_tree'
+		) THEN
+			ALTER TABLE recipe_nodes ADD CONSTRAINT fk_recipe_nodes_tree
+				FOREIGN KEY (tree_id) REFERENCES recipe_trees(id)
+				ON UPDATE CASCADE ON DELETE CASCADE;
+		END IF;
+	END $$`).Error; execErr != nil {
+		logger.Get().Warn("failed to add fk_recipe_nodes_tree constraint", zap.Error(execErr))
+	}
 
-	return database, err
+	return database, nil
 }
 
 // redactDSN parses a database connection string and masks the password.

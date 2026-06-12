@@ -5,31 +5,36 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"gorm.io/gorm"
 )
 
 // AllergenAnalysis is the model for allergen analysis results of a recipe.
+// gorm.Model fields are declared explicitly so JSON serializes snake_case.
 type AllergenAnalysis struct {
-	gorm.Model
-	RecipeID             uint                   `gorm:"index;not null"`
-	Recipe               *Recipe                `gorm:"foreignKey:RecipeID"`
-	NodeID               *uint                  `gorm:"index"`
-	IngredientAnalyses   IngredientAnalysisList `gorm:"type:jsonb"`
-	ContainsNuts         bool
-	ContainsDairy        bool
-	ContainsGluten       bool
-	ContainsSoy          bool
-	ContainsSeedOils     bool
-	ContainsShellfish    bool
-	ContainsEggs         bool
-	SafeForProfiles      UintList               `gorm:"type:jsonb"`
-	UnsafeForProfiles    UintList               `gorm:"type:jsonb"`
-	Confidence           float64                `gorm:"default:0"`
-	RequiresReview       bool                   `gorm:"default:true"`
-	IsPremium            bool                   `gorm:"default:false"`
-	PromptVersion        string
-	Disclaimer           string `gorm:"-"`
+	ID                 uint                   `gorm:"primarykey" json:"id"`
+	CreatedAt          time.Time              `json:"created_at"`
+	UpdatedAt          time.Time              `json:"updated_at"`
+	DeletedAt          gorm.DeletedAt         `gorm:"index" json:"-"`
+	RecipeID           uint                   `gorm:"index;not null" json:"recipe_id"`
+	Recipe             *Recipe                `gorm:"foreignKey:RecipeID" json:"-"`
+	NodeID             *uint                  `gorm:"index" json:"node_id"`
+	IngredientAnalyses IngredientAnalysisList `gorm:"type:jsonb" json:"ingredient_analyses"`
+	ContainsNuts       bool                   `json:"contains_nuts"`
+	ContainsDairy      bool                   `json:"contains_dairy"`
+	ContainsGluten     bool                   `json:"contains_gluten"`
+	ContainsSoy        bool                   `json:"contains_soy"`
+	ContainsSeedOils   bool                   `json:"contains_seed_oils"`
+	ContainsShellfish  bool                   `json:"contains_shellfish"`
+	ContainsEggs       bool                   `json:"contains_eggs"`
+	SafeForProfiles    UintList               `gorm:"type:jsonb" json:"safe_for_profiles"`
+	UnsafeForProfiles  UintList               `gorm:"type:jsonb" json:"unsafe_for_profiles"`
+	Confidence         float64                `gorm:"default:0" json:"confidence"`
+	RequiresReview     bool                   `gorm:"default:true" json:"requires_review"`
+	IsPremium          bool                   `gorm:"default:false" json:"is_premium"`
+	PromptVersion      string                 `json:"prompt_version"`
+	Disclaimer         string                 `gorm:"-" json:"disclaimer"`
 }
 
 // IngredientAnalysis represents the allergen analysis for a single ingredient.
