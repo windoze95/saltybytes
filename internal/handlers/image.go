@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"fmt"
 	"io"
 	"net/http"
 	"path/filepath"
@@ -25,12 +24,12 @@ func NewImageHandler(cfg *config.Config) *ImageHandler {
 	return &ImageHandler{Cfg: cfg}
 }
 
-// allowedImageTypes is the set of accepted image file extensions.
-var allowedImageTypes = map[string]bool{
-	".jpg":  true,
-	".jpeg": true,
-	".png":  true,
-	".webp": true,
+// allowedImageTypes maps accepted image file extensions to their content type.
+var allowedImageTypes = map[string]string{
+	".jpg":  "image/jpeg",
+	".jpeg": "image/jpeg",
+	".png":  "image/png",
+	".webp": "image/webp",
 }
 
 // UploadImage handles POST /v1/images/upload
@@ -50,7 +49,8 @@ func (h *ImageHandler) UploadImage(c *gin.Context) {
 
 	// Validate file extension
 	ext := strings.ToLower(filepath.Ext(header.Filename))
-	if !allowedImageTypes[ext] {
+	contentType, ok := allowedImageTypes[ext]
+	if !ok {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Unsupported image type. Allowed: jpg, png, webp"})
 		return
 	}
@@ -69,9 +69,10 @@ func (h *ImageHandler) UploadImage(c *gin.Context) {
 		return
 	}
 
-	// Upload to S3
-	s3Key := fmt.Sprintf("uploads/%d/images/%s", user.ID, header.Filename)
-	imageURL, err := s3.UploadRecipeImageToS3(c.Request.Context(), h.Cfg, imgBytes, s3Key)
+	// Upload to S3 under a server-generated UUID key. The raw client filename
+	// is never used: it is unsanitized and identical names would overwrite.
+	s3Key := s3.GenerateUploadKey(user.ID, ext)
+	imageURL, err := s3.UploadRecipeImageToS3(c.Request.Context(), h.Cfg, imgBytes, s3Key, contentType)
 	if err != nil {
 		logger.Get().Error("failed to upload image to S3", zap.Uint("user_id", user.ID), zap.Error(err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to upload image"})

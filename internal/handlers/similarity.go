@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"net/http"
+	"strconv"
 
 	"github.com/gin-gonic/gin"
 	"github.com/windoze95/saltybytes-api/internal/ai"
@@ -11,15 +12,20 @@ import (
 	"go.uber.org/zap"
 )
 
+const (
+	defaultSimilarLimit = 10
+	maxSimilarLimit     = 25
+)
+
 // SimilarityHandler handles vector similarity search requests.
 type SimilarityHandler struct {
-	VectorRepo    *repository.VectorRepository
+	VectorRepo    repository.VectorRepo
 	EmbedProvider ai.EmbeddingProvider
 	RecipeService *service.RecipeService
 }
 
 // NewSimilarityHandler creates a new SimilarityHandler.
-func NewSimilarityHandler(vectorRepo *repository.VectorRepository, embedProvider ai.EmbeddingProvider, recipeService *service.RecipeService) *SimilarityHandler {
+func NewSimilarityHandler(vectorRepo repository.VectorRepo, embedProvider ai.EmbeddingProvider, recipeService *service.RecipeService) *SimilarityHandler {
 	return &SimilarityHandler{
 		VectorRepo:    vectorRepo,
 		EmbedProvider: embedProvider,
@@ -27,7 +33,7 @@ func NewSimilarityHandler(vectorRepo *repository.VectorRepository, embedProvider
 	}
 }
 
-// FindSimilar handles GET /v1/recipes/similar/:recipe_id
+// FindSimilar handles GET /v1/recipes/similar/:recipe_id?limit=N
 func (h *SimilarityHandler) FindSimilar(c *gin.Context) {
 	recipeIDStr := c.Param("recipe_id")
 	recipeID, err := parseUintParam(recipeIDStr)
@@ -36,7 +42,17 @@ func (h *SimilarityHandler) FindSimilar(c *gin.Context) {
 		return
 	}
 
-	// Get the recipe to build embedding text
+	limit := defaultSimilarLimit
+	if l := c.Query("limit"); l != "" {
+		if v, convErr := strconv.Atoi(l); convErr == nil && v > 0 {
+			limit = v
+		}
+	}
+	if limit > maxSimilarLimit {
+		limit = maxSimilarLimit
+	}
+
+	// Get the recipe for existence check and fallback embedding text
 	recipe, err := h.RecipeService.GetRecipeByID(recipeID)
 	if err != nil {
 		logger.Get().Error("failed to get recipe for similarity", zap.String("recipe_id", recipeIDStr), zap.Error(err))
@@ -44,25 +60,50 @@ func (h *SimilarityHandler) FindSimilar(c *gin.Context) {
 		return
 	}
 
-	// Generate embedding from recipe title and ingredients
-	embeddingText := recipe.Title
-	for _, ing := range recipe.Ingredients {
-		embeddingText += " " + ing.Name
-	}
-
-	embedding, err := h.EmbedProvider.GenerateEmbedding(c.Request.Context(), embeddingText)
+	// Use the stored embedding when present; only generate (and persist) one
+	// when the recipe has no embedding yet.
+	stored, err := h.VectorRepo.GetRecipeEmbedding(recipeID)
 	if err != nil {
-		logger.Get().Error("failed to generate embedding", zap.Uint("recipe_id", recipeID), zap.Error(err))
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate embedding"})
+		logger.Get().Error("failed to read stored embedding", zap.Uint("recipe_id", recipeID), zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to find similar recipes"})
 		return
 	}
 
-	similar, err := h.VectorRepo.FindSimilar(embedding, 10)
+	var embeddingLiteral string
+	if stored != nil && *stored != "" {
+		embeddingLiteral = *stored
+	} else {
+		if h.EmbedProvider == nil {
+			logger.Get().Error("no embedding provider configured", zap.Uint("recipe_id", recipeID))
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate embedding"})
+			return
+		}
+
+		embeddingText := recipe.Title
+		for _, ing := range recipe.Ingredients {
+			embeddingText += " " + ing.Name
+		}
+
+		embedding, genErr := h.EmbedProvider.GenerateEmbedding(c.Request.Context(), embeddingText)
+		if genErr != nil {
+			logger.Get().Error("failed to generate embedding", zap.Uint("recipe_id", recipeID), zap.Error(genErr))
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate embedding"})
+			return
+		}
+
+		if storeErr := h.VectorRepo.UpdateEmbedding(recipeID, embedding); storeErr != nil {
+			logger.Get().Warn("failed to store generated embedding", zap.Uint("recipe_id", recipeID), zap.Error(storeErr))
+		}
+
+		embeddingLiteral = repository.PgvectorLiteral(embedding)
+	}
+
+	similar, err := h.VectorRepo.FindSimilar(embeddingLiteral, recipeID, limit)
 	if err != nil {
 		logger.Get().Error("failed to find similar recipes", zap.Uint("recipe_id", recipeID), zap.Error(err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to find similar recipes"})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"similar_recipes": similar})
+	c.JSON(http.StatusOK, gin.H{"similar_recipes": h.RecipeService.ToRecipeListItems(similar)})
 }

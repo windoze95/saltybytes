@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"errors"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -38,16 +39,29 @@ func (h *AllergenHandler) AnalyzeRecipe(c *gin.Context) {
 		return
 	}
 
-	// Check subscription tier for premium gating
+	// Check tier and usage limits through the subscription service so stale
+	// monthly counters get reset and nil-subscription users are gated with
+	// free-tier defaults.
 	isPremium := false
-	if user.Subscription != nil && user.Subscription.Tier == models.TierPremium {
-		isPremium = true
-	}
+	if h.Service.SubService != nil {
+		sub, err := h.Service.SubService.GetSubscription(user.ID)
+		if err != nil {
+			logger.Get().Error("failed to get subscription for allergen analysis", zap.Uint("user_id", user.ID), zap.Error(err))
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to check subscription limits"})
+			return
+		}
+		isPremium = sub.Tier == models.TierPremium
 
-	// Check usage limits
-	if user.Subscription != nil && !user.Subscription.CanUseAllergenAnalysis() {
-		c.JSON(http.StatusForbidden, gin.H{"error": "allergen analysis limit reached; upgrade to premium for unlimited analyses"})
-		return
+		allowed, err := h.Service.SubService.CheckLimit(user.ID, "allergen")
+		if err != nil {
+			logger.Get().Error("failed to check allergen limit", zap.Uint("user_id", user.ID), zap.Error(err))
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to check subscription limits"})
+			return
+		}
+		if !allowed {
+			c.JSON(http.StatusForbidden, gin.H{"error": "allergen analysis limit reached; upgrade to premium for unlimited analyses"})
+			return
+		}
 	}
 
 	// Verify recipe ownership
@@ -64,18 +78,20 @@ func (h *AllergenHandler) AnalyzeRecipe(c *gin.Context) {
 	result, err := h.Service.AnalyzeRecipe(c.Request.Context(), recipeID, isPremium)
 	if err != nil {
 		logger.Get().Error("allergen analysis failed", zap.String("recipe_id", recipeIDStr), zap.Error(err))
-		switch err.(type) {
-		case repository.NotFoundError:
+		var notFound repository.NotFoundError
+		if errors.As(err, &notFound) {
 			c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
-		default:
+		} else {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "allergen analysis failed"})
 		}
 		return
 	}
 
 	// Increment usage counter after successful analysis
-	if err := h.Service.SubService.IncrementUsage(user.ID, "allergen"); err != nil {
-		logger.Get().Error("failed to increment allergen usage", zap.Uint("user_id", user.ID), zap.Error(err))
+	if h.Service.SubService != nil {
+		if err := h.Service.SubService.IncrementUsage(user.ID, "allergen"); err != nil {
+			logger.Get().Error("failed to increment allergen usage", zap.Uint("user_id", user.ID), zap.Error(err))
+		}
 	}
 
 	c.JSON(http.StatusOK, gin.H{"analysis": result})
@@ -111,10 +127,10 @@ func (h *AllergenHandler) GetAnalysis(c *gin.Context) {
 	result, err := h.Service.GetAnalysis(c.Request.Context(), recipeID)
 	if err != nil {
 		logger.Get().Error("failed to get allergen analysis", zap.String("recipe_id", recipeIDStr), zap.Error(err))
-		switch err.(type) {
-		case repository.NotFoundError:
+		var notFound repository.NotFoundError
+		if errors.As(err, &notFound) {
 			c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
-		default:
+		} else {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get allergen analysis"})
 		}
 		return
@@ -153,10 +169,10 @@ func (h *AllergenHandler) CheckFamily(c *gin.Context) {
 	result, err := h.Service.CheckFamily(c.Request.Context(), recipeID, user.ID)
 	if err != nil {
 		logger.Get().Error("family allergen check failed", zap.String("recipe_id", recipeIDStr), zap.Uint("user_id", user.ID), zap.Error(err))
-		switch err.(type) {
-		case repository.NotFoundError:
+		var notFound repository.NotFoundError
+		if errors.As(err, &notFound) {
 			c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
-		default:
+		} else {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "family allergen check failed"})
 		}
 		return

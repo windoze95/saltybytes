@@ -31,10 +31,20 @@ func (h *SearchHandler) SearchRecipes(c *gin.Context) {
 		return
 	}
 
-	// Check subscription limits
-	if user.Subscription != nil && !user.Subscription.CanUseWebSearch() {
-		c.JSON(http.StatusForbidden, gin.H{"error": "search limit reached; upgrade to premium for unlimited searches"})
-		return
+	// Check subscription limits through the subscription service so stale
+	// monthly counters get reset and nil-subscription users are gated with
+	// free-tier defaults.
+	if h.Service.SubService != nil {
+		allowed, err := h.Service.SubService.CheckLimit(user.ID, "search")
+		if err != nil {
+			logger.Get().Error("failed to check search limit", zap.Uint("user_id", user.ID), zap.Error(err))
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to check subscription limits"})
+			return
+		}
+		if !allowed {
+			c.JSON(http.StatusForbidden, gin.H{"error": "search limit reached; upgrade to premium for unlimited searches"})
+			return
+		}
 	}
 
 	query := c.Query("q")

@@ -22,14 +22,10 @@ type RecipeService struct {
 	Repo          repository.RecipeRepo
 	TextProvider  ai.TextProvider
 	ImageProvider ai.ImageProvider
-	// Optional: set these to enable embedding generation on recipe create/update.
+	// Optional: set these to enable embedding generation on recipe
+	// create/update and semantic search over a user's recipes.
 	EmbedProvider ai.EmbeddingProvider
-	VectorRepo    VectorUpdater
-}
-
-// VectorUpdater is the subset of VectorRepository needed by RecipeService.
-type VectorUpdater interface {
-	UpdateEmbedding(recipeID uint, embedding []float32) error
+	VectorRepo    repository.VectorRepo
 }
 
 // RecipeResponse is the response object for recipe-related operations.
@@ -46,8 +42,8 @@ type RecipeResponse struct {
 	SourceURL       string             `json:"sourceUrl,omitempty"`
 	CreatedAt       string             `json:"createdAt"`
 	UpdatedAt       string             `json:"updatedAt"`
-	UnitSystem      string  `json:"unitSystem"`
-	Status          string  `json:"status"`
+	UnitSystem      string             `json:"unitSystem"`
+	Status          string             `json:"status"`
 	// Additional detail fields
 	ParentRecipeID *string `json:"parentRecipeId,omitempty"`
 }
@@ -76,27 +72,39 @@ func NewRecipeService(cfg *config.Config, repo repository.RecipeRepo, textProvid
 	}
 }
 
-// generateAndStoreEmbedding creates a vector embedding for a recipe and persists it.
-// This is best-effort: failures are logged but do not block recipe operations.
-func (s *RecipeService) generateAndStoreEmbedding(ctx context.Context, recipeID uint, recipeDef *models.RecipeDef) {
-	if s.EmbedProvider == nil || s.VectorRepo == nil {
-		return
-	}
-
+// embeddingText builds the text used to embed a recipe: its title followed by
+// its ingredient names.
+func embeddingText(recipeDef *models.RecipeDef) string {
 	text := recipeDef.Title
 	for _, ing := range recipeDef.Ingredients {
 		text += " " + ing.Name
 	}
+	return text
+}
 
-	embedding, err := s.EmbedProvider.GenerateEmbedding(ctx, text)
+// generateAndStoreRecipeEmbedding creates a vector embedding for a recipe and
+// persists it. This is best-effort: failures are logged but do not block
+// recipe operations.
+func generateAndStoreRecipeEmbedding(ctx context.Context, embedProvider ai.EmbeddingProvider, vectorRepo repository.VectorRepo, recipeID uint, recipeDef *models.RecipeDef) {
+	if embedProvider == nil || vectorRepo == nil {
+		return
+	}
+
+	embedding, err := embedProvider.GenerateEmbedding(ctx, embeddingText(recipeDef))
 	if err != nil {
 		logger.Get().Warn("failed to generate recipe embedding", zap.Uint("recipe_id", recipeID), zap.Error(err))
 		return
 	}
 
-	if err := s.VectorRepo.UpdateEmbedding(recipeID, embedding); err != nil {
+	if err := vectorRepo.UpdateEmbedding(recipeID, embedding); err != nil {
 		logger.Get().Warn("failed to store recipe embedding", zap.Uint("recipe_id", recipeID), zap.Error(err))
 	}
+}
+
+// generateAndStoreEmbedding creates a vector embedding for a recipe and persists it.
+// This is best-effort: failures are logged but do not block recipe operations.
+func (s *RecipeService) generateAndStoreEmbedding(ctx context.Context, recipeID uint, recipeDef *models.RecipeDef) {
+	generateAndStoreRecipeEmbedding(ctx, s.EmbedProvider, s.VectorRepo, recipeID, recipeDef)
 }
 
 // GetUserRecipes returns a paginated list of recipes for a user.
@@ -106,30 +114,113 @@ func (s *RecipeService) GetUserRecipes(userID uint, page, pageSize int) ([]Recip
 		return nil, 0, fmt.Errorf("failed to get user recipes: %w", err)
 	}
 
+	return s.ToRecipeListItems(recipes), total, nil
+}
+
+// ToRecipeListItem converts a Recipe to the lightweight RecipeListItem DTO.
+func (s *RecipeService) ToRecipeListItem(r *models.Recipe) RecipeListItem {
+	effectiveDef := effectiveRecipeDef(r)
+
+	tags := make([]string, 0, len(r.Hashtags))
+	for _, t := range r.Hashtags {
+		tags = append(tags, t.Hashtag)
+	}
+
+	return RecipeListItem{
+		ID:              fmt.Sprintf("%d", r.ID),
+		Title:           effectiveDef.Title,
+		OwnerID:         fmt.Sprintf("%d", r.CreatedByID),
+		ImageURL:        r.ImageURL,
+		CookTimeMinutes: effectiveDef.CookTime,
+		Tags:            tags,
+		SourceURL:       effectiveDef.SourceURL,
+		Status:          r.Status,
+		CreatedAt:       r.CreatedAt.Format("2006-01-02T15:04:05Z"),
+		UpdatedAt:       r.UpdatedAt.Format("2006-01-02T15:04:05Z"),
+	}
+}
+
+// ToRecipeListItems converts a slice of Recipes to RecipeListItem DTOs.
+// Always returns a non-nil slice so JSON serializes as [] rather than null.
+func (s *RecipeService) ToRecipeListItems(recipes []models.Recipe) []RecipeListItem {
 	items := make([]RecipeListItem, len(recipes))
-	for i, r := range recipes {
-		effectiveDef := effectiveRecipeDef(&r)
+	for i := range recipes {
+		items[i] = s.ToRecipeListItem(&recipes[i])
+	}
+	return items
+}
 
-		tags := make([]string, 0, len(r.Hashtags))
-		for _, t := range r.Hashtags {
-			tags = append(tags, t.Hashtag)
-		}
+// userSearchCandidateCap bounds how many candidates each search strategy
+// (vector, ILIKE) contributes before merging and paginating.
+const userSearchCandidateCap = 100
 
-		items[i] = RecipeListItem{
-			ID:              fmt.Sprintf("%d", r.ID),
-			Title:           effectiveDef.Title,
-			OwnerID:         fmt.Sprintf("%d", r.CreatedByID),
-			ImageURL:        r.ImageURL,
-			CookTimeMinutes: effectiveDef.CookTime,
-			Tags:            tags,
-			SourceURL:       effectiveDef.SourceURL,
-			Status:          r.Status,
-			CreatedAt:       r.CreatedAt.Format("2006-01-02T15:04:05Z"),
-			UpdatedAt:       r.UpdatedAt.Format("2006-01-02T15:04:05Z"),
+// SearchUserRecipes performs a semantic search over the user's own recipes,
+// merged with an ILIKE title fallback for recipes lacking embeddings. Results
+// are deduped by ID (vector-rank first) and paginated in memory. If embedding
+// generation fails, it falls back to a pure ILIKE title search.
+func (s *RecipeService) SearchUserRecipes(ctx context.Context, userID uint, query string, page, pageSize int) ([]RecipeListItem, int64, error) {
+	if s.VectorRepo == nil {
+		return nil, 0, errors.New("vector repository not configured")
+	}
+
+	var vectorHits []models.Recipe
+	vectorOK := false
+	if s.EmbedProvider != nil {
+		embedding, err := s.EmbedProvider.GenerateEmbedding(ctx, query)
+		if err != nil {
+			logger.Get().Warn("failed to embed search query, falling back to title search",
+				zap.Uint("user_id", userID), zap.Error(err))
+		} else {
+			hits, searchErr := s.VectorRepo.SearchUserRecipesByEmbedding(userID, repository.PgvectorLiteral(embedding), userSearchCandidateCap)
+			if searchErr != nil {
+				logger.Get().Warn("vector search failed, falling back to title search",
+					zap.Uint("user_id", userID), zap.Error(searchErr))
+			} else {
+				vectorHits = hits
+				vectorOK = true
+			}
 		}
 	}
 
-	return items, total, nil
+	// When the vector search succeeded, the ILIKE pass only needs to cover
+	// recipes lacking embeddings; otherwise it is the sole search strategy.
+	titleHits, err := s.VectorRepo.SearchUserRecipesByTitle(userID, query, vectorOK, userSearchCandidateCap)
+	if err != nil {
+		if !vectorOK {
+			return nil, 0, fmt.Errorf("failed to search user recipes: %w", err)
+		}
+		logger.Get().Warn("title fallback search failed", zap.Uint("user_id", userID), zap.Error(err))
+	}
+
+	// Dedupe by ID, preserving vector-rank-first order.
+	seen := make(map[uint]bool, len(vectorHits)+len(titleHits))
+	merged := make([]models.Recipe, 0, len(vectorHits)+len(titleHits))
+	for _, r := range vectorHits {
+		if !seen[r.ID] {
+			seen[r.ID] = true
+			merged = append(merged, r)
+		}
+	}
+	for _, r := range titleHits {
+		if !seen[r.ID] {
+			seen[r.ID] = true
+			merged = append(merged, r)
+		}
+	}
+
+	total := int64(len(merged))
+
+	// Paginate the merged result.
+	start := (page - 1) * pageSize
+	if start >= len(merged) {
+		return []RecipeListItem{}, total, nil
+	}
+	end := start + pageSize
+	if end > len(merged) {
+		end = len(merged)
+	}
+
+	return s.ToRecipeListItems(merged[start:end]), total, nil
 }
 
 // GetRecipeByID fetches a recipe by its ID.
@@ -146,17 +237,41 @@ func (s *RecipeService) GetRecipeByID(recipeID uint) (*RecipeResponse, error) {
 	return recipeResponse, nil
 }
 
-// DeleteRecipe deletes a recipe by its ID.
+// uploadImageToS3 and deleteImageFromS3 are indirections over the s3 package
+// so tests can stub out network calls.
+var (
+	uploadImageToS3   = s3.UploadRecipeImageToS3
+	deleteImageFromS3 = s3.DeleteRecipeImageFromS3
+)
+
+// DeleteRecipe deletes a recipe by its ID, along with its tree/nodes and S3
+// image. S3 cleanup is best-effort: the row is already gone by then, so a
+// failed S3 delete is logged but does not fail the request.
 func (s *RecipeService) DeleteRecipe(ctx context.Context, recipeID uint) error {
-	// Delete the recipe from the database
+	// Capture the image URL before the row is deleted so the S3 object can be
+	// cleaned up afterwards. Image keys are timestamp-versioned, so the key
+	// must be derived from the stored URL rather than regenerated.
+	var imageURL string
+	if recipe, err := s.Repo.GetRecipeByID(recipeID); err == nil {
+		imageURL = recipe.ImageURL
+	}
+
+	// Delete the recipe (and its tree + nodes) from the database.
 	if err := s.Repo.DeleteRecipe(recipeID); err != nil {
 		return fmt.Errorf("failed to delete recipe: %w", err)
 	}
 
-	// Delete the recipe image from S3
-	s3Key := s3.GenerateS3Key(recipeID)
-	if err := s3.DeleteRecipeImageFromS3(ctx, s.Cfg, s3Key); err != nil {
-		return fmt.Errorf("failed to delete recipe image from S3: %w", err)
+	// Best-effort S3 image cleanup. The key is scoped to this recipe's own
+	// "recipes/<id>/" prefix: ImageURL can be client-supplied (manual import)
+	// or scraped (JSON-LD), so a key derived from it must never be allowed to
+	// reference another recipe's objects.
+	if s3Key := s3.RecipeImageKeyFromURL(imageURL, recipeID); s3Key != "" {
+		if err := deleteImageFromS3(ctx, s.Cfg, s3Key); err != nil {
+			logger.Get().Warn("failed to delete recipe image from S3",
+				zap.Uint("recipe_id", recipeID),
+				zap.String("s3_key", s3Key),
+				zap.Error(err))
+		}
 	}
 
 	return nil
@@ -201,12 +316,27 @@ func validateRecipeCoreFields(recipe *models.Recipe) error {
 	return nil
 }
 
-// uploadRecipeImage uploads the recipe image to S3 and returns the new image URL.
-func uploadRecipeImage(ctx context.Context, recipeID uint, imageBytes []byte, cfg *config.Config) (string, error) {
+// uploadRecipeImage uploads a generated recipe image (DALL-E PNG bytes) to S3
+// under a timestamp-versioned key and returns the new image URL. After a
+// successful upload, the previous image object (derived from oldImageURL) is
+// deleted best-effort so stale objects don't accumulate.
+func uploadRecipeImage(ctx context.Context, recipeID uint, oldImageURL string, imageBytes []byte, cfg *config.Config) (string, error) {
 	s3Key := s3.GenerateS3Key(recipeID)
-	imageURL, err := s3.UploadRecipeImageToS3(ctx, cfg, imageBytes, s3Key)
+	imageURL, err := uploadImageToS3(ctx, cfg, imageBytes, s3Key, "image/png")
 	if err != nil {
 		return "", errors.New("failed to upload image to S3: " + err.Error())
+	}
+
+	// Best-effort cleanup of the previous image object behind the old URL,
+	// scoped to this recipe's own prefix (the stored URL may be
+	// client-supplied or external and must not name another recipe's object).
+	if oldKey := s3.RecipeImageKeyFromURL(oldImageURL, recipeID); oldKey != "" && oldKey != s3Key {
+		if delErr := deleteImageFromS3(ctx, cfg, oldKey); delErr != nil {
+			logger.Get().Warn("failed to delete previous recipe image from S3",
+				zap.Uint("recipe_id", recipeID),
+				zap.String("s3_key", oldKey),
+				zap.Error(delErr))
+		}
 	}
 
 	return imageURL, nil
@@ -305,11 +435,16 @@ func (s *RecipeService) GetRecipeTree(recipeID uint) (*TreeResponse, error) {
 		return nil, fmt.Errorf("failed to get tree nodes: %w", err)
 	}
 
+	if treeWithNodes.Nodes == nil {
+		treeWithNodes.Nodes = []models.RecipeNode{}
+	}
+
 	return &TreeResponse{
-		TreeID:     treeWithNodes.ID,
-		RecipeID:   treeWithNodes.RecipeID,
-		RootNodeID: treeWithNodes.RootNodeID,
-		Nodes:      treeWithNodes.Nodes,
+		TreeID:       treeWithNodes.ID,
+		RecipeID:     treeWithNodes.RecipeID,
+		RootNodeID:   treeWithNodes.RootNodeID,
+		ActiveNodeID: activeNodeID(treeWithNodes.Nodes),
+		Nodes:        treeWithNodes.Nodes,
 	}, nil
 }
 
@@ -355,12 +490,25 @@ func (s *RecipeService) SwitchToNode(recipeID uint, nodeID uint) error {
 	return nil
 }
 
-// TreeResponse is the response object for recipe tree operations.
+// TreeResponse is the response object for recipe tree operations. Nodes is a
+// flat array; clients rebuild the tree structure from each node's parent_id.
 type TreeResponse struct {
-	TreeID     uint                `json:"tree_id"`
-	RecipeID   uint                `json:"recipe_id"`
-	RootNodeID *uint               `json:"root_node_id"`
-	Nodes      []models.RecipeNode `json:"nodes"`
+	TreeID       uint                `json:"tree_id"`
+	RecipeID     uint                `json:"recipe_id"`
+	RootNodeID   *uint               `json:"root_node_id"`
+	ActiveNodeID *uint               `json:"active_node_id"`
+	Nodes        []models.RecipeNode `json:"nodes"`
+}
+
+// activeNodeID returns the ID of the active node in a flat node list, or nil.
+func activeNodeID(nodes []models.RecipeNode) *uint {
+	for i := range nodes {
+		if nodes[i].IsActive {
+			id := nodes[i].ID
+			return &id
+		}
+	}
+	return nil
 }
 
 // effectiveRecipeDef resolves the effective RecipeDef for a recipe, using the

@@ -1,14 +1,17 @@
 package handlers
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/google/uuid"
 	"github.com/windoze95/saltybytes-api/internal/logger"
 	"github.com/windoze95/saltybytes-api/internal/models"
+	"github.com/windoze95/saltybytes-api/internal/repository"
 	"github.com/windoze95/saltybytes-api/internal/service"
 	"github.com/windoze95/saltybytes-api/internal/util"
 	"go.uber.org/zap"
@@ -60,7 +63,15 @@ func (h *UserHandler) CreateUser(c *gin.Context) {
 	// Create user
 	user, err := h.Service.CreateUser(newUser.Username, newUser.FirstName, newUser.Email, newUser.Password)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		logger.Get().Error("failed to create user", zap.String("username", newUser.Username), zap.Error(err))
+		switch {
+		case errors.Is(err, repository.ErrUsernameTaken):
+			c.JSON(http.StatusConflict, gin.H{"error": "username already in use"})
+		case errors.Is(err, repository.ErrEmailTaken):
+			c.JSON(http.StatusConflict, gin.H{"error": "email already in use"})
+		default:
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create user"})
+		}
 		return
 	}
 
@@ -68,13 +79,13 @@ func (h *UserHandler) CreateUser(c *gin.Context) {
 	accessToken, err := generateAccessToken(user.ID, h.Service.Cfg.EnvVars.JwtSecretKey)
 	if err != nil {
 		logger.Get().Error("failed to generate access token on signup", zap.Uint("user_id", user.ID), zap.Error(err))
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate token"})
 		return
 	}
-	refreshToken, err := generateRefreshToken(user.ID, h.Service.Cfg.EnvVars.JwtSecretKey)
+	refreshToken, err := generateRefreshToken(user.ID, userTokenVersion(user), h.Service.Cfg.EnvVars.JwtSecretKey)
 	if err != nil {
 		logger.Get().Error("failed to generate refresh token on signup", zap.Uint("user_id", user.ID), zap.Error(err))
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate token"})
 		return
 	}
 
@@ -95,7 +106,9 @@ func (h *UserHandler) LoginUser(c *gin.Context) {
 
 	user, err := h.Service.LoginUser(userCredentials.Username, userCredentials.Password)
 	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
+		// Identical generic response for unknown-user and bad-password so the
+		// endpoint cannot be used to enumerate usernames.
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid username or password"})
 		return
 	}
 
@@ -103,13 +116,13 @@ func (h *UserHandler) LoginUser(c *gin.Context) {
 	accessToken, err := generateAccessToken(user.ID, h.Service.Cfg.EnvVars.JwtSecretKey)
 	if err != nil {
 		logger.Get().Error("failed to generate access token on login", zap.Uint("user_id", user.ID), zap.Error(err))
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate token"})
 		return
 	}
-	refreshToken, err := generateRefreshToken(user.ID, h.Service.Cfg.EnvVars.JwtSecretKey)
+	refreshToken, err := generateRefreshToken(user.ID, userTokenVersion(user), h.Service.Cfg.EnvVars.JwtSecretKey)
 	if err != nil {
 		logger.Get().Error("failed to generate refresh token on login", zap.Uint("user_id", user.ID), zap.Error(err))
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate token"})
 		return
 	}
 
@@ -133,12 +146,15 @@ func generateAccessToken(userID uint, secretKey string) (string, error) {
 }
 
 // generateRefreshToken generates a long-lived JWT refresh token for a user.
-func generateRefreshToken(userID uint, secretKey string) (string, error) {
+// tokenVersion is embedded as the "token_version" claim; tokens whose version
+// no longer matches UserAuth.TokenVersion are rejected on refresh.
+func generateRefreshToken(userID uint, tokenVersion int, secretKey string) (string, error) {
 	claims := jwt.MapClaims{
-		"user_id": userID,
-		"exp":     time.Now().Add(30 * 24 * time.Hour).Unix(),
-		"iat":     time.Now().Unix(),
-		"type":    "refresh",
+		"user_id":       userID,
+		"exp":           time.Now().Add(30 * 24 * time.Hour).Unix(),
+		"iat":           time.Now().Unix(),
+		"type":          "refresh",
+		"token_version": tokenVersion,
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	tokenString, err := token.SignedString([]byte(secretKey))
@@ -146,6 +162,15 @@ func generateRefreshToken(userID uint, secretKey string) (string, error) {
 		return "", fmt.Errorf("generateRefreshToken: %v", err)
 	}
 	return tokenString, nil
+}
+
+// userTokenVersion returns the user's current refresh-token version,
+// defaulting to 0 when no auth record is loaded.
+func userTokenVersion(user *models.User) int {
+	if user != nil && user.Auth != nil {
+		return user.Auth.TokenVersion
+	}
+	return 0
 }
 
 // RefreshToken validates a refresh token and issues a new access token.
@@ -181,6 +206,26 @@ func (h *UserHandler) RefreshToken(c *gin.Context) {
 	}
 	userID := uint(idFloat)
 
+	// Load the user and verify the token version so revoked refresh tokens
+	// (logout increments UserAuth.TokenVersion) stop working.
+	user, err := h.Service.GetUserWithAuthByID(userID)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid or expired refresh token"})
+		return
+	}
+
+	// Tokens issued before versioning carry no claim; treat missing as 0,
+	// which matches the column default so existing tokens keep working.
+	claimVersion := 0
+	if v, ok := claims["token_version"].(float64); ok {
+		claimVersion = int(v)
+	}
+	currentVersion := userTokenVersion(user)
+	if claimVersion != currentVersion {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid or expired refresh token"})
+		return
+	}
+
 	accessToken, err := generateAccessToken(userID, h.Service.Cfg.EnvVars.JwtSecretKey)
 	if err != nil {
 		logger.Get().Error("failed to generate access token on refresh", zap.Uint("user_id", userID), zap.Error(err))
@@ -188,7 +233,7 @@ func (h *UserHandler) RefreshToken(c *gin.Context) {
 		return
 	}
 
-	newRefreshToken, err := generateRefreshToken(userID, h.Service.Cfg.EnvVars.JwtSecretKey)
+	newRefreshToken, err := generateRefreshToken(userID, currentVersion, h.Service.Cfg.EnvVars.JwtSecretKey)
 	if err != nil {
 		logger.Get().Error("failed to generate refresh token on refresh", zap.Uint("user_id", userID), zap.Error(err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate refresh token"})
@@ -196,6 +241,25 @@ func (h *UserHandler) RefreshToken(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"access_token": accessToken, "refresh_token": newRefreshToken})
+}
+
+// Logout revokes all of the user's outstanding refresh tokens by
+// incrementing their token version.
+// POST /v1/auth/logout
+func (h *UserHandler) Logout(c *gin.Context) {
+	user, err := util.GetUserFromContext(c)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	if err := h.Service.LogoutUser(user.ID); err != nil {
+		logger.Get().Error("failed to revoke refresh tokens on logout", zap.Uint("user_id", user.ID), zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to log out"})
+		return
+	}
+
+	c.Status(http.StatusNoContent)
 }
 
 // VerifyToken verifies a user's JWT token.
@@ -284,7 +348,9 @@ func (h *UserHandler) UpdateSettings(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Settings updated successfully"})
 }
 
-// UpdatePersonalization updates a user's personalization settings.
+// UpdatePersonalization partially updates a user's personalization settings.
+// Only fields present in the request body are written; omitted fields keep
+// their current values.
 func (h *UserHandler) UpdatePersonalization(c *gin.Context) {
 	user, err := util.GetUserFromContext(c)
 	if err != nil {
@@ -293,23 +359,36 @@ func (h *UserHandler) UpdatePersonalization(c *gin.Context) {
 	}
 
 	var req struct {
-		UnitSystem     string `json:"unit_system"`
-		Requirements   string `json:"requirements"`
-		CookingContext string `json:"cooking_context"`
+		UnitSystem     *string `json:"unit_system"`
+		Requirements   *string `json:"requirements"`
+		CookingContext *string `json:"cooking_context"`
+		UID            *string `json:"uid"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
 		return
 	}
 
-	updatedPersonalization := &models.Personalization{
+	if req.UnitSystem != nil && *req.UnitSystem != "us_customary" && *req.UnitSystem != "metric" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "unit_system must be 'us_customary' or 'metric'"})
+		return
+	}
+
+	update := &models.PersonalizationUpdate{
 		UnitSystem:     req.UnitSystem,
 		Requirements:   req.Requirements,
 		CookingContext: req.CookingContext,
-		UID:            user.Personalization.UID,
+	}
+	if req.UID != nil {
+		uid, parseErr := uuid.Parse(*req.UID)
+		if parseErr != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "uid must be a valid UUID"})
+			return
+		}
+		update.UID = &uid
 	}
 
-	if err := h.Service.UpdatePersonalization(user, updatedPersonalization); err != nil {
+	if err := h.Service.UpdatePersonalization(user, update); err != nil {
 		logger.Get().Error("failed to update personalization", zap.Uint("user_id", user.ID), zap.Error(err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update personalization"})
 		return

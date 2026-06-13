@@ -5,39 +5,52 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"gorm.io/gorm"
 )
 
 // Family is the model for a family group.
+// gorm.Model fields are declared explicitly so JSON serializes snake_case.
 type Family struct {
-	gorm.Model
-	Name    string         `gorm:"not null"`
-	OwnerID uint           `gorm:"index;not null"`
-	Owner   *User          `gorm:"foreignKey:OwnerID"`
-	Members []FamilyMember `gorm:"foreignKey:FamilyID"`
+	ID        uint           `gorm:"primarykey" json:"id"`
+	CreatedAt time.Time      `json:"created_at"`
+	UpdatedAt time.Time      `json:"updated_at"`
+	DeletedAt gorm.DeletedAt `gorm:"index" json:"-"`
+	Name      string         `gorm:"not null" json:"name"`
+	OwnerID   uint           `gorm:"index;not null" json:"owner_id"`
+	Owner     *User          `gorm:"foreignKey:OwnerID" json:"-"`
+	Members   []FamilyMember `gorm:"foreignKey:FamilyID" json:"members"`
 }
 
 // FamilyMember is the model for a member within a family.
+// gorm.Model fields are declared explicitly so JSON serializes snake_case.
 type FamilyMember struct {
-	gorm.Model
-	FamilyID       uint            `gorm:"index;not null"`
-	Name           string          `gorm:"not null"`
-	Relationship   string          `gorm:"type:text"`
-	UserID         *uint           `gorm:"index"`
-	User           *User           `gorm:"foreignKey:UserID"`
-	DietaryProfile *DietaryProfile `gorm:"foreignKey:MemberID"`
+	ID             uint            `gorm:"primarykey" json:"id"`
+	CreatedAt      time.Time       `json:"created_at"`
+	UpdatedAt      time.Time       `json:"updated_at"`
+	DeletedAt      gorm.DeletedAt  `gorm:"index" json:"-"`
+	FamilyID       uint            `gorm:"index;not null" json:"family_id"`
+	Name           string          `gorm:"not null" json:"name"`
+	Relationship   string          `gorm:"type:text" json:"relationship"`
+	UserID         *uint           `gorm:"index" json:"user_id"`
+	User           *User           `gorm:"foreignKey:UserID" json:"-"`
+	DietaryProfile *DietaryProfile `gorm:"foreignKey:MemberID" json:"dietary_profile"`
 }
 
 // DietaryProfile is the model for a family member's dietary information.
+// gorm.Model fields are declared explicitly so JSON serializes snake_case.
 type DietaryProfile struct {
-	gorm.Model
-	MemberID     uint        `gorm:"uniqueIndex;not null"`
-	Allergies    AllergyList `gorm:"type:jsonb"`
-	Intolerances StringList  `gorm:"type:jsonb"`
-	Restrictions StringList  `gorm:"type:jsonb"`
-	Preferences  StringList  `gorm:"type:jsonb"`
-	MedicalNotes string      `gorm:"type:text"`
+	ID           uint           `gorm:"primarykey" json:"id"`
+	CreatedAt    time.Time      `json:"created_at"`
+	UpdatedAt    time.Time      `json:"updated_at"`
+	DeletedAt    gorm.DeletedAt `gorm:"index" json:"-"`
+	MemberID     uint           `gorm:"uniqueIndex;not null" json:"member_id"`
+	Allergies    AllergyList    `gorm:"type:jsonb" json:"allergies"`
+	Intolerances StringList     `gorm:"type:jsonb" json:"intolerances"`
+	Restrictions StringList     `gorm:"type:jsonb" json:"restrictions"`
+	Preferences  StringList     `gorm:"type:jsonb" json:"preferences"`
+	MedicalNotes string         `gorm:"type:text" json:"medical_notes"`
 }
 
 // Allergy represents a single allergy entry.

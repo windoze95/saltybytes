@@ -99,15 +99,15 @@ type googleSearchResponse struct {
 }
 
 type googleSearchItem struct {
-	Title   string             `json:"title"`
-	Link    string             `json:"link"`
-	Snippet string             `json:"snippet"`
-	Pagemap *googlePagemap     `json:"pagemap"`
+	Title   string         `json:"title"`
+	Link    string         `json:"link"`
+	Snippet string         `json:"snippet"`
+	Pagemap *googlePagemap `json:"pagemap"`
 }
 
 type googlePagemap struct {
-	CSEThumbnail []googleThumbnail  `json:"cse_thumbnail"`
-	AggregateRating []googleRating  `json:"aggregaterating"`
+	CSEThumbnail    []googleThumbnail `json:"cse_thumbnail"`
+	AggregateRating []googleRating    `json:"aggregaterating"`
 }
 
 type googleThumbnail struct {

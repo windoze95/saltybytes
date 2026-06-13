@@ -42,7 +42,7 @@ func (r *SearchCacheRepository) IncrementHitCount(id uint) error {
 	return r.DB.Model(&models.SearchCache{}).
 		Where("id = ?", id).
 		Updates(map[string]interface{}{
-			"hit_count":      gorm.Expr("hit_count + 1"),
+			"hit_count":        gorm.Expr("hit_count + 1"),
 			"last_accessed_at": time.Now(),
 		}).Error
 }

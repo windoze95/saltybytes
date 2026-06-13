@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	openai "github.com/sashabaranov/go-openai"
@@ -22,8 +23,34 @@ func NewWhisperProvider(apiKey string) *WhisperProvider {
 	return &WhisperProvider{apiKey: apiKey}
 }
 
-// TranscribeAudio transcribes audio data to text using Whisper.
-func (p *WhisperProvider) TranscribeAudio(ctx context.Context, audioData []byte) (string, error) {
+// whisperFormats lists the audio container formats the Whisper API accepts
+// as upload file extensions.
+var whisperFormats = map[string]bool{
+	"flac": true,
+	"m4a":  true,
+	"mp3":  true,
+	"mp4":  true,
+	"mpeg": true,
+	"mpga": true,
+	"oga":  true,
+	"ogg":  true,
+	"wav":  true,
+	"webm": true,
+}
+
+// audioFilePath derives the synthetic upload filename Whisper uses to detect
+// the audio container format. Empty or unrecognized formats default to webm.
+func audioFilePath(format string) string {
+	ext := strings.ToLower(strings.TrimPrefix(strings.TrimSpace(format), "."))
+	if !whisperFormats[ext] {
+		ext = "webm"
+	}
+	return "audio." + ext
+}
+
+// TranscribeAudio transcribes audio data to text using Whisper. format is the
+// audio container format (e.g. "webm", "m4a"); empty defaults to webm.
+func (p *WhisperProvider) TranscribeAudio(ctx context.Context, audioData []byte, format string) (string, error) {
 	if len(audioData) == 0 {
 		return "", errors.New("audio data is empty")
 	}
@@ -36,7 +63,7 @@ func (p *WhisperProvider) TranscribeAudio(ctx context.Context, audioData []byte)
 		resp, err := client.CreateTranscription(ctx, openai.AudioRequest{
 			Model:    openai.Whisper1,
 			Reader:   bytes.NewReader(audioData),
-			FilePath: "audio.webm",
+			FilePath: audioFilePath(format),
 		})
 		if err == nil {
 			if resp.Text == "" {

@@ -28,6 +28,17 @@ type StreamEvent struct {
 	ErrorKind   string          `json:"error_kind,omitempty"`
 }
 
+// StreamingTextProvider is implemented by text providers that support
+// streaming recipe generation with incremental progress events. Providers
+// that do not implement it fall back to synchronous generation.
+type StreamingTextProvider interface {
+	TextProvider
+	StreamGenerateRecipe(ctx context.Context, req RecipeRequest, events chan<- StreamEvent) (*RecipeResult, error)
+}
+
+// Compile-time check that the Anthropic provider supports streaming.
+var _ StreamingTextProvider = (*AnthropicProvider)(nil)
+
 // TrySendEvent sends an event to the channel, returning false if the context
 // is cancelled (e.g. client disconnected). This prevents the producer goroutine
 // from blocking forever on a full or unconsumed channel.

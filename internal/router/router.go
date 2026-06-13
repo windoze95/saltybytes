@@ -1,6 +1,8 @@
 package router
 
 import (
+	"time"
+
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 	"github.com/windoze95/saltybytes-api/internal/ai"
@@ -11,6 +13,7 @@ import (
 	"github.com/windoze95/saltybytes-api/internal/repository"
 	"github.com/windoze95/saltybytes-api/internal/service"
 	"github.com/windoze95/saltybytes-api/internal/ws"
+	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
 
@@ -18,6 +21,15 @@ import (
 func SetupRouter(cfg *config.Config, database *gorm.DB) *gin.Engine {
 	// Create default Gin router
 	r := gin.Default()
+
+	// Trust only the load balancer in front of the app (private VPC ranges).
+	// Gin's default trusts every hop, which lets clients spoof
+	// X-Forwarded-For and defeat the per-IP rate limiting below. With this
+	// set, ClientIP() resolves to the rightmost non-private address in the
+	// chain (the real client as seen by the ALB).
+	if err := r.SetTrustedProxies([]string{"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "127.0.0.1", "::1"}); err != nil {
+		logger.Get().Error("failed to set trusted proxies", zap.Error(err))
+	}
 
 	config := cors.DefaultConfig()
 	config.AllowCredentials = true
@@ -27,6 +39,7 @@ func SetupRouter(cfg *config.Config, database *gorm.DB) *gin.Engine {
 		"https://saltybytes.ai",
 		"https://www.saltybytes.ai",
 	}
+	config.AddAllowHeaders("Authorization", "X-SaltyBytes-Identifier")
 	r.Use(cors.New(config))
 
 	// Add request ID middleware for request correlation
@@ -44,8 +57,12 @@ func SetupRouter(cfg *config.Config, database *gorm.DB) *gin.Engine {
 	userService := service.NewUserService(cfg, userRepo)
 	userHandler := handlers.NewUserHandler(userService)
 
+	// Subscription service (shared by AI-generation, allergen, search and
+	// subscription routes for usage gating)
+	subService := service.NewSubscriptionService(cfg, userRepo)
+
 	// AI provider setup
-	textProvider := ai.NewAnthropicProvider(cfg.EnvVars.AnthropicAPIKey, cfg.Prompts)
+	textProvider := ai.NewAnthropicProvider(cfg.EnvVars.AnthropicAPIKey, cfg.EnvVars.AnthropicModel, cfg.Prompts)
 	imageProvider := ai.NewDALLEProvider(cfg.EnvVars.OpenAIAPIKey)
 
 	// AI observability middleware
@@ -60,19 +77,25 @@ func SetupRouter(cfg *config.Config, database *gorm.DB) *gin.Engine {
 	recipeService.EmbedProvider = embedProvider
 	recipeService.VectorRepo = vectorRepo
 	recipeHandler := handlers.NewRecipeHandler(recipeService)
+	recipeHandler.SubService = subService
 
 	// Import-related routes setup
-	previewProvider := ai.NewAnthropicLightProvider(cfg.EnvVars.AnthropicAPIKey, cfg.Prompts)
+	previewProvider := ai.NewAnthropicLightProvider(cfg.EnvVars.AnthropicAPIKey, cfg.EnvVars.AnthropicLightModel, cfg.Prompts)
 	previewProvider.WithMiddleware(aiMW)
 	canonicalRepo := repository.NewCanonicalRecipeRepository(database)
 	importService := service.NewImportService(cfg, recipeRepo, recipeService, textProvider, textProvider, previewProvider)
 	importService.CanonicalRepo = canonicalRepo
+	// Portion estimation for imports that lack a serving count (cheap Haiku task)
+	importService.Normalize = service.NewNormalizeService(cfg, previewProvider)
 	importHandler := handlers.NewImportHandler(importService)
 	// MultiResolver is wired later after search setup; set via field
 
 	// Group for API routes that don't require token verification
 	apiPublic := r.Group("/v1")
 	apiPublic.Use(middleware.CheckIDHeader(cfg.EnvVars.IDHeader))
+	// Rate-limit the public auth endpoints per IP (5 req/min, burst 10) to
+	// slow down credential stuffing and signup abuse.
+	apiPublic.Use(middleware.RateLimitByIP(5, 10, 5*time.Minute, 15*time.Minute))
 	{
 		// User-related routes
 
@@ -82,11 +105,6 @@ func SetupRouter(cfg *config.Config, database *gorm.DB) *gin.Engine {
 		apiPublic.POST("/auth/login", userHandler.LoginUser)
 		// Refresh an access token
 		apiPublic.POST("/auth/refresh", userHandler.RefreshToken)
-
-		// Recipe-related routes
-
-		// Get a single recipe by it's ID
-		apiPublic.GET("/recipes/:recipe_id", recipeHandler.GetRecipe)
 	}
 
 	// Group for API routes that require token verification
@@ -97,6 +115,8 @@ func SetupRouter(cfg *config.Config, database *gorm.DB) *gin.Engine {
 
 		// User-related routes
 
+		// Log out: revoke all outstanding refresh tokens
+		apiProtected.POST("/auth/logout", middleware.AttachUserToContext(userService), userHandler.Logout)
 		// Verify a user's token
 		apiProtected.GET("/users/verify", middleware.AttachUserToContext(userService), userHandler.VerifyToken)
 		// Get a user by their ID
@@ -106,6 +126,10 @@ func SetupRouter(cfg *config.Config, database *gorm.DB) *gin.Engine {
 
 		// Recipe-related routes
 
+		// Get a single recipe by its ID (any authenticated user may view any
+		// recipe; kept out of the public group to prevent anonymous
+		// sequential-ID enumeration)
+		apiProtected.GET("/recipes/:recipe_id", middleware.AttachUserToContext(userService), recipeHandler.GetRecipe)
 		// List the authenticated user's recipes
 		apiProtected.GET("/recipes", middleware.AttachUserToContext(userService), recipeHandler.ListRecipes)
 		// Generate a new recipe with chat
@@ -129,6 +153,8 @@ func SetupRouter(cfg *config.Config, database *gorm.DB) *gin.Engine {
 
 		// Recipe tree/branching routes
 		treeService := service.NewRecipeTreeService(cfg, recipeRepo)
+		treeService.EmbedProvider = embedProvider
+		treeService.VectorRepo = vectorRepo
 		treeHandler := handlers.NewRecipeTreeHandler(treeService)
 
 		apiProtected.GET("/recipes/:recipe_id/tree", middleware.AttachUserToContext(userService), treeHandler.GetTree)
@@ -148,9 +174,6 @@ func SetupRouter(cfg *config.Config, database *gorm.DB) *gin.Engine {
 	apiProtected.DELETE("/family/members/:member_id", middleware.AttachUserToContext(userService), familyHandler.DeleteMember)
 	apiProtected.PUT("/family/members/:member_id/dietary", middleware.AttachUserToContext(userService), familyHandler.UpdateDietaryProfile)
 	apiProtected.POST("/family/members/:member_id/dietary/interview", middleware.AttachUserToContext(userService), familyHandler.DietaryInterview)
-
-	// Subscription service (shared by allergen + subscription routes)
-	subService := service.NewSubscriptionService(cfg, userRepo)
 
 	// Allergen analysis routes setup
 	allergenRepo := repository.NewAllergenRepository(database)
@@ -176,6 +199,9 @@ func SetupRouter(cfg *config.Config, database *gorm.DB) *gin.Engine {
 	searchService.EmbedProvider = embedProvider
 	searchService.StartBackgroundTasks()
 	importService.StartCanonicalBackgroundTasks()
+
+	// Backfill missing recipe/canonical embeddings in the background
+	service.StartEmbeddingBackfill(vectorRepo, embedProvider)
 
 	// Multi-recipe resolution (detection happens on click via preview, not search)
 	multiRegistry := service.NewMultiRecipeRegistry()

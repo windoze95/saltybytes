@@ -96,18 +96,44 @@ func (s *UserService) CreateUser(username, firstName, email, password string) (*
 	return user, nil
 }
 
+// ErrInvalidCredentials is returned for every login failure mode (unknown
+// username, missing auth record, or wrong password) so the API cannot be
+// used to enumerate usernames and never leaks internal error details.
+var ErrInvalidCredentials = errors.New("invalid username or password")
+
+// dummyBcryptHash is a cost-10 bcrypt hash (of a fixed throwaway string) that
+// is compared against when the username does not exist, so unknown-user and
+// wrong-password failures take comparable time. Without it, the early return
+// skips the ~50-100ms bcrypt compare and response latency leaks whether a
+// username exists.
+var dummyBcryptHash = []byte("$2a$10$eTN04vDBzQvPQeH2t2QGHe/dB4sezgOEiN7Jd9/BB4cv7Hkgimei6")
+
 // LoginUser logs in a user.
 func (s *UserService) LoginUser(username, password string) (*models.User, error) {
 	user, err := s.Repo.GetUserAuthByUsername(username)
-	if err != nil {
-		return nil, err
+	if err != nil || user == nil || user.Auth == nil {
+		// Burn a bcrypt compare so this path takes as long as a real
+		// password check (prevents username enumeration via timing).
+		_ = bcrypt.CompareHashAndPassword(dummyBcryptHash, []byte(password))
+		return nil, ErrInvalidCredentials
 	}
 
 	if err := bcrypt.CompareHashAndPassword([]byte(user.Auth.HashedPassword), []byte(password)); err != nil {
-		return nil, errors.New("invalid username or password")
+		return nil, ErrInvalidCredentials
 	}
 
 	return user, nil
+}
+
+// GetUserWithAuthByID gets a user with their auth record (token version) loaded.
+func (s *UserService) GetUserWithAuthByID(userID uint) (*models.User, error) {
+	return s.Repo.GetUserWithAuthByID(userID)
+}
+
+// LogoutUser revokes all outstanding refresh tokens for a user by
+// incrementing their token version.
+func (s *UserService) LogoutUser(userID uint) error {
+	return s.Repo.IncrementTokenVersion(userID)
 }
 
 // ToUserResponse converts a User to a UserResponse.
@@ -141,9 +167,13 @@ func (s *UserService) GetUserByID(userID uint) (*models.User, error) {
 	return s.Repo.GetUserByID(userID)
 }
 
-// UpdatePersonalization updates a user's personalization settings.
-func (s *UserService) UpdatePersonalization(user *models.User, updatedPersonalization *models.Personalization) error {
-	return s.Repo.UpdatePersonalization(user.ID, updatedPersonalization)
+// UpdatePersonalization partially updates a user's personalization settings.
+// Nil fields in the update are left unchanged.
+func (s *UserService) UpdatePersonalization(user *models.User, update *models.PersonalizationUpdate) error {
+	if update.UnitSystem != nil && *update.UnitSystem != "us_customary" && *update.UnitSystem != "metric" {
+		return fmt.Errorf("unit_system must be 'us_customary' or 'metric'")
+	}
+	return s.Repo.UpdatePersonalization(user.ID, update)
 }
 
 // UpdateUser updates a user's profile fields (first name, email).

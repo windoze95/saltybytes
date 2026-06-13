@@ -48,8 +48,10 @@ func (h *SubscriptionHandler) UpgradeSubscription(c *gin.Context) {
 
 	sub, err := h.Service.UpgradeSubscription(user.ID)
 	if err != nil {
-		logger.Get().Error("failed to upgrade subscription", zap.Uint("user_id", user.ID), zap.Error(err))
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to upgrade subscription"})
+		// Paid plans are not wired up yet; surface that honestly rather than
+		// masking it as a server error.
+		logger.Get().Warn("subscription upgrade requested but unavailable", zap.Uint("user_id", user.ID), zap.Error(err))
+		c.JSON(http.StatusNotImplemented, gin.H{"error": err.Error()})
 		return
 	}
 

@@ -14,12 +14,12 @@ import (
 // FamilyService is the business logic layer for family-related operations.
 type FamilyService struct {
 	Cfg        *config.Config
-	Repo       *repository.FamilyRepository
+	Repo       repository.FamilyRepo
 	AIProvider ai.TextProvider
 }
 
 // NewFamilyService is the constructor function for initializing a new FamilyService.
-func NewFamilyService(cfg *config.Config, repo *repository.FamilyRepository, aiProvider ai.TextProvider) *FamilyService {
+func NewFamilyService(cfg *config.Config, repo repository.FamilyRepo, aiProvider ai.TextProvider) *FamilyService {
 	return &FamilyService{
 		Cfg:        cfg,
 		Repo:       repo,
@@ -110,16 +110,50 @@ func (s *FamilyService) UpdateDietaryProfile(memberID uint, profile *models.Diet
 	return s.Repo.UpdateDietaryProfile(existing)
 }
 
-// DietaryInterview conducts a multi-turn dietary interview for a family member.
-func (s *FamilyService) DietaryInterview(ctx context.Context, memberID uint, messages []ai.Message) (string, error) {
+// DietaryInterview conducts a multi-turn dietary interview for a family
+// member. It returns the assistant's response text, whether the interview is
+// complete, and — only when complete — the structured dietary profile
+// extracted from the conversation.
+func (s *FamilyService) DietaryInterview(ctx context.Context, memberID uint, messages []ai.Message) (string, bool, *models.DietaryProfile, error) {
 	if s.AIProvider == nil {
-		return "", errors.New("AI provider is not configured")
+		return "", false, nil, errors.New("AI provider is not configured")
 	}
 
 	member, err := s.Repo.GetFamilyMemberByID(memberID)
 	if err != nil {
-		return "", fmt.Errorf("failed to get family member: %w", err)
+		return "", false, nil, fmt.Errorf("failed to get family member: %w", err)
 	}
 
-	return s.AIProvider.DietaryInterview(ctx, messages, member.Name)
+	result, err := s.AIProvider.DietaryInterview(ctx, messages, member.Name)
+	if err != nil {
+		return "", false, nil, err
+	}
+
+	if !result.Complete || result.Profile == nil {
+		return result.Response, false, nil, nil
+	}
+
+	return result.Response, true, dietaryProfileFromAI(result.Profile), nil
+}
+
+// dietaryProfileFromAI converts the AI-layer dietary profile into the
+// persistence model. ID and MemberID are intentionally left zero: the profile
+// is returned to the client for confirmation, not persisted here.
+func dietaryProfileFromAI(p *ai.DietaryProfileResult) *models.DietaryProfile {
+	allergies := make(models.AllergyList, len(p.Allergies))
+	for i, a := range p.Allergies {
+		allergies[i] = models.Allergy{
+			Name:     a.Name,
+			Severity: a.Severity,
+			SubForms: a.SubForms,
+			Notes:    a.Notes,
+		}
+	}
+	return &models.DietaryProfile{
+		Allergies:    allergies,
+		Intolerances: models.StringList(p.Intolerances),
+		Restrictions: models.StringList(p.Restrictions),
+		Preferences:  models.StringList(p.Preferences),
+		MedicalNotes: p.MedicalNotes,
+	}
 }

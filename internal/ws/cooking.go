@@ -3,6 +3,7 @@ package ws
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -15,6 +16,7 @@ import (
 	"github.com/windoze95/saltybytes-api/internal/logger"
 	"github.com/windoze95/saltybytes-api/internal/models"
 	"github.com/windoze95/saltybytes-api/internal/service"
+	"github.com/windoze95/saltybytes-api/internal/util"
 	"go.uber.org/zap"
 )
 
@@ -30,6 +32,9 @@ const (
 	MsgTypeNavigateCommand = "navigate_command" // Voice-driven navigation
 	MsgTypeError           = "error"            // Error message
 	MsgTypeConnected       = "connected"        // Connection confirmed
+	MsgTypeStepChange      = "step_change"      // User moved to a different recipe step
+	MsgTypePing            = "ping"             // Client keepalive probe
+	MsgTypePong            = "pong"             // Server keepalive reply
 )
 
 // WSMessage is the envelope for all messages sent over the cooking WebSocket.
@@ -55,10 +60,19 @@ type EphemeralEditPayload struct {
 	Modification string `json:"modification"`
 }
 
-// VoiceTranscriptPayload carries a transcription from audio input.
+// VoiceTranscriptPayload carries a transcription from audio input. When
+// Transcript is set (on-device STT), Whisper is skipped and the text goes
+// straight to intent classification. Otherwise AudioData is transcribed
+// first; Format optionally names its container format (e.g. "webm", "m4a").
 type VoiceTranscriptPayload struct {
 	Transcript string `json:"transcript"`
 	AudioData  []byte `json:"audio_data,omitempty"` // base64-encoded
+	Format     string `json:"format,omitempty"`     // audio format for AudioData; defaults to webm
+}
+
+// StepChangePayload reports which recipe step the user is currently viewing.
+type StepChangePayload struct {
+	Step int `json:"step"`
 }
 
 // VoiceIntentPayload carries the classified intent of a voice command.
@@ -118,6 +132,12 @@ func NewCookingHandler(hub *Hub, jwtSecret string, voiceService *service.VoiceSe
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool {
 		origin := r.Header.Get("Origin")
+		// Non-browser clients (e.g. the Flutter app's WebSocketChannel) send
+		// no Origin header. Allow them; session auth is still enforced via
+		// the ?token= query parameter.
+		if origin == "" {
+			return true
+		}
 		switch origin {
 		case "https://saltybytes.ai",
 			"https://www.saltybytes.ai",
@@ -205,13 +225,7 @@ func (ch *CookingHandler) HandleCookingSession(c *gin.Context) {
 	}
 
 	// Create client and register with hub
-	client := &Client{
-		Hub:    ch.Hub,
-		Conn:   conn,
-		Send:   make(chan []byte, 256),
-		RoomID: recipeID,
-		UserID: userID,
-	}
+	client := NewClient(ch.Hub, conn, recipeID, userID)
 	ch.Hub.Register <- client
 
 	// Send connected confirmation
@@ -223,7 +237,7 @@ func (ch *CookingHandler) HandleCookingSession(c *gin.Context) {
 		Type:    MsgTypeConnected,
 		Payload: connectedPayload,
 	})
-	client.Send <- connectedMsg
+	client.TrySend(connectedMsg)
 
 	log.Info("cooking session started",
 		zap.String("recipe_id", recipeID),
@@ -256,7 +270,9 @@ func (ch *CookingHandler) handleMessage(client *Client, data []byte) {
 
 	switch msg.Type {
 	case MsgTypeChatMessage:
-		ch.handleChatMessage(client, msg.Payload)
+		// Slow (AI round-trip): run async so the read pump keeps draining
+		// cheap messages like step_change and ephemeral edits.
+		ch.dispatchAsync(client, msg.Payload, ch.handleChatMessage)
 
 	case MsgTypeEphemeralEdit:
 		// Broadcast ephemeral edit to all clients in the room
@@ -275,11 +291,71 @@ func (ch *CookingHandler) handleMessage(client *Client, data []byte) {
 		}
 
 	case MsgTypeVoiceTranscript:
-		ch.handleVoiceTranscript(client, msg.Payload)
+		// Slow (Whisper and/or AI round-trip): run async.
+		ch.dispatchAsync(client, msg.Payload, ch.handleVoiceTranscript)
+
+	case MsgTypeStepChange:
+		ch.handleStepChange(client, msg.Payload)
+
+	case MsgTypePing:
+		pongMsg, _ := json.Marshal(WSMessage{
+			Type:    MsgTypePong,
+			Payload: json.RawMessage(`{}`),
+		})
+		client.TrySend(pongMsg)
 
 	default:
 		ch.sendError(client, "unknown message type: "+msg.Type)
 	}
+}
+
+// dispatchAsync runs a potentially slow handler (cooking QA, voice
+// processing) in its own goroutine so it doesn't block the client's read
+// pump. Concurrency is bounded per client; excess requests are rejected.
+func (ch *CookingHandler) dispatchAsync(client *Client, payload json.RawMessage, handler func(*Client, json.RawMessage)) {
+	if !client.tryAcquireHandlerSlot() {
+		ch.sendError(client, "too many requests in flight; please wait")
+		return
+	}
+	go func() {
+		defer client.releaseHandlerSlot()
+		// Recover here: gin's Recovery middleware does not cover detached
+		// goroutines, so a panic in one session's handler would otherwise
+		// crash the whole process.
+		defer util.RecoverPanic("cooking ws async handler")
+		handler(client, payload)
+	}()
+}
+
+// handleStepChange records the recipe step the user is currently viewing so
+// subsequent cooking QA answers can use it as context.
+func (ch *CookingHandler) handleStepChange(client *Client, payload json.RawMessage) {
+	var stepChange StepChangePayload
+	if err := json.Unmarshal(payload, &stepChange); err != nil {
+		ch.sendError(client, "invalid step change payload")
+		return
+	}
+
+	if stepChange.Step < 0 {
+		ch.sendError(client, "step must be non-negative")
+		return
+	}
+
+	client.SetCurrentStep(stepChange.Step)
+}
+
+// recipeContextWithStep appends the client's current step (if known) to the
+// recipe context so the AI can answer relative to where the user is.
+func recipeContextWithStep(client *Client, recipeContext string) string {
+	step, ok := client.CurrentStep()
+	if !ok {
+		return recipeContext
+	}
+	stepNote := fmt.Sprintf("The user is currently on step %d.", step)
+	if recipeContext == "" {
+		return stepNote
+	}
+	return recipeContext + "\n\n" + stepNote
 }
 
 // handleChatMessage processes a cooking Q&A question.
@@ -305,7 +381,7 @@ func (ch *CookingHandler) handleChatMessage(client *Client, payload json.RawMess
 		zap.Uint("user_id", client.UserID),
 	)
 
-	answer, err := ch.VoiceService.AnswerCookingQuestion(ctx, chatMsg.Message, chatMsg.RecipeContext)
+	answer, err := ch.VoiceService.AnswerCookingQuestion(ctx, chatMsg.Message, recipeContextWithStep(client, chatMsg.RecipeContext))
 	if err != nil {
 		log.Error("failed to get cooking answer",
 			zap.String("room_id", client.RoomID),
@@ -323,7 +399,7 @@ func (ch *CookingHandler) handleChatMessage(client *Client, payload json.RawMess
 		Type:    MsgTypeChatResponse,
 		Payload: responsePayload,
 	})
-	client.Send <- responseMsg
+	client.TrySend(responseMsg)
 }
 
 // handleVoiceTranscript processes a voice transcription.
@@ -352,7 +428,7 @@ func (ch *CookingHandler) handleVoiceTranscript(client *Client, payload json.Raw
 			zap.String("room_id", client.RoomID),
 			zap.Uint("user_id", client.UserID),
 		)
-		intent, err = ch.VoiceService.ProcessVoiceCommand(ctx, transcript.AudioData)
+		intent, err = ch.VoiceService.ProcessVoiceCommand(ctx, transcript.AudioData, transcript.Format)
 	} else {
 		log.Info("classifying voice intent from text",
 			zap.String("room_id", client.RoomID),
@@ -381,7 +457,7 @@ func (ch *CookingHandler) handleVoiceTranscript(client *Client, payload json.Raw
 		Type:    MsgTypeVoiceIntent,
 		Payload: intentPayload,
 	})
-	client.Send <- intentMsg
+	client.TrySend(intentMsg)
 
 	// Map intent to specific command messages
 	switch intent.Type {
@@ -398,7 +474,7 @@ func (ch *CookingHandler) handleVoiceTranscript(client *Client, payload json.Raw
 			Type:    MsgTypeScrollCommand,
 			Payload: scrollPayload,
 		})
-		client.Send <- scrollMsg
+		client.TrySend(scrollMsg)
 
 	case "navigate":
 		navPayload, _ := json.Marshal(NavigateCommandPayload{
@@ -408,10 +484,10 @@ func (ch *CookingHandler) handleVoiceTranscript(client *Client, payload json.Raw
 			Type:    MsgTypeNavigateCommand,
 			Payload: navPayload,
 		})
-		client.Send <- navMsg
+		client.TrySend(navMsg)
 
 	case "question":
-		answer, err := ch.VoiceService.AnswerCookingQuestion(ctx, intent.Text, "")
+		answer, err := ch.VoiceService.AnswerCookingQuestion(ctx, intent.Text, recipeContextWithStep(client, ""))
 		if err != nil {
 			log.Error("failed to answer voice question",
 				zap.String("room_id", client.RoomID),
@@ -428,7 +504,7 @@ func (ch *CookingHandler) handleVoiceTranscript(client *Client, payload json.Raw
 			Type:    MsgTypeChatResponse,
 			Payload: chatPayload,
 		})
-		client.Send <- chatMsg
+		client.TrySend(chatMsg)
 
 	case "ignore":
 		// Do nothing
@@ -450,5 +526,5 @@ func (ch *CookingHandler) sendError(client *Client, message string) {
 		Type:    MsgTypeError,
 		Payload: errPayload,
 	})
-	client.Send <- errMsg
+	client.TrySend(errMsg)
 }

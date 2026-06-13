@@ -1,53 +1,38 @@
 package service
 
 import (
+	"context"
 	"errors"
 	"fmt"
-	"time"
 
+	"github.com/windoze95/saltybytes-api/internal/ai"
 	"github.com/windoze95/saltybytes-api/internal/config"
 	"github.com/windoze95/saltybytes-api/internal/models"
 	"github.com/windoze95/saltybytes-api/internal/repository"
+	"github.com/windoze95/saltybytes-api/internal/util"
 )
 
 // RecipeTreeService is the business logic layer for recipe tree operations.
 type RecipeTreeService struct {
 	Cfg  *config.Config
-	Repo *repository.RecipeRepository
+	Repo repository.RecipeRepo
+	// Optional: set these to keep recipe embeddings in sync when switching
+	// the active node rewrites the recipe definition.
+	EmbedProvider ai.EmbeddingProvider
+	VectorRepo    repository.VectorRepo
 }
 
 // NewRecipeTreeService creates a new RecipeTreeService.
-func NewRecipeTreeService(cfg *config.Config, repo *repository.RecipeRepository) *RecipeTreeService {
+func NewRecipeTreeService(cfg *config.Config, repo repository.RecipeRepo) *RecipeTreeService {
 	return &RecipeTreeService{
 		Cfg:  cfg,
 		Repo: repo,
 	}
 }
 
-// NodeResponse is the response object for a single tree node, suitable for Flutter tree visualization.
-type NodeResponse struct {
-	ID          uint            `json:"id"`
-	ParentID    *uint           `json:"parent_id"`
-	BranchName  string          `json:"branch_name"`
-	Summary     string          `json:"summary"`
-	Type        models.RecipeType `json:"type"`
-	IsActive    bool            `json:"is_active"`
-	IsEphemeral bool            `json:"is_ephemeral"`
-	CreatedByID uint            `json:"created_by_id"`
-	CreatedAt   time.Time       `json:"created_at"`
-	Children    []NodeResponse  `json:"children"`
-}
-
-// TreeResponse is the response object for a full recipe tree.
-type FullTreeResponse struct {
-	TreeID     uint          `json:"tree_id"`
-	RecipeID   uint          `json:"recipe_id"`
-	RootNodeID *uint         `json:"root_node_id"`
-	RootNode   *NodeResponse `json:"root_node"`
-}
-
-// GetTree retrieves the full tree for a recipe and returns it as a nested structure.
-func (s *RecipeTreeService) GetTree(recipeID uint) (*FullTreeResponse, error) {
+// GetTree retrieves the full tree for a recipe as a flat node list. Clients
+// rebuild the tree structure from each node's parent_id.
+func (s *RecipeTreeService) GetTree(recipeID uint) (*TreeResponse, error) {
 	treeRef, err := s.Repo.GetTreeByRecipeID(recipeID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get recipe tree: %w", err)
@@ -58,61 +43,17 @@ func (s *RecipeTreeService) GetTree(recipeID uint) (*FullTreeResponse, error) {
 		return nil, fmt.Errorf("failed to get tree nodes: %w", err)
 	}
 
-	// Build a map of nodeID -> node for quick lookup
-	nodeMap := make(map[uint]*NodeResponse)
-	for _, n := range tree.Nodes {
-		nodeMap[n.ID] = &NodeResponse{
-			ID:          n.ID,
-			ParentID:    n.ParentID,
-			BranchName:  n.BranchName,
-			Summary:     n.Summary,
-			Type:        n.Type,
-			IsActive:    n.IsActive,
-			IsEphemeral: n.IsEphemeral,
-			CreatedByID: n.CreatedByID,
-			CreatedAt:   n.CreatedAt,
-			Children:    []NodeResponse{},
-		}
+	if tree.Nodes == nil {
+		tree.Nodes = []models.RecipeNode{}
 	}
 
-	// Build the tree by linking children to parents
-	var rootNode *NodeResponse
-	for _, n := range tree.Nodes {
-		nr := nodeMap[n.ID]
-		if n.ParentID != nil {
-			if parent, ok := nodeMap[*n.ParentID]; ok {
-				parent.Children = append(parent.Children, *nr)
-			}
-		}
-		if tree.RootNodeID != nil && n.ID == *tree.RootNodeID {
-			rootNode = nr
-		}
-	}
-
-	// Re-assign children after all are linked (since we copied by value above)
-	if rootNode != nil {
-		rootNode = rebuildNode(rootNode, nodeMap, tree.Nodes)
-	}
-
-	return &FullTreeResponse{
-		TreeID:     tree.ID,
-		RecipeID:   tree.RecipeID,
-		RootNodeID: tree.RootNodeID,
-		RootNode:   rootNode,
+	return &TreeResponse{
+		TreeID:       tree.ID,
+		RecipeID:     tree.RecipeID,
+		RootNodeID:   tree.RootNodeID,
+		ActiveNodeID: activeNodeID(tree.Nodes),
+		Nodes:        tree.Nodes,
 	}, nil
-}
-
-// rebuildNode recursively builds the nested node tree from the flat node list.
-func rebuildNode(node *NodeResponse, nodeMap map[uint]*NodeResponse, allNodes []models.RecipeNode) *NodeResponse {
-	node.Children = []NodeResponse{}
-	for _, n := range allNodes {
-		if n.ParentID != nil && *n.ParentID == node.ID {
-			child := nodeMap[n.ID]
-			child = rebuildNode(child, nodeMap, allNodes)
-			node.Children = append(node.Children, *child)
-		}
-	}
-	return node
 }
 
 // CreateBranch creates a new branch node as a child of the specified parent node.
@@ -167,6 +108,19 @@ func (s *RecipeTreeService) SetActiveNode(recipeID uint, nodeID uint) error {
 		if err := s.Repo.UpdateRecipeFromNode(recipeID, node); err != nil {
 			return fmt.Errorf("failed to update recipe from node: %w", err)
 		}
+
+		// The recipe definition changed, so the stored embedding is stale.
+		// Regenerate it best-effort (warn-and-continue on failure) in the
+		// background with a bounded timeout, so the user-facing branch
+		// switch is not blocked on an external embedding API call.
+		response := node.Response
+		go func() {
+			defer util.RecoverPanic("recipe tree embedding refresh")
+
+			ctx, cancel := context.WithTimeout(context.Background(), embeddingCallTimeout)
+			defer cancel()
+			generateAndStoreRecipeEmbedding(ctx, s.EmbedProvider, s.VectorRepo, recipeID, response)
+		}()
 	}
 
 	return nil

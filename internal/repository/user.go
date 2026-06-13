@@ -33,9 +33,9 @@ func (r *UserRepository) CreateUser(user *models.User) (*models.User, error) {
 		// Check for unique constraints
 		if pgErr, ok := err.(*pq.Error); ok && pgErr.Code == "23505" {
 			if strings.Contains(pgErr.Error(), "username") {
-				return nil, errors.New("username already in use")
+				return nil, ErrUsernameTaken
 			} else if strings.Contains(pgErr.Error(), "email") {
-				return nil, errors.New("email already in use")
+				return nil, ErrEmailTaken
 			}
 		}
 		return nil, err
@@ -50,6 +50,19 @@ func (r *UserRepository) GetUserByID(userID uint) (*models.User, error) {
 	if err := r.DB.Preload("Settings").
 		Preload("Personalization").
 		Preload("Subscription").
+		Where("id = ?", userID).
+		First(&user).Error; err != nil {
+		return nil, err
+	}
+
+	return &user, nil
+}
+
+// GetUserWithAuthByID retrieves a user with their auth record preloaded.
+// Used by the refresh-token flow to check the current token version.
+func (r *UserRepository) GetUserWithAuthByID(userID uint) (*models.User, error) {
+	var user models.User
+	if err := r.DB.Preload("Auth").
 		Where("id = ?", userID).
 		First(&user).Error; err != nil {
 		return nil, err
@@ -105,8 +118,10 @@ func (r *UserRepository) UpdateUserSettingsKeepScreenAwake(userID uint, keepScre
 	return err
 }
 
-// UpdatePersonalization updates a user's personalization settings.
-func (r *UserRepository) UpdatePersonalization(userID uint, updatedPersonalization *models.Personalization) error {
+// UpdatePersonalization partially updates a user's personalization settings.
+// Only non-nil fields in the update are written; nil fields keep their
+// current values.
+func (r *UserRepository) UpdatePersonalization(userID uint, update *models.PersonalizationUpdate) error {
 	var existingPersonalization models.Personalization
 
 	// First, find the existing record
@@ -117,11 +132,19 @@ func (r *UserRepository) UpdatePersonalization(userID uint, updatedPersonalizati
 		return err
 	}
 
-	// Update fields
-	existingPersonalization.UnitSystem = updatedPersonalization.UnitSystem
-	existingPersonalization.Requirements = updatedPersonalization.Requirements
-	existingPersonalization.CookingContext = updatedPersonalization.CookingContext
-	existingPersonalization.UID = updatedPersonalization.UID
+	// Apply only the fields present in the update
+	if update.UnitSystem != nil {
+		existingPersonalization.UnitSystem = *update.UnitSystem
+	}
+	if update.Requirements != nil {
+		existingPersonalization.Requirements = *update.Requirements
+	}
+	if update.CookingContext != nil {
+		existingPersonalization.CookingContext = *update.CookingContext
+	}
+	if update.UID != nil {
+		existingPersonalization.UID = *update.UID
+	}
 
 	// Perform the update
 	err = r.DB.Save(&existingPersonalization).Error
@@ -130,6 +153,33 @@ func (r *UserRepository) UpdatePersonalization(userID uint, updatedPersonalizati
 	}
 
 	return err
+}
+
+// IncrementTokenVersion atomically increments a user's refresh-token version,
+// revoking all outstanding refresh tokens. UpdateColumn skips GORM hooks so
+// the UserAuth BeforeUpdate AuthType validation does not apply.
+func (r *UserRepository) IncrementTokenVersion(userID uint) error {
+	result := r.DB.Model(&models.UserAuth{}).
+		Where("user_id = ?", userID).
+		UpdateColumn("token_version", gorm.Expr("token_version + 1"))
+	if result.Error != nil {
+		logger.Get().Error("failed to increment token version", zap.Uint("user_id", userID), zap.Error(result.Error))
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return errors.New("no auth record found for user")
+	}
+	return nil
+}
+
+// CreateSubscription creates a subscription row for a user. Used to backfill
+// users that predate subscription rows being created at signup.
+func (r *UserRepository) CreateSubscription(sub *models.Subscription) error {
+	if err := r.DB.Create(sub).Error; err != nil {
+		logger.Get().Error("failed to create subscription", zap.Uint("user_id", sub.UserID), zap.Error(err))
+		return err
+	}
+	return nil
 }
 
 // IncrementSubscriptionUsage atomically increments a usage counter on the

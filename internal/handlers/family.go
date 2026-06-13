@@ -234,12 +234,17 @@ func (h *FamilyHandler) DietaryInterview(c *gin.Context) {
 		return
 	}
 
-	response, err := h.Service.DietaryInterview(c.Request.Context(), uint(memberID), req.Messages)
+	response, complete, profile, err := h.Service.DietaryInterview(c.Request.Context(), uint(memberID), req.Messages)
 	if err != nil {
 		logger.Get().Error("dietary interview failed", zap.Uint("member_id", uint(memberID)), zap.Error(err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "dietary interview failed"})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"response": response})
+	// profile is nil (serialized as JSON null) unless complete is true.
+	c.JSON(http.StatusOK, gin.H{
+		"response": response,
+		"complete": complete,
+		"profile":  profile,
+	})
 }

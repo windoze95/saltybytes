@@ -17,25 +17,25 @@ import (
 
 // MultiRecipeCard is a lightweight preview of one recipe found on a multi-recipe page.
 type MultiRecipeCard struct {
-	Title            string              `json:"title"`
-	ImageURL         string              `json:"image_url,omitempty"`
-	Description      string              `json:"description,omitempty"`
-	SourceURL        string              `json:"source_url"`
-	ExtractionStatus string              `json:"extraction_status"` // "pending", "extracting", "done", "failed"
-	RecipeDef        *models.RecipeDef   `json:"recipe,omitempty"`  // populated when done
-	Hashtags         []string            `json:"hashtags,omitempty"`
+	Title            string            `json:"title"`
+	ImageURL         string            `json:"image_url,omitempty"`
+	Description      string            `json:"description,omitempty"`
+	SourceURL        string            `json:"source_url"`
+	ExtractionStatus string            `json:"extraction_status"` // "pending", "extracting", "done", "failed"
+	RecipeDef        *models.RecipeDef `json:"recipe,omitempty"`  // populated when done
+	Hashtags         []string          `json:"hashtags,omitempty"`
 }
 
 // MultiRecipeEntry tracks the resolution state of a multi-recipe URL.
 type MultiRecipeEntry struct {
-	mu          sync.RWMutex
-	ID          string            `json:"multi_id"`
-	SourceURL   string            `json:"source_url"`
-	Status      string            `json:"status"` // "resolving", "resolved", "failed"
-	Cards       []MultiRecipeCard `json:"recipes"`
-	DetectedAt  time.Time         `json:"detected_at"`
-	ResolvedAt  *time.Time        `json:"resolved_at,omitempty"`
-	pageHTML    string            // stored for extraction, not serialized
+	mu         sync.RWMutex
+	ID         string            `json:"multi_id"`
+	SourceURL  string            `json:"source_url"`
+	Status     string            `json:"status"` // "resolving", "resolved", "failed"
+	Cards      []MultiRecipeCard `json:"recipes"`
+	DetectedAt time.Time         `json:"detected_at"`
+	ResolvedAt *time.Time        `json:"resolved_at,omitempty"`
+	pageHTML   string            // stored for extraction, not serialized
 }
 
 func (e *MultiRecipeEntry) GetCards() []MultiRecipeCard {
@@ -78,6 +78,17 @@ func NewMultiRecipeRegistry() *MultiRecipeRegistry {
 	return r
 }
 
+// shouldEvictEntry reports whether a registry entry in the given state is
+// eligible for eviction at time now. Entries still resolving are never
+// evicted; terminal entries (resolved/failed) are evicted once older than
+// the TTL.
+func shouldEvictEntry(status string, detectedAt time.Time, now time.Time) bool {
+	if status != "resolved" && status != "failed" {
+		return false
+	}
+	return now.Sub(detectedAt) > registryEvictionTTL
+}
+
 // evictionLoop periodically removes resolved/failed entries older than the TTL.
 func (r *MultiRecipeRegistry) evictionLoop() {
 	ticker := time.NewTicker(5 * time.Minute)
@@ -92,7 +103,7 @@ func (r *MultiRecipeRegistry) evictionLoop() {
 			status := entry.Status
 			detected := entry.DetectedAt
 			entry.mu.RUnlock()
-			if (status == "resolved" || status == "failed") && time.Since(detected) > registryEvictionTTL {
+			if shouldEvictEntry(status, detected, time.Now()) {
 				toEvict = append(toEvict, url)
 			}
 		}
@@ -505,7 +516,7 @@ func (r *MultiRecipeResolver) extractSingleCard(entry *MultiRecipeEntry, idx int
 
 	// Pass the stripped text with a constraint to extract only this recipe by title
 	extractionInput := fmt.Sprintf("Extract ONLY the recipe titled %q from the following page. Ignore all other recipes.\n\n%s", title, pageText)
-	result, err := provider.ExtractRecipeFromText(ctx, extractionInput, "preserve source")
+	result, err := provider.ExtractRecipeFromText(ctx, extractionInput, ai.UnitSystemPreserveSource)
 	if err != nil {
 		log.Error("failed to extract individual recipe", zap.Error(err))
 		entry.mu.Lock()
@@ -516,6 +527,7 @@ func (r *MultiRecipeResolver) extractSingleCard(entry *MultiRecipeEntry, idx int
 
 	def := recipeResultToRecipeDef(result)
 	def.SourceURL = sourceURL
+	ensureUnitSystem(&def)
 
 	entry.mu.Lock()
 	entry.Cards[idx].ExtractionStatus = "done"
@@ -568,4 +580,3 @@ func (r *MultiRecipeResolver) extractSingleCard(entry *MultiRecipeEntry, idx int
 
 	log.Info("individual recipe extracted successfully")
 }
-

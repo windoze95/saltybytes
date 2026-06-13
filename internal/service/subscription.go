@@ -5,25 +5,29 @@ import (
 	"time"
 
 	"github.com/windoze95/saltybytes-api/internal/config"
+	"github.com/windoze95/saltybytes-api/internal/logger"
 	"github.com/windoze95/saltybytes-api/internal/models"
 	"github.com/windoze95/saltybytes-api/internal/repository"
+	"go.uber.org/zap"
 )
 
 // SubscriptionService handles subscription management and usage limits.
 type SubscriptionService struct {
 	Cfg  *config.Config
-	Repo *repository.UserRepository
+	Repo repository.UserRepo
 }
 
 // NewSubscriptionService creates a new SubscriptionService.
-func NewSubscriptionService(cfg *config.Config, repo *repository.UserRepository) *SubscriptionService {
+func NewSubscriptionService(cfg *config.Config, repo repository.UserRepo) *SubscriptionService {
 	return &SubscriptionService{
 		Cfg:  cfg,
 		Repo: repo,
 	}
 }
 
-// GetSubscription retrieves the subscription for a user.
+// GetSubscription retrieves the subscription for a user. Users without a
+// subscription row (created before rows were stamped at signup) get a
+// free-tier row created on the fly so usage counters can be tracked.
 func (s *SubscriptionService) GetSubscription(userID uint) (*models.Subscription, error) {
 	user, err := s.Repo.GetUserByID(userID)
 	if err != nil {
@@ -31,10 +35,18 @@ func (s *SubscriptionService) GetSubscription(userID uint) (*models.Subscription
 	}
 
 	if user.Subscription == nil {
-		return &models.Subscription{
-			UserID: userID,
-			Tier:   models.TierFree,
-		}, nil
+		sub := &models.Subscription{
+			UserID:         userID,
+			Tier:           models.TierFree,
+			MonthlyResetAt: time.Now().AddDate(0, 1, 0),
+		}
+		if err := s.Repo.CreateSubscription(sub); err != nil {
+			// Fall back to in-memory free-tier defaults so the request can
+			// still be gated correctly even if persisting the row failed.
+			logger.Get().Warn("failed to create missing subscription row; using in-memory free-tier defaults",
+				zap.Uint("user_id", userID), zap.Error(err))
+		}
+		return sub, nil
 	}
 
 	// Reset monthly usage if needed and persist to DB

@@ -256,3 +256,116 @@ func TestPreviewFromURL_Handler_NotFound(t *testing.T) {
 		t.Errorf("code = %v, want 'not_found'", resp["code"])
 	}
 }
+
+func TestImportManual_Handler_RespectsProvidedUnitSystem(t *testing.T) {
+	repo := testutil.NewMockRecipeRepo()
+	importSvc := newImportService(repo, nil)
+	handler := NewImportHandler(importSvc)
+
+	user := testutil.TestUser()
+	user.Personalization.UnitSystem = "us_customary" // request should win
+	r := gin.New()
+	r.POST("/recipes/import/manual", setUser(user), handler.ImportManual)
+
+	body := `{
+		"title": "Metric Bread",
+		"unit_system": "metric",
+		"image_url": "https://example.com/bread.jpg",
+		"ingredients": [
+			{"name": "flour", "unit": "g", "amount": 500, "metric_unit": "g", "metric_amount": 500, "original_text": "500 g strong bread flour"}
+		],
+		"instructions": ["Knead", "Bake"]
+	}`
+	req := httptest.NewRequest("POST", "/recipes/import/manual", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d. body: %s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	if len(repo.Recipes) != 1 {
+		t.Fatalf("recipes in repo = %d, want 1", len(repo.Recipes))
+	}
+	var recipe *models.Recipe
+	for _, rec := range repo.Recipes {
+		recipe = rec
+	}
+
+	if recipe.UnitSystem != "metric" {
+		t.Errorf("UnitSystem = %q, want 'metric' (from request, not personalization)", recipe.UnitSystem)
+	}
+	if recipe.ImageURL != "https://example.com/bread.jpg" {
+		t.Errorf("ImageURL = %q, want request image_url", recipe.ImageURL)
+	}
+	if len(recipe.Ingredients) != 1 {
+		t.Fatalf("ingredients count = %d, want 1", len(recipe.Ingredients))
+	}
+	ing := recipe.Ingredients[0]
+	if ing.OriginalText != "500 g strong bread flour" {
+		t.Errorf("OriginalText = %q, want '500 g strong bread flour'", ing.OriginalText)
+	}
+	if ing.MetricUnit != "g" || ing.MetricAmount != 500 {
+		t.Errorf("metric fields = %q/%v, want g/500", ing.MetricUnit, ing.MetricAmount)
+	}
+}
+
+func TestImportManual_Handler_FallsBackToPersonalizationUnitSystem(t *testing.T) {
+	repo := testutil.NewMockRecipeRepo()
+	importSvc := newImportService(repo, nil)
+	handler := NewImportHandler(importSvc)
+
+	user := testutil.TestUser()
+	user.Personalization.UnitSystem = "metric"
+	r := gin.New()
+	r.POST("/recipes/import/manual", setUser(user), handler.ImportManual)
+
+	body := `{
+		"title": "No Unit System",
+		"ingredients": [{"name": "flour", "unit": "g", "amount": 500}],
+		"instructions": ["Bake"]
+	}`
+	req := httptest.NewRequest("POST", "/recipes/import/manual", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d. body: %s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	for _, rec := range repo.Recipes {
+		if rec.UnitSystem != "metric" {
+			t.Errorf("UnitSystem = %q, want 'metric' (from personalization fallback)", rec.UnitSystem)
+		}
+	}
+}
+
+func TestImportManual_Handler_InvalidUnitSystem(t *testing.T) {
+	repo := testutil.NewMockRecipeRepo()
+	importSvc := newImportService(repo, nil)
+	handler := NewImportHandler(importSvc)
+
+	user := testutil.TestUser()
+	r := gin.New()
+	r.POST("/recipes/import/manual", setUser(user), handler.ImportManual)
+
+	body := `{
+		"title": "Bad Units",
+		"unit_system": "imperial",
+		"ingredients": [{"name": "flour"}],
+		"instructions": ["Bake"]
+	}`
+	req := httptest.NewRequest("POST", "/recipes/import/manual", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusBadRequest)
+	}
+	if len(repo.Recipes) != 0 {
+		t.Errorf("no recipe should be created for invalid unit_system")
+	}
+}

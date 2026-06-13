@@ -97,9 +97,27 @@ func (r *RecipeRepository) CreateRecipe(recipe *models.Recipe) error {
 	return tx.Commit().Error
 }
 
-// DeleteRecipe deletes a recipe.
+// DeleteRecipe deletes a recipe along with its tree and nodes. The recipe row
+// is soft-deleted, so the FK ON DELETE cascade never fires — the tree and its
+// nodes are deleted explicitly in the same transaction.
 func (r *RecipeRepository) DeleteRecipe(recipeID uint) error {
-	err := r.DB.Delete(&models.Recipe{}, recipeID).Error
+	err := r.DB.Transaction(func(tx *gorm.DB) error {
+		var tree models.RecipeTree
+		treeErr := tx.Where("recipe_id = ?", recipeID).First(&tree).Error
+		switch {
+		case treeErr == nil:
+			if err := tx.Where("tree_id = ?", tree.ID).Delete(&models.RecipeNode{}).Error; err != nil {
+				return err
+			}
+			if err := tx.Delete(&tree).Error; err != nil {
+				return err
+			}
+		case !errors.Is(treeErr, gorm.ErrRecordNotFound):
+			return treeErr
+		}
+
+		return tx.Delete(&models.Recipe{}, recipeID).Error
+	})
 	if err != nil {
 		logger.Get().Error("failed to delete recipe", zap.Uint("recipe_id", recipeID), zap.Error(err))
 	}

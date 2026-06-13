@@ -4,6 +4,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -150,6 +151,8 @@ type manualImportRequest struct {
 	PortionSize  string                  `json:"portion_size"`
 	Hashtags     []string                `json:"hashtags"`
 	SourceURL    string                  `json:"source_url"`
+	UnitSystem   string                  `json:"unit_system"`
+	ImageURL     string                  `json:"image_url"`
 }
 
 // manualIngredientInput represents an ingredient in the manual import request.
@@ -159,6 +162,7 @@ type manualIngredientInput struct {
 	Amount       float64 `json:"amount"`
 	MetricUnit   string  `json:"metric_unit"`
 	MetricAmount float64 `json:"metric_amount"`
+	OriginalText string  `json:"original_text"`
 }
 
 // ImportManual handles POST /v1/recipes/import/manual
@@ -175,6 +179,22 @@ func (h *ImportHandler) ImportManual(c *gin.Context) {
 		return
 	}
 
+	if request.UnitSystem != "" && request.UnitSystem != "us_customary" && request.UnitSystem != "metric" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "unit_system must be 'us_customary' or 'metric'"})
+		return
+	}
+
+	// image_url is stored verbatim and later served to any authenticated
+	// viewer of the recipe, so reject anything that isn't a plain http(s)
+	// URL (e.g. javascript:, data:, or garbage).
+	if request.ImageURL != "" {
+		u, err := url.Parse(request.ImageURL)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "image_url must be a valid http(s) URL"})
+			return
+		}
+	}
+
 	// Convert request to RecipeDef
 	ingredients := make(models.Ingredients, len(request.Ingredients))
 	for i, ing := range request.Ingredients {
@@ -184,7 +204,16 @@ func (h *ImportHandler) ImportManual(c *gin.Context) {
 			Amount:       ing.Amount,
 			MetricUnit:   ing.MetricUnit,
 			MetricAmount: ing.MetricAmount,
+			OriginalText: ing.OriginalText,
 		}
+	}
+
+	// Use the unit system supplied by the client when present (e.g. preserved
+	// from a preview extraction); only fall back to the user's personalization
+	// when the request does not specify one.
+	unitSystem := request.UnitSystem
+	if unitSystem == "" {
+		unitSystem = user.Personalization.UnitSystem
 	}
 
 	recipeDef := &models.RecipeDef{
@@ -196,7 +225,7 @@ func (h *ImportHandler) ImportManual(c *gin.Context) {
 		PortionSize:  request.PortionSize,
 		ImagePrompt:  "A photo of " + request.Title,
 		SourceURL:    request.SourceURL,
-		UnitSystem:   user.Personalization.UnitSystem,
+		UnitSystem:   unitSystem,
 	}
 
 	recipeType := models.RecipeTypeManualEntry
@@ -204,7 +233,7 @@ func (h *ImportHandler) ImportManual(c *gin.Context) {
 		recipeType = models.RecipeTypeImportLink
 	}
 
-	recipeResponse, err := h.Service.ImportManual(c.Request.Context(), recipeDef, user, recipeType, request.Hashtags)
+	recipeResponse, err := h.Service.ImportManual(c.Request.Context(), recipeDef, user, recipeType, request.Hashtags, request.ImageURL)
 	if err != nil {
 		logger.Get().Error("failed to import recipe manually", zap.Error(err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create recipe"})

@@ -16,15 +16,15 @@ import (
 
 // MockTextProvider is a mock implementation of ai.TextProvider.
 type MockTextProvider struct {
-	GenerateRecipeFunc          func(ctx context.Context, req ai.RecipeRequest) (*ai.RecipeResult, error)
-	RegenerateRecipeFunc        func(ctx context.Context, req ai.RegenerateRequest) (*ai.RecipeResult, error)
-	ForkRecipeFunc              func(ctx context.Context, req ai.ForkRequest) (*ai.RecipeResult, error)
-	AnalyzeAllergensFunc        func(ctx context.Context, req ai.AllergenRequest) (*ai.AllergenResult, error)
-	ClassifyVoiceIntentFunc     func(ctx context.Context, transcript string) (*ai.VoiceIntent, error)
-	EstimatePortionsFunc        func(ctx context.Context, recipeDef interface{}) (*ai.PortionEstimate, error)
-	ExtractRecipeFromTextFunc   func(ctx context.Context, text string, unitSystem string) (*ai.RecipeResult, error)
-	CookingQAFunc               func(ctx context.Context, question string, recipeContext string) (string, error)
-	DietaryInterviewFunc        func(ctx context.Context, messages []ai.Message, memberName string) (string, error)
+	GenerateRecipeFunc        func(ctx context.Context, req ai.RecipeRequest) (*ai.RecipeResult, error)
+	RegenerateRecipeFunc      func(ctx context.Context, req ai.RegenerateRequest) (*ai.RecipeResult, error)
+	ForkRecipeFunc            func(ctx context.Context, req ai.ForkRequest) (*ai.RecipeResult, error)
+	AnalyzeAllergensFunc      func(ctx context.Context, req ai.AllergenRequest) (*ai.AllergenResult, error)
+	ClassifyVoiceIntentFunc   func(ctx context.Context, transcript string) (*ai.VoiceIntent, error)
+	EstimatePortionsFunc      func(ctx context.Context, recipeDef interface{}) (*ai.PortionEstimate, error)
+	ExtractRecipeFromTextFunc func(ctx context.Context, text string, unitSystem string) (*ai.RecipeResult, error)
+	CookingQAFunc             func(ctx context.Context, question string, recipeContext string) (string, error)
+	DietaryInterviewFunc      func(ctx context.Context, messages []ai.Message, memberName string) (*ai.DietaryInterviewResult, error)
 }
 
 func (m *MockTextProvider) GenerateRecipe(ctx context.Context, req ai.RecipeRequest) (*ai.RecipeResult, error) {
@@ -83,11 +83,11 @@ func (m *MockTextProvider) CookingQA(ctx context.Context, question string, recip
 	return "", fmt.Errorf("CookingQA not configured")
 }
 
-func (m *MockTextProvider) DietaryInterview(ctx context.Context, messages []ai.Message, memberName string) (string, error) {
+func (m *MockTextProvider) DietaryInterview(ctx context.Context, messages []ai.Message, memberName string) (*ai.DietaryInterviewResult, error) {
 	if m.DietaryInterviewFunc != nil {
 		return m.DietaryInterviewFunc(ctx, messages, memberName)
 	}
-	return "", fmt.Errorf("DietaryInterview not configured")
+	return nil, fmt.Errorf("DietaryInterview not configured")
 }
 
 // --- MockVisionProvider ---
@@ -122,12 +122,12 @@ func (m *MockImageProvider) GenerateImage(ctx context.Context, prompt string) ([
 
 // MockSpeechProvider is a mock implementation of ai.SpeechProvider.
 type MockSpeechProvider struct {
-	TranscribeAudioFunc func(ctx context.Context, audioData []byte) (string, error)
+	TranscribeAudioFunc func(ctx context.Context, audioData []byte, format string) (string, error)
 }
 
-func (m *MockSpeechProvider) TranscribeAudio(ctx context.Context, audioData []byte) (string, error) {
+func (m *MockSpeechProvider) TranscribeAudio(ctx context.Context, audioData []byte, format string) (string, error) {
 	if m.TranscribeAudioFunc != nil {
-		return m.TranscribeAudioFunc(ctx, audioData)
+		return m.TranscribeAudioFunc(ctx, audioData, format)
 	}
 	return "", fmt.Errorf("TranscribeAudio not configured")
 }
@@ -136,25 +136,81 @@ func (m *MockSpeechProvider) TranscribeAudio(ctx context.Context, audioData []by
 
 // MockRecipeRepo is an in-memory mock implementation of repository.RecipeRepo.
 type MockRecipeRepo struct {
-	mu       sync.Mutex
-	Recipes  map[uint]*models.Recipe
-	Tags     map[string]*models.Tag
-	Trees    map[uint]*models.RecipeTree
-	Nodes    map[uint]*models.RecipeNode
-	NextID   uint
-	NextTagID uint
+	mu         sync.Mutex
+	Recipes    map[uint]*models.Recipe
+	Tags       map[string]*models.Tag
+	Trees      map[uint]*models.RecipeTree
+	Nodes      map[uint]*models.RecipeNode
+	NextID     uint
+	NextTagID  uint
 	NextTreeID uint
 	NextNodeID uint
 
 	// Error overrides: set these to force specific methods to return errors.
-	CreateRecipeErr              error
-	GetRecipeByIDErr             error
-	DeleteRecipeErr              error
-	UpdateRecipeTitleErr         error
-	UpdateRecipeImageURLErr      error
-	UpdateRecipeDefErr           error
-	CreateRecipeTreeErr          error
-	AddNodeToTreeErr             error
+	CreateRecipeErr                   error
+	GetRecipeByIDErr                  error
+	DeleteRecipeErr                   error
+	UpdateRecipeTitleErr              error
+	UpdateRecipeImageURLErr           error
+	UpdateRecipeDefErr                error
+	CreateRecipeTreeErr               error
+	AddNodeToTreeErr                  error
+	GetTreeByRecipeIDErr              error
+	GetTreeWithNodesErr               error
+	GetActiveNodeErr                  error
+	GetNodeByIDErr                    error
+	GetNodeAncestorsErr               error
+	SetActiveNodeErr                  error
+	UpdateRecipeFromNodeErr           error
+	MaterializeRecipeFromCanonicalErr error
+
+	// Call records (guarded by mu; read via the snapshot accessors). These
+	// survive recipe deletion, so tests can assert on transient state like a
+	// "failed" status set just before cleanup, or async image URL updates.
+	statusUpdates   []MockStatusUpdate
+	imageURLUpdates []MockImageURLUpdate
+}
+
+// MockStatusUpdate records a single UpdateRecipeStatus invocation.
+type MockStatusUpdate struct {
+	RecipeID uint
+	Status   string
+}
+
+// MockImageURLUpdate records a single UpdateRecipeImageURL invocation.
+type MockImageURLUpdate struct {
+	RecipeID uint
+	ImageURL string
+}
+
+// StatusUpdates returns a race-safe snapshot of UpdateRecipeStatus calls.
+func (m *MockRecipeRepo) StatusUpdates() []MockStatusUpdate {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]MockStatusUpdate, len(m.statusUpdates))
+	copy(out, m.statusUpdates)
+	return out
+}
+
+// ImageURLUpdates returns a race-safe snapshot of UpdateRecipeImageURL calls.
+func (m *MockRecipeRepo) ImageURLUpdates() []MockImageURLUpdate {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]MockImageURLUpdate, len(m.imageURLUpdates))
+	copy(out, m.imageURLUpdates)
+	return out
+}
+
+// RecipeSnapshot returns a race-safe copy of a stored recipe, or nil if absent.
+func (m *MockRecipeRepo) RecipeSnapshot(recipeID uint) *models.Recipe {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	r, ok := m.Recipes[recipeID]
+	if !ok {
+		return nil
+	}
+	cp := *r
+	return &cp
 }
 
 // NewMockRecipeRepo creates a new MockRecipeRepo with initialized maps.
@@ -228,6 +284,18 @@ func (m *MockRecipeRepo) DeleteRecipe(recipeID uint) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	// Mirror the real repository: deleting a recipe also removes its tree and nodes.
+	for treeID, tree := range m.Trees {
+		if tree.RecipeID == recipeID {
+			for nodeID, node := range m.Nodes {
+				if node.TreeID == treeID {
+					delete(m.Nodes, nodeID)
+				}
+			}
+			delete(m.Trees, treeID)
+		}
+	}
+
 	delete(m.Recipes, recipeID)
 	return nil
 }
@@ -249,6 +317,7 @@ func (m *MockRecipeRepo) UpdateRecipeStatus(recipeID uint, status string) error 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	m.statusUpdates = append(m.statusUpdates, MockStatusUpdate{RecipeID: recipeID, Status: status})
 	if r, ok := m.Recipes[recipeID]; ok {
 		r.Status = status
 	}
@@ -262,6 +331,7 @@ func (m *MockRecipeRepo) UpdateRecipeImageURL(recipeID uint, imageURL string) er
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	m.imageURLUpdates = append(m.imageURLUpdates, MockImageURLUpdate{RecipeID: recipeID, ImageURL: imageURL})
 	if r, ok := m.Recipes[recipeID]; ok {
 		r.ImageURL = imageURL
 	}
@@ -340,6 +410,9 @@ func (m *MockRecipeRepo) CreateRecipeTree(recipeID uint, rootNode *models.Recipe
 }
 
 func (m *MockRecipeRepo) GetTreeByRecipeID(recipeID uint) (*models.RecipeTree, error) {
+	if m.GetTreeByRecipeIDErr != nil {
+		return nil, m.GetTreeByRecipeIDErr
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -352,6 +425,9 @@ func (m *MockRecipeRepo) GetTreeByRecipeID(recipeID uint) (*models.RecipeTree, e
 }
 
 func (m *MockRecipeRepo) GetTreeWithNodes(treeID uint) (*models.RecipeTree, error) {
+	if m.GetTreeWithNodesErr != nil {
+		return nil, m.GetTreeWithNodesErr
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -370,6 +446,9 @@ func (m *MockRecipeRepo) GetTreeWithNodes(treeID uint) (*models.RecipeTree, erro
 }
 
 func (m *MockRecipeRepo) GetActiveNode(treeID uint) (*models.RecipeNode, error) {
+	if m.GetActiveNodeErr != nil {
+		return nil, m.GetActiveNodeErr
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -382,6 +461,9 @@ func (m *MockRecipeRepo) GetActiveNode(treeID uint) (*models.RecipeNode, error) 
 }
 
 func (m *MockRecipeRepo) GetNodeByID(nodeID uint) (*models.RecipeNode, error) {
+	if m.GetNodeByIDErr != nil {
+		return nil, m.GetNodeByIDErr
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -406,6 +488,9 @@ func (m *MockRecipeRepo) GetNodeChildren(nodeID uint) ([]models.RecipeNode, erro
 }
 
 func (m *MockRecipeRepo) GetNodeAncestors(nodeID uint) ([]models.RecipeNode, error) {
+	if m.GetNodeAncestorsErr != nil {
+		return nil, m.GetNodeAncestorsErr
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -447,6 +532,9 @@ func (m *MockRecipeRepo) AddNodeToTree(node *models.RecipeNode, setActive bool) 
 }
 
 func (m *MockRecipeRepo) SetActiveNode(treeID uint, nodeID uint) error {
+	if m.SetActiveNodeErr != nil {
+		return m.SetActiveNodeErr
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -459,6 +547,9 @@ func (m *MockRecipeRepo) SetActiveNode(treeID uint, nodeID uint) error {
 }
 
 func (m *MockRecipeRepo) UpdateRecipeFromNode(recipeID uint, node *models.RecipeNode) error {
+	if m.UpdateRecipeFromNodeErr != nil {
+		return m.UpdateRecipeFromNodeErr
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -469,6 +560,9 @@ func (m *MockRecipeRepo) UpdateRecipeFromNode(recipeID uint, node *models.Recipe
 }
 
 func (m *MockRecipeRepo) MaterializeRecipeFromCanonical(recipeID uint, data models.RecipeDef) error {
+	if m.MaterializeRecipeFromCanonicalErr != nil {
+		return m.MaterializeRecipeFromCanonicalErr
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -487,7 +581,8 @@ type MockUserRepo struct {
 	Users  map[uint]*models.User
 	NextID uint
 
-	CreateUserErr error
+	CreateUserErr         error
+	CreateSubscriptionErr error
 }
 
 // NewMockUserRepo creates a new MockUserRepo with initialized maps.
@@ -512,6 +607,17 @@ func (m *MockUserRepo) CreateUser(user *models.User) (*models.User, error) {
 }
 
 func (m *MockUserRepo) GetUserByID(userID uint) (*models.User, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	u, ok := m.Users[userID]
+	if !ok {
+		return nil, fmt.Errorf("user not found")
+	}
+	return u, nil
+}
+
+func (m *MockUserRepo) GetUserWithAuthByID(userID uint) (*models.User, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -564,12 +670,26 @@ func (m *MockUserRepo) UpdateUserSettingsKeepScreenAwake(userID uint, keepScreen
 	return nil
 }
 
-func (m *MockUserRepo) UpdatePersonalization(userID uint, updatedPersonalization *models.Personalization) error {
+func (m *MockUserRepo) UpdatePersonalization(userID uint, update *models.PersonalizationUpdate) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	if u, ok := m.Users[userID]; ok {
-		u.Personalization = updatedPersonalization
+		if u.Personalization == nil {
+			u.Personalization = &models.Personalization{UserID: userID}
+		}
+		if update.UnitSystem != nil {
+			u.Personalization.UnitSystem = *update.UnitSystem
+		}
+		if update.Requirements != nil {
+			u.Personalization.Requirements = *update.Requirements
+		}
+		if update.CookingContext != nil {
+			u.Personalization.CookingContext = *update.CookingContext
+		}
+		if update.UID != nil {
+			u.Personalization.UID = *update.UID
+		}
 	}
 	return nil
 }
@@ -584,6 +704,69 @@ func (m *MockUserRepo) UsernameExists(username string) (bool, error) {
 		}
 	}
 	return false, nil
+}
+
+func (m *MockUserRepo) IncrementTokenVersion(userID uint) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	u, ok := m.Users[userID]
+	if !ok || u.Auth == nil {
+		return fmt.Errorf("no auth record found for user")
+	}
+	u.Auth.TokenVersion++
+	return nil
+}
+
+func (m *MockUserRepo) CreateSubscription(sub *models.Subscription) error {
+	if m.CreateSubscriptionErr != nil {
+		return m.CreateSubscriptionErr
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	u, ok := m.Users[sub.UserID]
+	if !ok {
+		return fmt.Errorf("user not found")
+	}
+	u.Subscription = sub
+	return nil
+}
+
+func (m *MockUserRepo) IncrementSubscriptionUsage(userID uint, column string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	u, ok := m.Users[userID]
+	if !ok || u.Subscription == nil {
+		return fmt.Errorf("no subscription found for user")
+	}
+	switch column {
+	case "allergen_analyses_used":
+		u.Subscription.AllergenAnalysesUsed++
+	case "web_searches_used":
+		u.Subscription.WebSearchesUsed++
+	case "ai_generations_used":
+		u.Subscription.AIGenerationsUsed++
+	default:
+		return fmt.Errorf("unknown usage column: %s", column)
+	}
+	return nil
+}
+
+func (m *MockUserRepo) ResetSubscriptionUsage(userID uint, nextReset time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	u, ok := m.Users[userID]
+	if !ok || u.Subscription == nil {
+		return fmt.Errorf("no subscription found for user")
+	}
+	u.Subscription.AllergenAnalysesUsed = 0
+	u.Subscription.WebSearchesUsed = 0
+	u.Subscription.AIGenerationsUsed = 0
+	u.Subscription.MonthlyResetAt = nextReset
+	return nil
 }
 
 // --- MockSearchProvider ---
@@ -668,6 +851,76 @@ func (m *MockSearchCacheRepo) DeleteStale(maxAge time.Duration) (int64, error) {
 	return 0, nil
 }
 
+// --- MockFamilyRepo ---
+
+// MockFamilyRepo mocks repository.FamilyRepo for testing.
+type MockFamilyRepo struct {
+	CreateFamilyFunc              func(family *models.Family) error
+	GetFamilyByOwnerIDFunc        func(ownerID uint) (*models.Family, error)
+	CreateFamilyMemberFunc        func(member *models.FamilyMember) error
+	GetFamilyMemberByIDFunc       func(id uint) (*models.FamilyMember, error)
+	UpdateFamilyMemberFunc        func(member *models.FamilyMember) error
+	DeleteFamilyMemberFunc        func(id uint) error
+	UpdateDietaryProfileFunc      func(profile *models.DietaryProfile) error
+	GetOrCreateDietaryProfileFunc func(memberID uint) (*models.DietaryProfile, error)
+}
+
+func (m *MockFamilyRepo) CreateFamily(family *models.Family) error {
+	if m.CreateFamilyFunc != nil {
+		return m.CreateFamilyFunc(family)
+	}
+	return nil
+}
+
+func (m *MockFamilyRepo) GetFamilyByOwnerID(ownerID uint) (*models.Family, error) {
+	if m.GetFamilyByOwnerIDFunc != nil {
+		return m.GetFamilyByOwnerIDFunc(ownerID)
+	}
+	return nil, fmt.Errorf("GetFamilyByOwnerID not configured")
+}
+
+func (m *MockFamilyRepo) CreateFamilyMember(member *models.FamilyMember) error {
+	if m.CreateFamilyMemberFunc != nil {
+		return m.CreateFamilyMemberFunc(member)
+	}
+	return nil
+}
+
+func (m *MockFamilyRepo) GetFamilyMemberByID(id uint) (*models.FamilyMember, error) {
+	if m.GetFamilyMemberByIDFunc != nil {
+		return m.GetFamilyMemberByIDFunc(id)
+	}
+	return nil, fmt.Errorf("GetFamilyMemberByID not configured")
+}
+
+func (m *MockFamilyRepo) UpdateFamilyMember(member *models.FamilyMember) error {
+	if m.UpdateFamilyMemberFunc != nil {
+		return m.UpdateFamilyMemberFunc(member)
+	}
+	return nil
+}
+
+func (m *MockFamilyRepo) DeleteFamilyMember(id uint) error {
+	if m.DeleteFamilyMemberFunc != nil {
+		return m.DeleteFamilyMemberFunc(id)
+	}
+	return nil
+}
+
+func (m *MockFamilyRepo) UpdateDietaryProfile(profile *models.DietaryProfile) error {
+	if m.UpdateDietaryProfileFunc != nil {
+		return m.UpdateDietaryProfileFunc(profile)
+	}
+	return nil
+}
+
+func (m *MockFamilyRepo) GetOrCreateDietaryProfile(memberID uint) (*models.DietaryProfile, error) {
+	if m.GetOrCreateDietaryProfileFunc != nil {
+		return m.GetOrCreateDietaryProfileFunc(memberID)
+	}
+	return &models.DietaryProfile{MemberID: memberID}, nil
+}
+
 // --- MockCanonicalRecipeRepo ---
 
 // MockCanonicalRecipeRepo mocks repository.CanonicalRecipeRepo for testing.
@@ -726,3 +979,4 @@ var _ repository.RecipeRepo = (*MockRecipeRepo)(nil)
 var _ repository.UserRepo = (*MockUserRepo)(nil)
 var _ repository.SearchCacheRepo = (*MockSearchCacheRepo)(nil)
 var _ repository.CanonicalRecipeRepo = (*MockCanonicalRecipeRepo)(nil)
+var _ repository.FamilyRepo = (*MockFamilyRepo)(nil)

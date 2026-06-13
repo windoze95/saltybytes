@@ -24,15 +24,15 @@ const promptVersion = "v1"
 // AllergenService is the business logic layer for allergen analysis operations.
 type AllergenService struct {
 	Cfg          *config.Config
-	AllergenRepo *repository.AllergenRepository
-	FamilyRepo   *repository.FamilyRepository
-	RecipeRepo   *repository.RecipeRepository
+	AllergenRepo repository.AllergenRepo
+	FamilyRepo   repository.FamilyRepo
+	RecipeRepo   repository.RecipeRepo
 	AIProvider   ai.TextProvider
 	SubService   *SubscriptionService
 }
 
 // NewAllergenService is the constructor function for initializing a new AllergenService.
-func NewAllergenService(cfg *config.Config, allergenRepo *repository.AllergenRepository, familyRepo *repository.FamilyRepository, recipeRepo *repository.RecipeRepository, aiProvider ai.TextProvider, subService *SubscriptionService) *AllergenService {
+func NewAllergenService(cfg *config.Config, allergenRepo repository.AllergenRepo, familyRepo repository.FamilyRepo, recipeRepo repository.RecipeRepo, aiProvider ai.TextProvider, subService *SubscriptionService) *AllergenService {
 	return &AllergenService{
 		Cfg:          cfg,
 		AllergenRepo: allergenRepo,
@@ -154,7 +154,8 @@ func (s *AllergenService) AnalyzeRecipe(ctx context.Context, recipeID uint, isPr
 
 	// 7. Save to DB (update if existing, create if not)
 	if existing != nil {
-		analysis.Model = existing.Model
+		analysis.ID = existing.ID
+		analysis.CreatedAt = existing.CreatedAt
 		if err := s.AllergenRepo.UpdateAnalysis(analysis); err != nil {
 			logger.Get().Error("failed to update allergen analysis", zap.Uint("recipe_id", recipeID), zap.Error(err))
 			return nil, fmt.Errorf("failed to save allergen analysis: %w", err)

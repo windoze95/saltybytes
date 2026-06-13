@@ -2,6 +2,11 @@ package ai
 
 import "context"
 
+// UnitSystemPreserveSource is a sentinel unit-system value that instructs
+// extraction to keep the source's original measurements instead of converting,
+// reporting the detected system via the unit_system tool field.
+const UnitSystemPreserveSource = "preserve source"
+
 // TextProvider handles all text/reasoning tasks (Claude).
 type TextProvider interface {
 	GenerateRecipe(ctx context.Context, req RecipeRequest) (*RecipeResult, error)
@@ -12,7 +17,7 @@ type TextProvider interface {
 	EstimatePortions(ctx context.Context, recipeDef interface{}) (*PortionEstimate, error)
 	ExtractRecipeFromText(ctx context.Context, text string, unitSystem string) (*RecipeResult, error)
 	CookingQA(ctx context.Context, question string, recipeContext string) (string, error)
-	DietaryInterview(ctx context.Context, messages []Message, memberName string) (string, error)
+	DietaryInterview(ctx context.Context, messages []Message, memberName string) (*DietaryInterviewResult, error)
 }
 
 // VisionProvider handles image-based recipe extraction (Claude).
@@ -25,9 +30,10 @@ type ImageProvider interface {
 	GenerateImage(ctx context.Context, prompt string) ([]byte, error)
 }
 
-// SpeechProvider handles speech-to-text (Whisper).
+// SpeechProvider handles speech-to-text (Whisper). format is the audio
+// container format (e.g. "webm", "m4a"); empty defaults to webm.
 type SpeechProvider interface {
-	TranscribeAudio(ctx context.Context, audioData []byte) (string, error)
+	TranscribeAudio(ctx context.Context, audioData []byte, format string) (string, error)
 }
 
 // EmbeddingProvider handles vector embeddings.
@@ -131,6 +137,35 @@ type PortionEstimate struct {
 	Portions    int
 	PortionSize string
 	Confidence  float64
+}
+
+// DietaryInterviewResult is the structured output of one dietary interview
+// turn. When the model has gathered enough information it calls the
+// save_dietary_profile tool: Complete is true and Profile is non-nil, with
+// Response carrying a short wrap-up message. Otherwise Complete is false,
+// Profile is nil and Response carries the next interview question.
+type DietaryInterviewResult struct {
+	Response string
+	Complete bool
+	Profile  *DietaryProfileResult
+}
+
+// DietaryProfileResult is the structured dietary profile produced by a
+// completed dietary interview.
+type DietaryProfileResult struct {
+	Allergies    []DietaryAllergyResult
+	Intolerances []string
+	Restrictions []string
+	Preferences  []string
+	MedicalNotes string
+}
+
+// DietaryAllergyResult is a single allergy entry in a dietary profile.
+type DietaryAllergyResult struct {
+	Name     string
+	Severity string
+	SubForms []string
+	Notes    string
 }
 
 // SearchResult is a single web search result.

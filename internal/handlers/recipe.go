@@ -21,11 +21,45 @@ import (
 // RecipeHandler is the handler for recipe-related requests.
 type RecipeHandler struct {
 	Service *service.RecipeService
+	// SubService gates the AI-generation endpoints by subscription usage
+	// when set (nil skips gating, e.g. in isolated tests).
+	SubService *service.SubscriptionService
 }
 
 // NewRecipeHandler is the constructor function for initializing a new RecipeHandler.
 func NewRecipeHandler(recipeService *service.RecipeService) *RecipeHandler {
 	return &RecipeHandler{Service: recipeService}
+}
+
+// checkAIGenerationLimit verifies the user is within their AI-generation
+// usage limit. It writes the error response and returns false when the user
+// is over limit or the check fails.
+func (h *RecipeHandler) checkAIGenerationLimit(c *gin.Context, userID uint) bool {
+	if h.SubService == nil {
+		return true
+	}
+	allowed, err := h.SubService.CheckLimit(userID, "ai_generation")
+	if err != nil {
+		logger.Get().Error("failed to check AI generation limit", zap.Uint("user_id", userID), zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to check subscription limits"})
+		return false
+	}
+	if !allowed {
+		c.JSON(http.StatusForbidden, gin.H{"error": "AI generation limit reached; upgrade to premium for unlimited generations"})
+		return false
+	}
+	return true
+}
+
+// incrementAIGenerationUsage records one AI generation against the user's
+// monthly quota. Failures are logged but never block the response.
+func (h *RecipeHandler) incrementAIGenerationUsage(userID uint) {
+	if h.SubService == nil {
+		return
+	}
+	if err := h.SubService.IncrementUsage(userID, "ai_generation"); err != nil {
+		logger.Get().Error("failed to increment AI generation usage", zap.Uint("user_id", userID), zap.Error(err))
+	}
 }
 
 // ListRecipes returns a paginated list of the authenticated user's recipes.
@@ -50,7 +84,17 @@ func (h *RecipeHandler) ListRecipes(c *gin.Context) {
 		}
 	}
 
-	recipes, total, err := h.Service.GetUserRecipes(user.ID, page, pageSize)
+	var recipes []service.RecipeListItem
+	var total int64
+
+	// When a search query is present (>= 2 chars), perform a semantic search
+	// over the user's own recipes instead of a plain listing.
+	q := strings.TrimSpace(c.Query("q"))
+	if len([]rune(q)) >= 2 {
+		recipes, total, err = h.Service.SearchUserRecipes(c.Request.Context(), user.ID, q, page, pageSize)
+	} else {
+		recipes, total, err = h.Service.GetUserRecipes(user.ID, page, pageSize)
+	}
 	if err != nil {
 		logger.Get().Error("failed to list recipes", zap.Uint("user_id", user.ID), zap.Error(err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list recipes"})
@@ -118,6 +162,10 @@ func (h *RecipeHandler) GenerateRecipe(c *gin.Context) {
 		genImage = *request.GenImage
 	}
 
+	if !h.checkAIGenerationLimit(c, user.ID) {
+		return
+	}
+
 	prompt := strings.TrimSpace(request.UserPrompt)
 	recipeResponse, err := h.Service.InitGenerateRecipe(user, prompt, genImage)
 	if err != nil {
@@ -125,6 +173,8 @@ func (h *RecipeHandler) GenerateRecipe(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "An unexpected error occurred while initializing generation"})
 		return
 	}
+
+	h.incrementAIGenerationUsage(user.ID)
 
 	// go h.Service.FinishGenerateRecipe(recipe, user, request.UserPrompt)
 
@@ -169,6 +219,10 @@ func (h *RecipeHandler) RegenerateRecipe(c *gin.Context) {
 		genImage = *request.GenImage
 	}
 
+	if !h.checkAIGenerationLimit(c, user.ID) {
+		return
+	}
+
 	prompt := strings.TrimSpace(request.UserPrompt)
 	err = h.Service.InitRegenerateRecipe(user, recipeID, prompt, genImage)
 	if err != nil {
@@ -176,6 +230,8 @@ func (h *RecipeHandler) RegenerateRecipe(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "An unexpected error occurred while initializing generation"})
 		return
 	}
+
+	h.incrementAIGenerationUsage(user.ID)
 
 	c.JSON(http.StatusOK, gin.H{"message": "Regenerating recipe"})
 }
@@ -217,6 +273,10 @@ func (h *RecipeHandler) GenerateRecipeWithFork(c *gin.Context) {
 		genImage = *request.GenImage
 	}
 
+	if !h.checkAIGenerationLimit(c, user.ID) {
+		return
+	}
+
 	prompt := strings.TrimSpace(request.UserPrompt)
 	recipeResponse, err := h.Service.InitGenerateRecipeWithFork(user, recipeID, prompt, genImage)
 	if err != nil {
@@ -224,6 +284,8 @@ func (h *RecipeHandler) GenerateRecipeWithFork(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "An unexpected error occurred while initializing generation"})
 		return
 	}
+
+	h.incrementAIGenerationUsage(user.ID)
 
 	c.JSON(http.StatusOK, gin.H{"recipe": recipeResponse, "message": "Regenerating recipe"})
 }
@@ -256,6 +318,10 @@ func (h *RecipeHandler) StreamGenerateRecipe(c *gin.Context) {
 		return
 	}
 
+	if !h.checkAIGenerationLimit(c, user.ID) {
+		return
+	}
+
 	// Set SSE headers
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
@@ -269,6 +335,7 @@ func (h *RecipeHandler) StreamGenerateRecipe(c *gin.Context) {
 
 	go func() {
 		defer close(events)
+		defer util.RecoverPanic("stream generate recipe")
 		h.Service.StreamGenerateRecipe(ctx, user, prompt, genImage, events)
 	}()
 
@@ -277,6 +344,14 @@ func (h *RecipeHandler) StreamGenerateRecipe(c *gin.Context) {
 		case event, ok := <-events:
 			if !ok {
 				return false
+			}
+			// Usage is counted only when generation actually completes, so
+			// failed generations (provider errors, content-quality
+			// rejections) don't burn the user's monthly quota — matching
+			// the non-streaming endpoints, which increment after a
+			// successful init.
+			if event.Type == ai.StreamEventComplete {
+				h.incrementAIGenerationUsage(user.ID)
 			}
 			data, _ := json.Marshal(event)
 			c.SSEvent(string(event.Type), string(data))
