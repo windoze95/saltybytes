@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -144,8 +145,10 @@ var upgrader = websocket.Upgrader{
 			"https://api.saltybytes.ai":
 			return true
 		}
-		// Allow localhost for development
-		if strings.HasPrefix(origin, "http://localhost:") || origin == "http://localhost" {
+		// Allow localhost only when dev origins are explicitly enabled. Defaults
+		// off, so production never accepts a localhost browser origin.
+		if os.Getenv("ALLOW_DEV_ORIGINS") == "true" &&
+			(strings.HasPrefix(origin, "http://localhost:") || origin == "http://localhost") {
 			return true
 		}
 		return false
