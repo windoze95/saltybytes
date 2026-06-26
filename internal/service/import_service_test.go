@@ -50,6 +50,9 @@ func TestImportFromText_Success(t *testing.T) {
 	repo := testutil.NewMockRecipeRepo()
 	mockText := &testutil.MockTextProvider{
 		ExtractRecipeFromTextFunc: func(ctx context.Context, text string, unitSystem string) (*ai.RecipeResult, error) {
+			if unitSystem != "US Customary" {
+				t.Errorf("unitSystem = %q, want fallback preference 'US Customary'", unitSystem)
+			}
 			return testutil.TestRecipeResult(), nil
 		},
 	}
@@ -79,6 +82,9 @@ func TestImportFromText_MetricUser(t *testing.T) {
 	repo := testutil.NewMockRecipeRepo()
 	mockText := &testutil.MockTextProvider{
 		ExtractRecipeFromTextFunc: func(ctx context.Context, text string, unitSystem string) (*ai.RecipeResult, error) {
+			if unitSystem != "Metric" {
+				t.Errorf("unitSystem = %q, want fallback preference 'Metric'", unitSystem)
+			}
 			return testutil.TestRecipeResult(), nil
 		},
 	}
@@ -91,8 +97,39 @@ func TestImportFromText_MetricUser(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ImportFromText error: %v", err)
 	}
+	if resp.UnitSystem != "us_customary" {
+		t.Errorf("ImportFromText UnitSystem = %q, want source units 'us_customary'", resp.UnitSystem)
+	}
+}
+
+func TestImportFromText_DetectsMetricSourceForUSUser(t *testing.T) {
+	repo := testutil.NewMockRecipeRepo()
+	mockText := &testutil.MockTextProvider{
+		ExtractRecipeFromTextFunc: func(ctx context.Context, text string, unitSystem string) (*ai.RecipeResult, error) {
+			if unitSystem != "US Customary" {
+				t.Errorf("unitSystem = %q, want fallback preference 'US Customary'", unitSystem)
+			}
+			return &ai.RecipeResult{
+				Title: "Metric Cake",
+				Ingredients: []ai.IngredientResult{
+					{Name: "flour", Unit: "g", Amount: 250, MetricUnit: "g", MetricAmount: 250, OriginalText: "250 g flour"},
+					{Name: "milk", Unit: "mL", Amount: 100, MetricUnit: "mL", MetricAmount: 100, OriginalText: "100 mL milk"},
+				},
+				Instructions: []string{"Mix"},
+				ImagePrompt:  "A cake",
+			}, nil
+		},
+	}
+
+	svc := newTestImportService(repo, mockText, nil)
+	user := testutil.TestUser()
+
+	resp, err := svc.ImportFromText(context.Background(), "250 g flour", user)
+	if err != nil {
+		t.Fatalf("ImportFromText error: %v", err)
+	}
 	if resp.UnitSystem != "metric" {
-		t.Errorf("ImportFromText UnitSystem = %q, want 'metric'", resp.UnitSystem)
+		t.Errorf("ImportFromText UnitSystem = %q, want detected source units 'metric'", resp.UnitSystem)
 	}
 }
 

@@ -618,9 +618,7 @@ func (s *ImportService) ImportFromText(ctx context.Context, text string, user *m
 	}
 
 	def := recipeResultToRecipeDef(result)
-	if def.UnitSystem == "" {
-		def.UnitSystem = user.Personalization.UnitSystem
-	}
+	ensureUnitSystem(&def)
 	resp, _, err := s.createImportedRecipe(ctx, &def, user, models.RecipeTypeImportCopypasta, "", "", nil, result.Hashtags, result.PromptVersion)
 	return resp, err
 }

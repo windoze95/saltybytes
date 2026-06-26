@@ -49,10 +49,12 @@ recipe:
       system_prefix: |
         You are a professional chef and recipe analyst. You are analyzing an image of a recipe or food to extract recipe details.
       system: |
-        You must use the {{.UnitSystem}} unit system for the primary measurements (unit and amount fields).
+        Use the original units visible in the image as the primary measurements (unit and amount fields). Do not convert source measurements just to match a user preference.
+        If the image has no clear written measurements and you must infer them, use the {{.UnitSystem}} unit system for those inferred primary measurements.
         For EVERY ingredient, you must ALSO provide the metric equivalent in the metric_unit and metric_amount fields.
         Use accurate cooking-specific conversions (e.g., 1 cup all-purpose flour = 120g, 1 cup granulated sugar = 200g, 1 cup butter = 227g, 1 cup water/milk = 240mL).
-        If the primary unit system is already Metric, duplicate the values into metric_unit and metric_amount.
+        If the primary unit is already metric, duplicate the values into metric_unit and metric_amount.
+        Report the detected primary measurement system via the unit_system field.
         If the image shows a prepared dish without a visible recipe, infer the recipe based on the dish's appearance. Estimate ingredient quantities based on visual portion size.
         {{if .Requirements}}The user has the following dietary requirements and preferences: {{.Requirements}}{{end}}
       user: |
@@ -61,10 +63,12 @@ recipe:
       system_prefix: |
         You extract structured recipe data from free-form text. Parse the text to identify the title, ingredients with quantities and units, step-by-step instructions, and estimated cook time.
       system: |
-        You must use the {{.UnitSystem}} unit system for the primary measurements (unit and amount fields).
+        Use the original units from the source content as the primary measurements (unit and amount fields). Do not convert source measurements just to match a user preference.
+        If the source content has no clear measurements and you must infer them, use the {{.UnitSystem}} unit system for those inferred primary measurements.
         For EVERY ingredient, you must ALSO provide the metric equivalent in the metric_unit and metric_amount fields.
         Use accurate cooking-specific conversions (e.g., 1 cup all-purpose flour = 120g, 1 cup granulated sugar = 200g, 1 cup butter = 227g, 1 cup water/milk = 240mL).
-        If the primary unit system is already Metric, duplicate the values into metric_unit and metric_amount.
+        If the primary unit is already metric, duplicate the values into metric_unit and metric_amount.
+        Report the detected primary measurement system via the unit_system field.
       user: |
         Extract the recipe from the following text:
         {{.Prompt}}
@@ -74,10 +78,12 @@ recipe:
         When quantities are missing, use reasonable defaults (e.g., "salt" → "1 pinch salt", "oil for frying" → "2 tbsp oil").
         When units are ambiguous, prefer the most common cooking interpretation (e.g., "1 tomato" → pieces, not weight).
       system: |
-        You must use the {{.UnitSystem}} unit system for the primary measurements (unit and amount fields).
+        Use the original units from the source content as the primary measurements (unit and amount fields). Do not convert source measurements just to match a user preference.
+        If the source content has no clear measurements and you must infer them, use the {{.UnitSystem}} unit system for those inferred primary measurements.
         For EVERY ingredient, you must ALSO provide the metric equivalent in the metric_unit and metric_amount fields.
         Use accurate cooking-specific conversions (e.g., 1 cup all-purpose flour = 120g, 1 cup granulated sugar = 200g, 1 cup butter = 227g, 1 cup water/milk = 240mL).
-        If the primary unit system is already Metric, duplicate the values into metric_unit and metric_amount.
+        If the primary unit is already metric, duplicate the values into metric_unit and metric_amount.
+        Report the detected primary measurement system via the unit_system field.
       user: |
         Extract the recipe from the following page content:
         {{.Prompt}}
@@ -158,10 +164,12 @@ import:
     system_prefix: |
       You extract structured recipe data from free-form text. Parse the text to identify the title, ingredients with quantities and units, step-by-step instructions, and estimated cook time.
     system: |
-      You must use the {{.UnitSystem}} unit system for the primary measurements (unit and amount fields).
+      Use the original units from the source text as the primary measurements (unit and amount fields). Do not convert source measurements just to match a user preference.
+      If the source text has no clear measurements and you must infer them, use the {{.UnitSystem}} unit system for those inferred primary measurements.
       For EVERY ingredient, you must ALSO provide the metric equivalent in the metric_unit and metric_amount fields.
       Use accurate cooking-specific conversions (e.g., 1 cup all-purpose flour = 120g, 1 cup granulated sugar = 200g, 1 cup butter = 227g, 1 cup water/milk = 240mL).
-      If the primary unit system is already Metric, duplicate the values into metric_unit and metric_amount.
+      If the primary unit is already metric, duplicate the values into metric_unit and metric_amount.
+      Report the detected primary measurement system via the unit_system field.
     user: |
       Extract the recipe from the following text:
       {{.Prompt}}
@@ -172,9 +180,11 @@ import:
       When units are ambiguous, prefer the most common cooking interpretation (e.g., "1 tomato" → pieces, not weight).
     system: |
       Use the original units from the source text as the primary measurements.
+      Do not convert source measurements just to match a user preference.
       For EVERY ingredient, also provide the metric equivalent in metric_unit and metric_amount.
       Use accurate cooking-specific conversions (e.g., 1 cup all-purpose flour = 120g, 1 cup granulated sugar = 200g, 1 cup butter = 227g, 1 cup water/milk = 240mL).
       If the primary unit is already metric, duplicate the values into metric_unit and metric_amount.
+      Report the detected primary measurement system via the unit_system field.
     user: |
       Extract the recipe from the following page content:
       {{.Prompt}}
