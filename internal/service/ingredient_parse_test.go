@@ -75,7 +75,7 @@ func TestParseIngredientLine(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			amount, unit, name, ok := ParseIngredientLine(tt.input)
+			amount, _, unit, name, ok := ParseIngredientLine(tt.input)
 			if ok != tt.wantOK {
 				t.Fatalf("ParseIngredientLine(%q) ok = %v, want %v", tt.input, ok, tt.wantOK)
 			}
@@ -92,5 +92,42 @@ func TestParseIngredientLine(t *testing.T) {
 				t.Errorf("ParseIngredientLine(%q) name = %q, want %q", tt.input, name, tt.wantName)
 			}
 		})
+	}
+}
+
+func TestParseIngredientLine_CapturesRangeHigh(t *testing.T) {
+	cases := []struct {
+		input    string
+		wantLow  float64
+		wantHigh float64
+	}{
+		{"2 - 3 cups stock", 2, 3},
+		{"1 to 2 tsp vanilla", 1, 2},
+		{"2 cups flour", 2, 0}, // scalar: no high bound
+	}
+	for _, c := range cases {
+		low, high, _, _, ok := ParseIngredientLine(c.input)
+		if !ok || !almostEqual(low, c.wantLow) || !almostEqual(high, c.wantHigh) {
+			t.Errorf("ParseIngredientLine(%q) = %v..%v ok=%v; want %v..%v", c.input, low, high, ok, c.wantLow, c.wantHigh)
+		}
+	}
+}
+
+func TestParseIngredientLine_DecimalComma(t *testing.T) {
+	cases := []struct {
+		input      string
+		wantAmount float64
+		wantUnit   string
+	}{
+		{"1,5 L water", 1.5, "L"},
+		{"0,5 kg flour", 0.5, "kg"},
+		{"250,5 g sugar", 250.5, "g"},
+		{"1,000 g rice", 1000, "g"}, // thousands grouping
+	}
+	for _, c := range cases {
+		amount, _, unit, _, ok := ParseIngredientLine(c.input)
+		if !ok || !almostEqual(amount, c.wantAmount) || unit != c.wantUnit {
+			t.Errorf("ParseIngredientLine(%q) = %v %q ok=%v; want %v %q", c.input, amount, unit, ok, c.wantAmount, c.wantUnit)
+		}
 	}
 }

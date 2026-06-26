@@ -209,11 +209,17 @@ func (h *ImportHandler) ImportManual(c *gin.Context) {
 	}
 
 	// Use the unit system supplied by the client when present (e.g. preserved
-	// from a preview extraction); only fall back to the user's personalization
-	// when the request does not specify one.
+	// from a preview extraction). Otherwise detect it from the entered
+	// ingredients so a US recipe typed by a metric user is labeled correctly,
+	// only falling back to the user's personalization when no unit markers
+	// exist at all.
 	unitSystem := request.UnitSystem
 	if unitSystem == "" {
-		unitSystem = user.Personalization.UnitSystem
+		if detected, hasMarker := service.DetectUnitSystemFromIngredients(ingredients); hasMarker {
+			unitSystem = detected
+		} else {
+			unitSystem = user.Personalization.UnitSystem
+		}
 	}
 
 	recipeDef := &models.RecipeDef{

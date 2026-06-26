@@ -22,6 +22,12 @@ func MaterializeCanonical(recipe *models.Recipe, repo repository.RecipeRepo) err
 		data.SourceURL = recipe.SourceURL
 	}
 
+	// Detach the ingredient slice from the shared canonical struct, then
+	// backfill normalized measurement fields. This lazily upgrades canonicals
+	// materialized before the normalization fields existed.
+	data.Ingredients = append(models.Ingredients(nil), data.Ingredients...)
+	normalizeIngredients(&data)
+
 	recipe.RecipeDef = data
 	recipe.HasDiverged = true
 

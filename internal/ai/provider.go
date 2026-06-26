@@ -89,6 +89,7 @@ type IngredientResult struct {
 	Name         string
 	Unit         string
 	Amount       float64
+	AmountHigh   float64
 	MetricUnit   string
 	MetricAmount float64
 	OriginalText string
