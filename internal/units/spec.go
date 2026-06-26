@@ -84,8 +84,6 @@ var aliases = map[string]string{
 	// metric volume
 	"ml": "mL", "mls": "mL", "milliliter": "mL", "milliliters": "mL",
 	"millilitre": "mL", "millilitres": "mL", "cc": "mL",
-	"cl": "cl", "centiliter": "cl", "centilitre": "cl",
-	"dl": "dl", "deciliter": "dl", "decilitre": "dl",
 	"l": "L", "liter": "L", "liters": "L", "litre": "L", "litres": "L",
 	// metric weight
 	"mg": "mg", "mgs": "mg", "milligram": "mg", "milligrams": "mg",
@@ -109,13 +107,6 @@ var aliases = map[string]string{
 	"package": "pieces", "packages": "pieces", "pkg": "pieces", "pkgs": "pieces",
 	"ear": "pieces", "ears": "pieces",
 	"fillet": "pieces", "fillets": "pieces",
-}
-
-// cl and dl are non-canonical metric volumes we accept on input and fold into
-// mL so the rest of the pipeline only deals with the canonical enum.
-var inputOnlyFactor = map[string]float64{
-	"cl": 10,
-	"dl": 100,
 }
 
 // liquidNames are ingredient-name substrings that mark an "oz" measurement as a
@@ -224,9 +215,6 @@ func BaseAmount(amount float64, unit, kind string) float64 {
 	if u == "oz" && kind == KindVolume {
 		return amount * meta["fl oz"].factor
 	}
-	if f, ok := inputOnlyFactor[strings.ToLower(unit)]; ok {
-		return amount * f
-	}
 	if m, ok := meta[u]; ok {
 		return amount * m.factor
 	}
@@ -300,23 +288,6 @@ func ExpressInSystem(base float64, kind, system string) (float64, string) {
 	return 0, ""
 }
 
-// Scale multiplies a quantity by factor and re-expresses it in its own
-// (source) system with a cooking-friendly unit. Count/imprecise units scale
-// their amount but keep their unit. Rounding happens once, here.
-func Scale(q Quantity, factor float64) (float64, string) {
-	if factor <= 0 {
-		return q.Amount, q.Unit
-	}
-	if q.Kind == KindCount || q.Kind == KindImprecise || q.Kind == "" || SystemOf(q.Unit) == "" {
-		return roundCount(q.Amount * factor), q.Unit
-	}
-	base := q.BaseAmount
-	if base == 0 {
-		base = BaseAmount(q.Amount, q.Unit, q.Kind)
-	}
-	return ExpressInSystem(base*factor, q.Kind, SystemOf(q.Unit))
-}
-
 // --- system-specific unit selection -----------------------------------------
 
 func usVolume(ml float64) (float64, string) {
@@ -384,15 +355,6 @@ func snapCookingFraction(x float64) float64 {
 
 func round1(x float64) float64 { return math.Round(x*10) / 10 }
 func round2(x float64) float64 { return math.Round(x*100) / 100 }
-
-// roundCount rounds discrete counts to a half when small, whole when larger,
-// so scaling never yields "1.5 cans" style noise on big counts.
-func roundCount(x float64) float64 {
-	if x < 4 {
-		return math.Round(x*2) / 2
-	}
-	return math.Round(x)
-}
 
 // roundMetricSmall rounds a sub-1000 metric magnitude to a tidy value: whole
 // numbers, or the nearest 5 once we are into the hundreds.
