@@ -708,6 +708,15 @@ func TestHandleVoiceTranscript_AudioFormatPassedToSpeechProvider(t *testing.T) {
 // --- CheckOrigin tests ---
 
 func TestCheckOrigin(t *testing.T) {
+	check := func(origin string) bool {
+		req := httptest.NewRequest(http.MethodGet, "/v1/ws/cook/1", nil)
+		if origin != "" {
+			req.Header.Set("Origin", origin)
+		}
+		return upgrader.CheckOrigin(req)
+	}
+
+	// Allowed/blocked regardless of the dev-origins flag.
 	cases := []struct {
 		origin string
 		want   bool
@@ -716,20 +725,23 @@ func TestCheckOrigin(t *testing.T) {
 		{"https://saltybytes.ai", true},
 		{"https://www.saltybytes.ai", true},
 		{"https://api.saltybytes.ai", true},
-		{"http://localhost", true},
-		{"http://localhost:3000", true},
 		{"https://evil.example.com", false},
 		{"http://saltybytes.ai.evil.com", false},
 	}
-
 	for _, tc := range cases {
-		req := httptest.NewRequest(http.MethodGet, "/v1/ws/cook/1", nil)
-		if tc.origin != "" {
-			req.Header.Set("Origin", tc.origin)
-		}
-		if got := upgrader.CheckOrigin(req); got != tc.want {
+		if got := check(tc.origin); got != tc.want {
 			t.Errorf("CheckOrigin(origin=%q) = %v, want %v", tc.origin, got, tc.want)
 		}
+	}
+
+	// localhost is rejected by default (production) and accepted only when dev
+	// origins are explicitly enabled.
+	if check("http://localhost:3000") {
+		t.Error("localhost origin should be rejected when ALLOW_DEV_ORIGINS is unset")
+	}
+	t.Setenv("ALLOW_DEV_ORIGINS", "true")
+	if !check("http://localhost") || !check("http://localhost:3000") {
+		t.Error("localhost origin should be accepted when ALLOW_DEV_ORIGINS=true")
 	}
 }
 
