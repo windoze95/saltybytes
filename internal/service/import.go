@@ -18,6 +18,7 @@ import (
 	"github.com/windoze95/saltybytes-api/internal/models"
 	"github.com/windoze95/saltybytes-api/internal/repository"
 	"github.com/windoze95/saltybytes-api/internal/s3"
+	"github.com/windoze95/saltybytes-api/internal/units"
 	"go.uber.org/zap"
 )
 
@@ -575,9 +576,7 @@ func (s *ImportService) ImportFromPhoto(ctx context.Context, imageData []byte, u
 	}
 
 	def := recipeResultToRecipeDef(result)
-	if def.UnitSystem == "" {
-		def.UnitSystem = user.Personalization.UnitSystem
-	}
+	ensureUnitSystem(&def)
 
 	// Create the recipe first to get an ID for S3 upload
 	recipeResponse, recipeID, err := s.createImportedRecipe(ctx, &def, user, models.RecipeTypeImportVision, "", "", nil, result.Hashtags, result.PromptVersion)
@@ -835,6 +834,13 @@ func (s *ImportService) createImportedRecipe(ctx context.Context, recipeDef *mod
 		return nil, 0, fmt.Errorf("recipe title is required")
 	}
 
+	// Idempotent safety net: ensure every imported recipe carries normalized
+	// measurement fields even if it reached here without going through a
+	// builder (e.g. the manual path). Detach the ingredient slice first so a
+	// cache-hit canonical's backing array is never mutated in place.
+	recipeDef.Ingredients = append(models.Ingredients(nil), recipeDef.Ingredients...)
+	normalizeIngredients(recipeDef)
+
 	// Estimate portions when the import lacks them (best-effort).
 	if recipeDef.Portions <= 0 && s.Normalize != nil {
 		if estimate, err := s.Normalize.EstimatePortions(ctx, recipeDef); err != nil {
@@ -1062,11 +1068,12 @@ func jsonLDToRecipeDef(recipe *jsonLDRecipe) (*models.RecipeDef, []string, strin
 	// always preserving the original text for display.
 	ingredients := make(models.Ingredients, len(recipe.Ingredients))
 	for i, ingStr := range recipe.Ingredients {
-		if amount, unit, name, ok := ParseIngredientLine(ingStr); ok {
+		if amount, high, unit, name, ok := ParseIngredientLine(ingStr); ok {
 			ingredients[i] = models.Ingredient{
 				Name:         name,
 				Unit:         unit,
 				Amount:       amount,
+				AmountHigh:   high,
 				OriginalText: ingStr,
 			}
 		} else {
@@ -1096,7 +1103,7 @@ func jsonLDToRecipeDef(recipe *jsonLDRecipe) (*models.RecipeDef, []string, strin
 
 	imageURL := parseJSONLDImage(recipe.Image)
 
-	return &models.RecipeDef{
+	def := &models.RecipeDef{
 		Title:        recipe.Name,
 		Ingredients:  ingredients,
 		Instructions: instructions,
@@ -1104,7 +1111,9 @@ func jsonLDToRecipeDef(recipe *jsonLDRecipe) (*models.RecipeDef, []string, strin
 		Portions:     portions,
 		ImagePrompt:  fmt.Sprintf("A photo of %s", recipe.Name),
 		UnitSystem:   unitSystem,
-	}, hashtags, imageURL, nil
+	}
+	normalizeIngredients(def)
+	return def, hashtags, imageURL, nil
 }
 
 // parseJSONLDImage extracts the first usable https image URL from a JSON-LD
@@ -1147,6 +1156,40 @@ func ensureUnitSystem(def *models.RecipeDef) {
 	def.UnitSystem = detectUnitSystem(lines)
 }
 
+// normalizeIngredients populates the deterministic, user-agnostic measurement
+// fields on every ingredient (MeasureKind + BaseAmount) and runs the density
+// sanity guard on the AI metric equivalent. It is idempotent and takes no user
+// input, so it is safe to call at every RecipeDef-construction point and keeps
+// the canonical recipe identical regardless of who imported it.
+//
+// The density guard: when a volume ingredient carries a mass metric equivalent,
+// the implied density must be physically plausible (roughly 0.1–3.0 g/mL spans
+// everything from puffed cereal to honey). An order-of-magnitude hallucination
+// ("2 cups flour = 5000 g") is rejected in favor of an exact same-dimension
+// metric volume, so a metric viewer still gets a sane number with no curated
+// density table.
+func normalizeIngredients(def *models.RecipeDef) {
+	if def == nil {
+		return
+	}
+	for i := range def.Ingredients {
+		ing := &def.Ingredients[i]
+		kind := units.MeasureKind(ing.Unit, ing.Name, ing.MetricUnit)
+		ing.MeasureKind = kind
+		ing.BaseAmount = units.BaseAmount(ing.Amount, ing.Unit, kind)
+
+		if kind == units.KindVolume && ing.BaseAmount > 0 && ing.MetricAmount > 0 &&
+			units.DimensionOf(ing.MetricUnit) == units.KindMass {
+			grams := units.BaseAmount(ing.MetricAmount, ing.MetricUnit, units.KindMass)
+			if density := grams / ing.BaseAmount; density < 0.1 || density > 3.0 {
+				amt, unit := units.ExpressInSystem(ing.BaseAmount, units.KindVolume, units.SystemMetric)
+				ing.MetricAmount = amt
+				ing.MetricUnit = unit
+			}
+		}
+	}
+}
+
 // Compiled regexes for unit system detection.
 var (
 	// Matches metric units: "250g", "100 mL", "2 kg", "500ml", etc.
@@ -1171,6 +1214,27 @@ func detectUnitSystem(ingredients []string) string {
 		return "metric"
 	}
 	return "us_customary"
+}
+
+// DetectUnitSystemFromIngredients detects the measurement system from manual
+// ingredient entries, returning ok=false when no line carries any unit marker
+// at all (so the caller can fall back to a user preference instead of
+// defaulting to us_customary). This keeps a metric user's "2 cups" recipe
+// labeled us_customary while a unit-less "2 eggs" recipe defers to preference.
+func DetectUnitSystemFromIngredients(ings models.Ingredients) (string, bool) {
+	lines := make([]string, 0, len(ings))
+	hasMarker := false
+	for _, ing := range ings {
+		line := ing.OriginalText
+		if line == "" {
+			line = strings.TrimSpace(fmt.Sprintf("%v %s %s", ing.Amount, ing.Unit, ing.Name))
+		}
+		lines = append(lines, line)
+		if metricRe.MatchString(line) || usRe.MatchString(line) {
+			hasMarker = true
+		}
+	}
+	return detectUnitSystem(lines), hasMarker
 }
 
 // parseJSONLDInstructions extracts instruction strings from various JSON-LD formats.

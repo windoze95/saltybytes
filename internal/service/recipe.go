@@ -285,12 +285,13 @@ func recipeResultToRecipeDef(r *ai.RecipeResult) models.RecipeDef {
 			Name:         ing.Name,
 			Unit:         ing.Unit,
 			Amount:       ing.Amount,
+			AmountHigh:   ing.AmountHigh,
 			MetricUnit:   ing.MetricUnit,
 			MetricAmount: ing.MetricAmount,
 			OriginalText: ing.OriginalText,
 		}
 	}
-	return models.RecipeDef{
+	def := models.RecipeDef{
 		Title:             r.Title,
 		Ingredients:       ingredients,
 		Instructions:      r.Instructions,
@@ -302,6 +303,8 @@ func recipeResultToRecipeDef(r *ai.RecipeResult) models.RecipeDef {
 		SourceURL:         r.SourceURL,
 		UnitSystem:        r.UnitSystem,
 	}
+	normalizeIngredients(&def)
+	return def
 }
 
 // validateRecipeFields validates that the Recipe's required fields are populated.

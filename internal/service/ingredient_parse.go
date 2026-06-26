@@ -80,15 +80,15 @@ var unitAliases = map[string]string{
 // used). The unit is optional; when no known unit token follows the quantity,
 // unit is returned empty. Lines without a leading numeric quantity (e.g.
 // "a pinch of salt") return ok=false and should keep their original text.
-func ParseIngredientLine(s string) (amount float64, unit string, name string, ok bool) {
+func ParseIngredientLine(s string) (amount float64, amountHigh float64, unit string, name string, ok bool) {
 	tokens := strings.Fields(strings.TrimSpace(s))
 	if len(tokens) == 0 {
-		return 0, "", "", false
+		return 0, 0, "", "", false
 	}
 
-	amount, consumed, ok := parseQuantity(tokens)
+	amount, amountHigh, consumed, ok := parseQuantity(tokens)
 	if !ok || amount <= 0 {
-		return 0, "", "", false
+		return 0, 0, "", "", false
 	}
 	rest := tokens[consumed:]
 
@@ -103,38 +103,41 @@ func ParseIngredientLine(s string) (amount float64, unit string, name string, ok
 	name = strings.Join(rest, " ")
 	name = strings.TrimSpace(strings.TrimPrefix(name, "of "))
 	if name == "" {
-		return 0, "", "", false
+		return 0, 0, "", "", false
 	}
-	return amount, unit, name, true
+	return amount, amountHigh, unit, name, true
 }
 
 // parseQuantity parses a leading quantity from the token stream, returning the
 // value and the number of tokens consumed. It handles plain numbers, ASCII and
 // unicode fractions, mixed numbers ("1 1/2", "1½"), and ranges ("1-2",
 // "1 to 2") where the low value is kept.
-func parseQuantity(tokens []string) (float64, int, bool) {
+func parseQuantity(tokens []string) (low float64, high float64, consumed int, ok bool) {
 	first, ok := parseNumberToken(tokens[0])
 	if !ok {
-		return 0, 0, false
+		return 0, 0, 0, false
 	}
-	consumed := 1
+	low = first
+	consumed = 1
 
 	// Mixed number across tokens: "1 1/2", "1 ½"
 	if len(tokens) > consumed {
 		if frac, fracOK := parseFractionToken(tokens[consumed]); fracOK {
-			first += frac
+			low += frac
 			consumed++
 		}
 	}
 
-	// Range across tokens: "1 - 2", "1 to 2" — keep the low value.
+	// Range across tokens: "1 - 2", "1 to 2" — keep the low value as the
+	// primary amount and capture the high bound.
 	if len(tokens) > consumed+1 && isRangeSeparator(tokens[consumed]) {
-		if _, highOK := parseNumberToken(tokens[consumed+1]); highOK {
+		if h, highOK := parseNumberToken(tokens[consumed+1]); highOK {
+			high = h
 			consumed += 2
 		}
 	}
 
-	return first, consumed, true
+	return low, high, consumed, true
 }
 
 // isRangeSeparator reports whether a token separates the low and high values
@@ -153,6 +156,8 @@ func parseNumberToken(tok string) (float64, bool) {
 	if tok == "" {
 		return 0, false
 	}
+
+	tok = normalizeDecimalToken(tok)
 
 	// Hyphenated token: mixed number ("1-1/2") or range ("1-2").
 	for _, sep := range []string{"-", "–", "—"} {
@@ -197,6 +202,26 @@ func parseNumberToken(tok string) (float64, bool) {
 		return 0, false
 	}
 	return v, true
+}
+
+// normalizeDecimalToken folds a European decimal comma ("1,5" -> "1.5") or a
+// thousands grouping ("1,000" -> "1000") into a plain parseable number, so a
+// metric source recipe's quantities are not silently zeroed. Only a single
+// comma in an otherwise all-digit, period-free token is touched; three trailing
+// digits are read as grouping, fewer as a decimal fraction.
+func normalizeDecimalToken(tok string) string {
+	if strings.Count(tok, ",") != 1 || strings.Contains(tok, ".") {
+		return tok
+	}
+	i := strings.IndexByte(tok, ',')
+	intPart, fracPart := tok[:i], tok[i+1:]
+	if !isWholeIntegerToken(intPart) || !isWholeIntegerToken(fracPart) {
+		return tok
+	}
+	if len(fracPart) == 3 {
+		return intPart + fracPart
+	}
+	return intPart + "." + fracPart
 }
 
 // isWholeIntegerToken reports whether a token is a plain whole integer

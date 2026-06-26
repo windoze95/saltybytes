@@ -94,8 +94,10 @@ func createRecipeTool(summaryPrompt string) anthropic.ToolUnionParam {
 								"name":          map[string]interface{}{"type": "string", "description": "Name of the ingredient, do not include unit or amount in this field"},
 								"unit":          map[string]interface{}{"type": "string", "description": "Unit for the ingredient, comply with UnitSystem specified.", "enum": []string{"pieces", "tsp", "tbsp", "fl oz", "cup", "pt", "qt", "gal", "oz", "lb", "mL", "L", "mg", "g", "kg", "pinch", "dash", "drop", "bushel"}},
 								"amount":        map[string]interface{}{"type": "number", "description": "Amount of the ingredient"},
+								"amount_high":   map[string]interface{}{"type": "number", "description": "Upper bound when the source gives a range (e.g. '2-3 cups' -> amount 2, amount_high 3). Omit or 0 for a single amount."},
 								"metric_unit":   map[string]interface{}{"type": "string", "description": "Metric equivalent unit. Always metric (g, kg, mL, L, mg). Duplicate primary if already metric.", "enum": []string{"mg", "g", "kg", "mL", "L"}},
 								"metric_amount": map[string]interface{}{"type": "number", "description": "Metric equivalent amount. Use accurate cooking conversions (1 cup flour=120g, 1 cup butter=227g, 1 cup water=240mL). Round to practical amounts."},
+								"original_text": map[string]interface{}{"type": "string", "description": "The verbatim ingredient line as written in the source (e.g. '1 1/2 cups all-purpose flour, sifted'). Copy it exactly; leave empty only when generating an original recipe with no source text."},
 							},
 						},
 					},
@@ -164,8 +166,10 @@ type ingredientToolRes struct {
 	Name         string  `json:"name"`
 	Unit         string  `json:"unit"`
 	Amount       float64 `json:"amount"`
+	AmountHigh   float64 `json:"amount_high"`
 	MetricUnit   string  `json:"metric_unit"`
 	MetricAmount float64 `json:"metric_amount"`
+	OriginalText string  `json:"original_text"`
 }
 
 // analyzeAllergensTool builds the Claude tool definition for allergen analysis.
@@ -425,8 +429,10 @@ func toolResultToRecipeResult(tr *recipeToolResult) *RecipeResult {
 			Name:         ing.Name,
 			Unit:         ing.Unit,
 			Amount:       ing.Amount,
+			AmountHigh:   ing.AmountHigh,
 			MetricUnit:   ing.MetricUnit,
 			MetricAmount: ing.MetricAmount,
+			OriginalText: ing.OriginalText,
 		}
 	}
 	return &RecipeResult{

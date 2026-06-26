@@ -43,6 +43,13 @@ func (j RecipeDef) Value() (driver.Value, error) {
 }
 
 // Ingredient is a struct that represents an ingredient in a recipe.
+//
+// Unit/Amount are the SOURCE measurement (authoritative primary, never rewritten
+// to a viewer's preference). MetricUnit/MetricAmount carry the AI-provided
+// density-aware metric equivalent. MeasureKind/BaseAmount are deterministic,
+// user-agnostic normalization (see internal/units) used for display conversion,
+// scaling, and future unit-aware search. AmountHigh is the upper bound of a
+// range quantity ("2-3 cups"); zero for a scalar.
 type Ingredient struct {
 	Name         string  `json:"name"`
 	Unit         string  `json:"unit"`
@@ -50,6 +57,9 @@ type Ingredient struct {
 	MetricUnit   string  `json:"metric_unit,omitempty"`
 	MetricAmount float64 `json:"metric_amount,omitempty"`
 	OriginalText string  `json:"original_text,omitempty"`
+	MeasureKind  string  `json:"measure_kind,omitempty"`
+	BaseAmount   float64 `json:"base_amount,omitempty"`
+	AmountHigh   float64 `json:"amount_high,omitempty"`
 }
 
 // Ingredients is a slice of Ingredient.
