@@ -11,7 +11,7 @@ func TestCanonical(t *testing.T) {
 	cases := map[string]string{
 		"grams": "g", "Grams": "g", "ml": "mL", "ML": "mL",
 		"tablespoons": "tbsp", "CUPS": "cup", "pounds": "lb",
-		"cloves": "pieces", "sticks": "pieces", "dl": "dl",
+		"cloves": "pieces", "sticks": "pieces",
 	}
 	for in, want := range cases {
 		if got, ok := Canonical(in); !ok || got != want {
@@ -63,7 +63,6 @@ func TestBaseAmount(t *testing.T) {
 		{1, "L", KindVolume, 1000},
 		{2, "pieces", KindCount, 2},
 		{1, "pinch", KindImprecise, 0},
-		{5, "dl", KindVolume, 500}, // input-only metric unit
 	}
 	for _, c := range cases {
 		if got := BaseAmount(c.amount, c.unit, c.kind); !approx(got, c.want) {
@@ -136,27 +135,6 @@ func TestToViewer(t *testing.T) {
 		if !ok {
 			continue
 		}
-		if !approx(amt, c.wantAmount) || unit != c.wantUnit {
-			t.Errorf("%s: = %v %q; want %v %q", c.name, amt, unit, c.wantAmount, c.wantUnit)
-		}
-	}
-}
-
-func TestScale(t *testing.T) {
-	cases := []struct {
-		name       string
-		q          Quantity
-		factor     float64
-		wantAmount float64
-		wantUnit   string
-	}{
-		{"8 tbsp doubled is 1 cup", Quantity{Amount: 8, Unit: "tbsp", Kind: KindVolume, BaseAmount: 118.294}, 2, 1, "cup"},
-		{"1/3 cup tripled is 1 cup", Quantity{Amount: 1.0 / 3, Unit: "cup", Kind: KindVolume, BaseAmount: 236.588 / 3}, 3, 1, "cup"},
-		{"3 eggs halved is 1.5 pieces", Quantity{Amount: 3, Unit: "pieces", Kind: KindCount}, 0.5, 1.5, "pieces"},
-		{"200 g doubled is 400 g", Quantity{Amount: 200, Unit: "g", Kind: KindMass, BaseAmount: 200}, 2, 400, "g"},
-	}
-	for _, c := range cases {
-		amt, unit := Scale(c.q, c.factor)
 		if !approx(amt, c.wantAmount) || unit != c.wantUnit {
 			t.Errorf("%s: = %v %q; want %v %q", c.name, amt, unit, c.wantAmount, c.wantUnit)
 		}

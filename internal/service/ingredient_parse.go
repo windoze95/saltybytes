@@ -3,6 +3,8 @@ package service
 import (
 	"strconv"
 	"strings"
+
+	"github.com/windoze95/saltybytes-api/internal/units"
 )
 
 // unicodeFractions maps single-rune vulgar fractions to their decimal values.
@@ -25,52 +27,6 @@ var unicodeFractions = map[rune]float64{
 	'⅞': 7.0 / 8,
 	'⅑': 1.0 / 9,
 	'⅒': 1.0 / 10,
-}
-
-// unitAliases maps lowercase unit spellings (plurals, abbreviations, long
-// forms) to the canonical unit enum used by the create_recipe Claude tool
-// schema: pieces, tsp, tbsp, fl oz, cup, pt, qt, gal, oz, lb, mL, L, mg, g,
-// kg, pinch, dash, drop, bushel.
-// "T"/"t" are handled case-sensitively before this table is consulted.
-var unitAliases = map[string]string{
-	// volume — US customary
-	"tsp": "tsp", "tsps": "tsp", "teaspoon": "tsp", "teaspoons": "tsp",
-	"tbsp": "tbsp", "tbsps": "tbsp", "tbs": "tbsp", "tbl": "tbsp", "tblsp": "tbsp",
-	"tablespoon": "tbsp", "tablespoons": "tbsp",
-	"cup": "cup", "cups": "cup", "c": "cup",
-	"pt": "pt", "pts": "pt", "pint": "pt", "pints": "pt",
-	"qt": "qt", "qts": "qt", "quart": "qt", "quarts": "qt",
-	"gal": "gal", "gals": "gal", "gallon": "gal", "gallons": "gal",
-	"floz": "fl oz",
-	// weight — US customary
-	"oz": "oz", "ozs": "oz", "ounce": "oz", "ounces": "oz",
-	"lb": "lb", "lbs": "lb", "pound": "lb", "pounds": "lb",
-	// metric volume
-	"ml": "mL", "mls": "mL", "milliliter": "mL", "milliliters": "mL",
-	"millilitre": "mL", "millilitres": "mL", "cc": "mL",
-	"l": "L", "liter": "L", "liters": "L", "litre": "L", "litres": "L",
-	// metric weight
-	"mg": "mg", "mgs": "mg", "milligram": "mg", "milligrams": "mg",
-	"g": "g", "gram": "g", "grams": "g", "gr": "g",
-	"kg": "kg", "kgs": "kg", "kilogram": "kg", "kilograms": "kg", "kilo": "kg", "kilos": "kg",
-	// small measures
-	"pinch": "pinch", "pinches": "pinch",
-	"dash": "dash", "dashes": "dash",
-	"drop": "drop", "drops": "drop",
-	"bushel": "bushel", "bushels": "bushel",
-	// countable descriptors — collapse to the canonical "pieces"
-	"piece": "pieces", "pieces": "pieces", "pc": "pieces", "pcs": "pieces",
-	"clove": "pieces", "cloves": "pieces",
-	"can": "pieces", "cans": "pieces",
-	"slice": "pieces", "slices": "pieces",
-	"stick": "pieces", "sticks": "pieces",
-	"stalk": "pieces", "stalks": "pieces",
-	"sprig": "pieces", "sprigs": "pieces",
-	"head": "pieces", "heads": "pieces",
-	"bunch": "pieces", "bunches": "pieces",
-	"package": "pieces", "packages": "pieces", "pkg": "pieces", "pkgs": "pieces",
-	"ear": "pieces", "ears": "pieces",
-	"fillet": "pieces", "fillets": "pieces",
 }
 
 // ParseIngredientLine deterministically parses a free-form ingredient line
@@ -288,7 +244,7 @@ func matchUnit(tokens []string) (string, int) {
 		return "", 0
 	}
 
-	if canonical, ok := unitAliases[lower]; ok {
+	if canonical, ok := units.Canonical(lower); ok {
 		return canonical, 1
 	}
 	return "", 0
