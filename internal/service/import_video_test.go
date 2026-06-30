@@ -356,6 +356,61 @@ func TestVideoImport_RefundsQuotaOnFailure(t *testing.T) {
 	}
 }
 
+func TestVideoImport_TextPath(t *testing.T) {
+	repo := testutil.NewMockRecipeRepo()
+	vrepo := testutil.NewMockVideoImportRepo()
+	svc := newVideoTestService(repo, vrepo)
+
+	// A YouTube-style result: no downloadable media, recipe in the text.
+	svc.VideoFetcher = &fakeVideoFetcher{meta: &video.VideoMeta{
+		Platform: video.PlatformYouTube,
+		VideoID:  "yt123",
+		Caption:  "Honey Garlic Chicken\n\n5 ingredients: chicken, honey, garlic, soy, butter.",
+		MediaURL: "", // text path
+	}}
+	sampler := &fakeFrameSampler{}
+	svc.VideoFrameSampler = sampler
+
+	visionCalls := 0
+	svc.VisionProvider = &testutil.MockVisionProvider{
+		ExtractRecipesFromMediaFunc: func(ctx context.Context, media []ai.MediaInput, contextText, unitSystem, requirements string) ([]*ai.RecipeResult, error) {
+			visionCalls++
+			return nil, nil
+		},
+	}
+	var gotText string
+	svc.TextProvider = &testutil.MockTextProvider{
+		ExtractRecipeFromTextFunc: func(ctx context.Context, text, unitSystem string) (*ai.RecipeResult, error) {
+			gotText = text
+			return testutil.TestRecipeResult(), nil
+		},
+	}
+
+	job, err := svc.StartVideoImport(context.Background(), "https://www.youtube.com/watch?v=yt123", testutil.TestUser())
+	if err != nil {
+		t.Fatalf("StartVideoImport: %v", err)
+	}
+	done := waitForVideoJob(t, svc, job.ID)
+	if done.Status != models.VideoImportDone || done.RecipeID == nil {
+		t.Fatalf("status=%q recipe=%v, want done with a recipe", done.Status, done.RecipeID)
+	}
+	if sampler.calls != 0 {
+		t.Errorf("frame sampler called %d times on text path, want 0", sampler.calls)
+	}
+	if visionCalls != 0 {
+		t.Errorf("vision called %d times on text path, want 0", visionCalls)
+	}
+	if !strings.Contains(gotText, "Honey Garlic Chicken") {
+		t.Errorf("text extraction input = %q, want the caption", gotText)
+	}
+	if got := repo.Recipes[*done.RecipeID].ImageURL; got != "" {
+		t.Errorf("text-path recipe should have no thumbnail, got %q", got)
+	}
+	if done.CostUSD <= 0 || done.CostUSD > 0.05 {
+		t.Errorf("text-path cost = %v, want ~the flat text overhead", done.CostUSD)
+	}
+}
+
 func TestVideoImport_FetchFailed(t *testing.T) {
 	repo := testutil.NewMockRecipeRepo()
 	vrepo := testutil.NewMockVideoImportRepo()

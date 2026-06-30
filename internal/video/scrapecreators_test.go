@@ -240,6 +240,66 @@ func TestFetchVideo_Facebook_NotAVideo(t *testing.T) {
 	}
 }
 
+func TestFetchVideo_YouTube(t *testing.T) {
+	const fixture = `{"success":true,"id":"b5-8lr_F8dM","title":"Honey Garlic Chicken","description":"5 ingredients: chicken, honey, garlic, soy sauce, butter. Ready in 20 minutes.","durationMs":32000,"durationFormatted":"00:00:32"}`
+	c := NewScrapeCreatorsClient("k")
+	var gotURL string
+	c.httpDo = func(req *http.Request) (*http.Response, error) {
+		gotURL = req.URL.String()
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(fixture))}, nil
+	}
+
+	m, err := c.FetchVideo(context.Background(), "https://www.youtube.com/watch?v=b5-8lr_F8dM")
+	if err != nil {
+		t.Fatalf("FetchVideo error: %v", err)
+	}
+	if !strings.Contains(gotURL, "/v1/youtube/video") {
+		t.Errorf("request URL = %q", gotURL)
+	}
+	if m.Platform != PlatformYouTube {
+		t.Errorf("platform = %q, want youtube", m.Platform)
+	}
+	if m.VideoID != "b5-8lr_F8dM" {
+		t.Errorf("video id = %q", m.VideoID)
+	}
+	if !strings.Contains(m.Caption, "Honey Garlic Chicken") ||
+		!strings.Contains(m.Caption, "5 ingredients") {
+		t.Errorf("caption should combine title + description: %q", m.Caption)
+	}
+	if m.MediaURL != "" {
+		t.Errorf("media url = %q, want empty (text path)", m.MediaURL)
+	}
+	if m.DurationMS != 32000 {
+		t.Errorf("duration = %d, want 32000", m.DurationMS)
+	}
+}
+
+func TestFetchVideo_Pinterest(t *testing.T) {
+	const fixture = `{"success":true,"entityId":"1124351863225567517","title":"Cowboy Butter Chicken Linguine","description":"Tender chicken tossed in a rich, buttery garlic sauce over linguine.","closeupDescription":null}`
+	c := NewScrapeCreatorsClient("k")
+	c.httpDo = func(req *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(fixture))}, nil
+	}
+
+	m, err := c.FetchVideo(context.Background(), "https://www.pinterest.com/pin/1124351863225567517/")
+	if err != nil {
+		t.Fatalf("FetchVideo error: %v", err)
+	}
+	if m.Platform != PlatformPinterest {
+		t.Errorf("platform = %q, want pinterest", m.Platform)
+	}
+	if m.VideoID != "1124351863225567517" {
+		t.Errorf("video id = %q, want the entityId", m.VideoID)
+	}
+	if !strings.Contains(m.Caption, "Cowboy Butter Chicken Linguine") ||
+		!strings.Contains(m.Caption, "buttery garlic sauce") {
+		t.Errorf("caption should combine title + description: %q", m.Caption)
+	}
+	if m.MediaURL != "" {
+		t.Errorf("media url = %q, want empty (text path)", m.MediaURL)
+	}
+}
+
 func TestSanitizeJSONControlChars(t *testing.T) {
 	// Raw newline + tab inside a string value → must become valid, parseable JSON.
 	raw := []byte("{\"text\":\"a\nb\tc\",\"keep\":\"x\\ny\",\"n\":7}")
