@@ -764,6 +764,56 @@ func (m *MockUserRepo) IncrementSubscriptionUsage(userID uint, column string) er
 	return nil
 }
 
+// SubscriptionUsage reads a usage counter under lock, so tests can observe
+// asynchronous increments/refunds without racing the writer.
+func (m *MockUserRepo) SubscriptionUsage(userID uint, column string) int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	u, ok := m.Users[userID]
+	if !ok || u.Subscription == nil {
+		return -1
+	}
+	switch column {
+	case "allergen_analyses_used":
+		return u.Subscription.AllergenAnalysesUsed
+	case "web_searches_used":
+		return u.Subscription.WebSearchesUsed
+	case "ai_generations_used":
+		return u.Subscription.AIGenerationsUsed
+	case "video_imports_used":
+		return u.Subscription.VideoImportsUsed
+	}
+	return -1
+}
+
+func (m *MockUserRepo) DecrementSubscriptionUsage(userID uint, column string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	u, ok := m.Users[userID]
+	if !ok || u.Subscription == nil {
+		return fmt.Errorf("no subscription found for user")
+	}
+	dec := func(p *int) {
+		if *p > 0 {
+			*p--
+		}
+	}
+	switch column {
+	case "allergen_analyses_used":
+		dec(&u.Subscription.AllergenAnalysesUsed)
+	case "web_searches_used":
+		dec(&u.Subscription.WebSearchesUsed)
+	case "ai_generations_used":
+		dec(&u.Subscription.AIGenerationsUsed)
+	case "video_imports_used":
+		dec(&u.Subscription.VideoImportsUsed)
+	default:
+		return fmt.Errorf("unknown usage column: %s", column)
+	}
+	return nil
+}
+
 func (m *MockUserRepo) ResetSubscriptionUsage(userID uint, nextReset time.Time) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

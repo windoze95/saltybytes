@@ -53,6 +53,12 @@ type ImportService struct {
 	VideoRepo         repository.VideoImportRepo
 	VideoFetcher      VideoFetcher
 	VideoFrameSampler VideoFrameSampler
+	// SubService refunds the per-user video quota when an accepted import later
+	// fails on our side. Optional; nil disables refunds (e.g. in tests).
+	SubService *SubscriptionService
+	// ThumbnailUploader stores a representative video frame and returns its URL.
+	// Optional test seam; nil uses the default S3 uploader.
+	ThumbnailUploader func(ctx context.Context, frameJPEG []byte, videoKey string) (string, error)
 
 	// Test seams — nil in production, set in tests to bypass real HTTP/Firecrawl calls
 	HTTPFetchOverride      func(ctx context.Context, url string) (body []byte, statusCode int, err error)

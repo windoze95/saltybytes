@@ -5,12 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
+	"syscall"
 	"time"
 )
 
@@ -41,9 +43,44 @@ type FrameSampler struct {
 	download func(ctx context.Context, mediaURL, dest string) error
 }
 
-// NewFrameSampler returns a sampler with sensible defaults.
+// NewFrameSampler returns a sampler with sensible defaults, including an
+// SSRF-hardened HTTP client (see newSafeHTTPClient).
 func NewFrameSampler() *FrameSampler {
-	return &FrameSampler{MaxFrames: DefaultMaxFrames, HTTP: &http.Client{Timeout: 90 * time.Second}}
+	return &FrameSampler{MaxFrames: DefaultMaxFrames, HTTP: newSafeHTTPClient()}
+}
+
+// safeDialControl rejects connections to non-public IP addresses. Used as
+// net.Dialer.Control it runs after DNS resolution with the resolved ip:port, so
+// it blocks SSRF through the initial host, any redirect hop, and DNS rebinding
+// alike — the scraper-supplied media URL is untrusted.
+func safeDialControl(_ /*network*/, address string, _ syscall.RawConn) error {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return err
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return fmt.Errorf("refusing to dial unparseable address %q", address)
+	}
+	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() {
+		return fmt.Errorf("refusing to dial non-public address %s", ip)
+	}
+	return nil
+}
+
+// newSafeHTTPClient builds an HTTP client whose dialer blocks private/internal
+// addresses on every connection, including redirect targets.
+func newSafeHTTPClient() *http.Client {
+	dialer := &net.Dialer{Timeout: 30 * time.Second, Control: safeDialControl}
+	return &http.Client{
+		Timeout: 90 * time.Second,
+		Transport: &http.Transport{
+			DialContext:           dialer.DialContext,
+			TLSHandshakeTimeout:   15 * time.Second,
+			ResponseHeaderTimeout: 30 * time.Second,
+			MaxIdleConns:          10,
+		},
+	}
 }
 
 func (s *FrameSampler) maxFrames() int {

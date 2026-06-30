@@ -15,6 +15,7 @@ type VideoExtractionCache struct {
 	Platform       string    `gorm:"size:32;not null"`
 	OriginalURL    string    `gorm:"size:2048;not null"`
 	RecipeData     RecipeDef `gorm:"type:jsonb;not null"`
+	ThumbnailURL   string    `gorm:"size:1024"` // S3 URL of a representative frame, shared across importers
 	HitCount       int       `gorm:"default:0"`
 	LastAccessedAt time.Time `gorm:"index;not null"`
 	FetchedAt      time.Time `gorm:"index;not null"`

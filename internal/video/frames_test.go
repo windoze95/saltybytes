@@ -108,6 +108,28 @@ func TestFrameSampler_DownloadError(t *testing.T) {
 	}
 }
 
+func TestSafeDialControl(t *testing.T) {
+	cases := []struct {
+		addr    string
+		blocked bool
+	}{
+		{"127.0.0.1:443", true},      // loopback
+		{"10.0.0.5:80", true},        // private
+		{"192.168.1.1:443", true},    // private
+		{"172.16.5.4:80", true},      // private
+		{"169.254.169.254:80", true}, // link-local (cloud metadata)
+		{"0.0.0.0:80", true},         // unspecified
+		{"8.8.8.8:443", false},       // public
+		{"203.0.113.10:443", false},  // public (TEST-NET-3)
+	}
+	for _, tc := range cases {
+		err := safeDialControl("tcp", tc.addr, nil)
+		if (err != nil) != tc.blocked {
+			t.Errorf("safeDialControl(%q): err=%v, want blocked=%v", tc.addr, err, tc.blocked)
+		}
+	}
+}
+
 func TestFrameSampler_NoFrames(t *testing.T) {
 	s := NewFrameSampler()
 	s.download = writeFakeVideo

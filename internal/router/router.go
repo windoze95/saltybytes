@@ -90,6 +90,7 @@ func SetupRouter(cfg *config.Config, database *gorm.DB) *gin.Engine {
 	importService.Normalize = service.NewNormalizeService(cfg, previewProvider)
 	importHandler := handlers.NewImportHandler(importService)
 	importHandler.SubService = subService
+	importService.SubService = subService
 	// MultiResolver is wired later after search setup; set via field
 
 	// Video-link import (premium). Stays dark until a ScrapeCreators API key is

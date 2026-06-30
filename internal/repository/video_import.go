@@ -31,7 +31,7 @@ func (r *VideoImportRepository) GetCacheByVideoKey(videoKey string) (*models.Vid
 func (r *VideoImportRepository) UpsertCache(entry *models.VideoExtractionCache) error {
 	return r.DB.Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "video_key"}},
-		DoUpdates: clause.AssignmentColumns([]string{"recipe_data", "original_url", "platform", "fetched_at", "last_accessed_at", "prompt_version"}),
+		DoUpdates: clause.AssignmentColumns([]string{"recipe_data", "original_url", "platform", "thumbnail_url", "fetched_at", "last_accessed_at", "prompt_version"}),
 	}).Create(entry).Error
 }
 
