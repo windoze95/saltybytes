@@ -34,6 +34,10 @@ func (f *fakeFrameSampler) Sample(ctx context.Context, mediaURL string, duration
 	return [][]byte{{0xFF, 0xD8, 0x01}, {0xFF, 0xD8, 0x02}}, nil
 }
 
+func (f *fakeFrameSampler) ExtractAudio(ctx context.Context, mediaURL string) ([]byte, error) {
+	return nil, nil
+}
+
 // videoEnabledHandler builds an ImportHandler whose service has the video
 // dependencies wired with fakes, plus a SubscriptionService for gating.
 func videoEnabledHandler(repo *testutil.MockRecipeRepo, vrepo *testutil.MockVideoImportRepo, userRepo *testutil.MockUserRepo) *ImportHandler {

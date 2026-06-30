@@ -28,14 +28,22 @@ func (f *fakeVideoFetcher) FetchVideo(ctx context.Context, rawURL string) (*vide
 }
 
 type fakeFrameSampler struct {
-	frames [][]byte
-	err    error
-	calls  int
+	frames     [][]byte
+	err        error
+	calls      int
+	audio      []byte
+	audioErr   error
+	audioCalls int
 }
 
 func (f *fakeFrameSampler) Sample(ctx context.Context, mediaURL string, durationMS int) ([][]byte, error) {
 	f.calls++
 	return f.frames, f.err
+}
+
+func (f *fakeFrameSampler) ExtractAudio(ctx context.Context, mediaURL string) ([]byte, error) {
+	f.audioCalls++
+	return f.audio, f.audioErr
 }
 
 func tiktokMeta() *video.VideoMeta {
@@ -408,6 +416,139 @@ func TestVideoImport_TextPath(t *testing.T) {
 	}
 	if done.CostUSD <= 0 || done.CostUSD > 0.05 {
 		t.Errorf("text-path cost = %v, want ~the flat text overhead", done.CostUSD)
+	}
+}
+
+func TestVideoImport_WhisperEscalation(t *testing.T) {
+	repo := testutil.NewMockRecipeRepo()
+	vrepo := testutil.NewMockVideoImportRepo()
+	svc := newVideoTestService(repo, vrepo)
+
+	// No scraper transcript → the spoken audio is the only untapped source.
+	svc.VideoFetcher = &fakeVideoFetcher{meta: &video.VideoMeta{
+		Platform:   video.PlatformInstagram,
+		VideoID:    "ig1",
+		Caption:    "quick dinner",
+		Transcript: "",
+		MediaURL:   "https://203.0.113.10/v.mp4",
+		DurationMS: 60000,
+	}}
+	sampler := &fakeFrameSampler{frames: [][]byte{{0xFF, 1}, {0xFF, 2}}, audio: []byte("aac-bytes")}
+	svc.VideoFrameSampler = sampler
+
+	visionCalls := 0
+	svc.VisionProvider = &testutil.MockVisionProvider{
+		ExtractRecipesFromMediaFunc: func(ctx context.Context, media []ai.MediaInput, contextText, unitSystem, requirements string) ([]*ai.RecipeResult, error) {
+			visionCalls++
+			if visionCalls == 1 {
+				// Thin but plausible: a titled dish with a single ingredient.
+				return []*ai.RecipeResult{{Title: "Mystery Dish", Ingredients: []ai.IngredientResult{{Name: "chicken"}}}}, nil
+			}
+			if !strings.Contains(contextText, "stir for five minutes") {
+				t.Errorf("re-extraction context missing the whisper transcript: %q", contextText)
+			}
+			return []*ai.RecipeResult{testutil.TestRecipeResult()}, nil
+		},
+	}
+	whisperCalls := 0
+	svc.SpeechProvider = &testutil.MockSpeechProvider{
+		TranscribeAudioFunc: func(ctx context.Context, data []byte, format string) (string, error) {
+			whisperCalls++
+			if format != "m4a" {
+				t.Errorf("transcribe format = %q, want m4a", format)
+			}
+			return "Add the chicken and stir for five minutes.", nil
+		},
+	}
+
+	job, err := svc.StartVideoImport(context.Background(), "https://www.instagram.com/reel/ig1/", testutil.TestUser())
+	if err != nil {
+		t.Fatalf("StartVideoImport: %v", err)
+	}
+	done := waitForVideoJob(t, svc, job.ID)
+	if done.Status != models.VideoImportDone {
+		t.Fatalf("status=%q (%s)", done.Status, done.Error)
+	}
+	if whisperCalls != 1 {
+		t.Errorf("whisper called %d times, want 1", whisperCalls)
+	}
+	if sampler.audioCalls != 1 {
+		t.Errorf("ExtractAudio called %d times, want 1", sampler.audioCalls)
+	}
+	if visionCalls != 2 {
+		t.Errorf("vision called %d times, want 2 (initial + re-extraction)", visionCalls)
+	}
+	if done.CostUSD <= estimateVideoCost(2, false, 60000) {
+		t.Errorf("cost %v should exceed the non-whisper estimate (whisper + re-extraction)", done.CostUSD)
+	}
+}
+
+func TestVideoImport_NoWhisperWhenResultIsSolid(t *testing.T) {
+	repo := testutil.NewMockRecipeRepo()
+	vrepo := testutil.NewMockVideoImportRepo()
+	svc := newVideoTestService(repo, vrepo)
+	svc.VideoFetcher = &fakeVideoFetcher{meta: &video.VideoMeta{
+		Platform: video.PlatformInstagram, VideoID: "ig2", Caption: "dinner",
+		Transcript: "", MediaURL: "https://203.0.113.10/v.mp4", DurationMS: 30000,
+	}}
+	sampler := &fakeFrameSampler{frames: [][]byte{{0xFF, 1}}, audio: []byte("aac")}
+	svc.VideoFrameSampler = sampler
+	svc.VisionProvider = &testutil.MockVisionProvider{
+		ExtractRecipesFromMediaFunc: func(ctx context.Context, media []ai.MediaInput, contextText, unitSystem, requirements string) ([]*ai.RecipeResult, error) {
+			return []*ai.RecipeResult{testutil.TestRecipeResult()}, nil // 4 ingredients, 3 steps → solid
+		},
+	}
+	svc.SpeechProvider = &testutil.MockSpeechProvider{
+		TranscribeAudioFunc: func(ctx context.Context, data []byte, format string) (string, error) {
+			t.Error("whisper should NOT run when the first extraction is solid")
+			return "", nil
+		},
+	}
+	job, err := svc.StartVideoImport(context.Background(), "https://www.instagram.com/reel/ig2/", testutil.TestUser())
+	if err != nil {
+		t.Fatalf("StartVideoImport: %v", err)
+	}
+	done := waitForVideoJob(t, svc, job.ID)
+	if done.Status != models.VideoImportDone {
+		t.Fatalf("status=%q", done.Status)
+	}
+	if sampler.audioCalls != 0 {
+		t.Errorf("ExtractAudio called %d times, want 0", sampler.audioCalls)
+	}
+}
+
+func TestVideoImport_NoWhisperWhenTranscriptPresent(t *testing.T) {
+	repo := testutil.NewMockRecipeRepo()
+	vrepo := testutil.NewMockVideoImportRepo()
+	svc := newVideoTestService(repo, vrepo)
+	svc.VideoFetcher = &fakeVideoFetcher{meta: &video.VideoMeta{
+		Platform: video.PlatformTikTok, VideoID: "tt1", Caption: "dinner",
+		Transcript: "the scraper already provided the words", // present → don't tap audio
+		MediaURL:   "https://203.0.113.10/v.mp4", DurationMS: 30000,
+	}}
+	sampler := &fakeFrameSampler{frames: [][]byte{{0xFF, 1}}, audio: []byte("aac")}
+	svc.VideoFrameSampler = sampler
+	svc.VisionProvider = &testutil.MockVisionProvider{
+		ExtractRecipesFromMediaFunc: func(ctx context.Context, media []ai.MediaInput, contextText, unitSystem, requirements string) ([]*ai.RecipeResult, error) {
+			return []*ai.RecipeResult{{Title: "Thin", Ingredients: []ai.IngredientResult{{Name: "x"}}}}, nil // thin
+		},
+	}
+	svc.SpeechProvider = &testutil.MockSpeechProvider{
+		TranscribeAudioFunc: func(ctx context.Context, data []byte, format string) (string, error) {
+			t.Error("whisper should NOT run when a transcript already exists")
+			return "", nil
+		},
+	}
+	job, err := svc.StartVideoImport(context.Background(), "https://www.tiktok.com/@x/video/tt1", testutil.TestUser())
+	if err != nil {
+		t.Fatalf("StartVideoImport: %v", err)
+	}
+	done := waitForVideoJob(t, svc, job.ID)
+	if done.Status != models.VideoImportDone {
+		t.Fatalf("status=%q", done.Status)
+	}
+	if sampler.audioCalls != 0 {
+		t.Errorf("ExtractAudio called %d times, want 0", sampler.audioCalls)
 	}
 }
 

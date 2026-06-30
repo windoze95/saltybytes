@@ -20,10 +20,12 @@ type VideoFetcher interface {
 	FetchVideo(ctx context.Context, rawURL string) (*video.VideoMeta, error)
 }
 
-// VideoFrameSampler downloads a video and returns representative JPEG frames.
-// Satisfied by *video.FrameSampler.
+// VideoFrameSampler downloads a video and returns representative JPEG frames,
+// and (for the last-resort Whisper escalation) its audio track. Satisfied by
+// *video.FrameSampler.
 type VideoFrameSampler interface {
 	Sample(ctx context.Context, mediaURL string, durationMS int) ([][]byte, error)
+	ExtractAudio(ctx context.Context, mediaURL string) ([]byte, error)
 }
 
 const (
@@ -34,15 +36,37 @@ const (
 	// videoTextOverheadUSD is a conservative flat allowance for the transcript/
 	// caption input tokens plus the extraction's output tokens.
 	videoTextOverheadUSD = 0.02
+	// whisperCostPerMin is OpenAI Whisper's per-minute transcription price.
+	whisperCostPerMin = 0.006
 	// videoProcessTimeout bounds the whole async pipeline for one fresh import.
 	videoProcessTimeout = 5 * time.Minute
 )
 
 // estimateVideoCost approximates the metered spend of a fresh video extraction.
 // It is intentionally an over-estimate so the daily-budget kill switch trips
-// early rather than late. Cache hits cost nothing and are recorded as 0.
-func estimateVideoCost(numFrames int) float64 {
-	return float64(numFrames)*sonnetCostPerFrame + videoTextOverheadUSD
+// early rather than late. When the Whisper fallback fired, the frames are
+// re-sent on a second extraction and audio is transcribed, so both are added.
+// Cache hits cost nothing and are recorded as 0.
+func estimateVideoCost(numFrames int, usedWhisper bool, durationMS int) float64 {
+	cost := float64(numFrames)*sonnetCostPerFrame + videoTextOverheadUSD
+	if usedWhisper {
+		cost += float64(numFrames)*sonnetCostPerFrame + videoTextOverheadUSD // re-extraction
+		cost += (float64(durationMS) / 60000.0) * whisperCostPerMin
+	}
+	return cost
+}
+
+// recipeNeedsMoreContext reports whether a frames+caption extraction produced a
+// plausible recipe (a titled dish with at least one ingredient — so a recipe
+// clearly exists) that is nonetheless too thin to trust (few ingredients or no
+// steps). It gates the Whisper fallback: true means "a recipe is there but we
+// need more detail"; false means either a solid recipe or no recipe at all
+// (don't waste Whisper on a video that likely has no recipe to fetch).
+func recipeNeedsMoreContext(r *ai.RecipeResult) bool {
+	if r == nil || r.Title == "" || len(r.Ingredients) == 0 {
+		return false
+	}
+	return len(r.Ingredients) < 4 || len(r.Instructions) < 2
 }
 
 // videoImportConfigured reports whether the video-import dependencies are wired.
@@ -175,6 +199,7 @@ func (s *ImportService) processVideoImport(jobID uint, rawURL string, user *mode
 
 	var chosen *ai.RecipeResult
 	var frames [][]byte
+	usedWhisper := false
 
 	if meta.MediaURL != "" {
 		// The media URL comes from a third-party scraper; treat it as untrusted
@@ -202,6 +227,24 @@ func (s *ImportService) processVideoImport(jobID uint, rawURL string, user *mode
 			return
 		}
 		chosen = results[0] // a single video yields a single recipe
+
+		// Last-resort Whisper: only when the frames+caption pass yielded a
+		// plausible-but-thin recipe AND the scraper gave no transcript to work
+		// with. The spoken audio is then the only untapped source of detail.
+		// Gated this tightly so Whisper never runs on the common (good) path
+		// nor on videos that likely have no recipe at all.
+		if s.SpeechProvider != nil && meta.Transcript == "" && recipeNeedsMoreContext(chosen) {
+			if audio, aErr := s.VideoFrameSampler.ExtractAudio(ctx, meta.MediaURL); aErr == nil && len(audio) > 0 {
+				if transcript, tErr := s.SpeechProvider.TranscribeAudio(ctx, audio, "m4a"); tErr == nil && strings.TrimSpace(transcript) != "" {
+					meta.Transcript = transcript
+					if results2, e2 := s.VisionProvider.ExtractRecipesFromMedia(ctx, media, buildVideoContext(meta), unitSystem, user.Personalization.Requirements); e2 == nil && len(results2) > 0 {
+						chosen = results2[0]
+						usedWhisper = true
+						log.Info("video import used the whisper fallback for extra context", zap.String("video_key", videoKey))
+					}
+				}
+			}
+		}
 	} else {
 		if strings.TrimSpace(contextText) == "" {
 			fail("no_content", "this link did not contain a recipe", fmt.Errorf("no media or text for %s", videoKey))
@@ -252,7 +295,7 @@ func (s *ImportService) processVideoImport(jobID uint, rawURL string, user *mode
 
 	job.Status = models.VideoImportDone
 	job.RecipeID = &recipeID
-	job.CostUSD = estimateVideoCost(len(frames))
+	job.CostUSD = estimateVideoCost(len(frames), usedWhisper, meta.DurationMS)
 	job.CacheHit = false
 	if err := s.VideoRepo.UpdateImport(job); err != nil {
 		log.Error("failed to persist completed video import", zap.Error(err))

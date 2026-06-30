@@ -133,6 +133,52 @@ func (s *FrameSampler) Sample(ctx context.Context, mediaURL string, durationMS i
 	return frames, nil
 }
 
+// ExtractAudio downloads mediaURL and returns its audio as a mono 16 kHz m4a
+// (small, Whisper-friendly). It re-downloads the media rather than reusing a
+// Sample download so the common path never pays for audio it won't use — this
+// runs only on the rare last-resort Whisper escalation.
+func (s *FrameSampler) ExtractAudio(ctx context.Context, mediaURL string) ([]byte, error) {
+	dir, err := os.MkdirTemp("", "vidaudio-*")
+	if err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(dir)
+
+	videoPath := filepath.Join(dir, "video.mp4")
+	dl := s.download
+	if dl == nil {
+		dl = s.httpDownload
+	}
+	if err := dl(ctx, mediaURL, videoPath); err != nil {
+		return nil, fmt.Errorf("download for audio: %w", err)
+	}
+
+	run := s.runFFmpeg
+	if run == nil {
+		run = realFFmpeg
+	}
+	audioPath := filepath.Join(dir, "audio.m4a")
+	if err := run(ctx, audioArgs(videoPath, audioPath)); err != nil {
+		return nil, fmt.Errorf("ffmpeg audio extraction: %w", err)
+	}
+
+	b, err := os.ReadFile(audioPath)
+	if err != nil {
+		return nil, err
+	}
+	if len(b) == 0 {
+		return nil, errors.New("extracted empty audio")
+	}
+	return b, nil
+}
+
+func audioArgs(inPath, outPath string) []string {
+	return []string{
+		"-hide_banner", "-loglevel", "error", "-i", inPath,
+		"-vn", "-ac", "1", "-ar", "16000", "-c:a", "aac", "-b:a", "64k", "-y", outPath,
+	}
+}
+
 // computeFPS returns the sampling rate (frames/sec) for even sampling so that a
 // video of the given duration yields about maxFrames frames, clamped to a sane
 // range for very short or very long videos.
