@@ -40,6 +40,10 @@ type EnvVars struct {
 	LightBaseURL   string `env:"LIGHT_BASE_URL" optional:"true"`
 	GeminiAPIKey   string `env:"GEMINI_API_KEY" optional:"true"`
 	DeepSeekAPIKey string `env:"DEEPSEEK_API_KEY" optional:"true"`
+	// AdminToken guards the admin API (the dashboard's live model-switch +
+	// registry endpoints). When empty the admin API is disabled entirely, so a
+	// deploy without the secret can never expose those endpoints.
+	AdminToken string `env:"ADMIN_TOKEN" optional:"true"`
 	// PromptsPath overrides the location of the prompts YAML file, which is
 	// cwd-relative by default and only resolves from the Docker workdir.
 	PromptsPath     string `env:"PROMPTS_PATH" envDefault:"configs/prompts.yaml" optional:"true"`

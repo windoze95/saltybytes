@@ -1,6 +1,7 @@
 package router
 
 import (
+	"context"
 	"time"
 
 	"github.com/gin-contrib/cors"
@@ -19,48 +20,15 @@ import (
 	"gorm.io/gorm"
 )
 
-// buildLightTextProvider constructs the cheap "light" tier text provider from
-// config. Defaults to Anthropic Haiku; LIGHT_PROVIDER=openai/gemini/deepseek
-// runs a cheaper OpenAI-compatible model instead. The middleware (cost metering
-// + logging) is attached so usage is recorded regardless of provider.
-func buildLightTextProvider(cfg *config.Config, mw ai.AIMiddleware) ai.TextProvider {
-	switch cfg.EnvVars.LightProvider {
-	case "openai":
-		model := cfg.EnvVars.LightModel
-		if model == "" {
-			model = "gpt-4o-mini"
-		}
-		p := ai.NewOpenAICompatProvider(cfg.EnvVars.OpenAIAPIKey, cfg.EnvVars.LightBaseURL, model, "openai", cfg.Prompts)
-		p.WithMiddleware(mw)
-		return p
-	case "gemini":
-		baseURL := cfg.EnvVars.LightBaseURL
-		if baseURL == "" {
-			baseURL = "https://generativelanguage.googleapis.com/v1beta/openai"
-		}
-		model := cfg.EnvVars.LightModel
-		if model == "" {
-			model = "gemini-2.0-flash"
-		}
-		p := ai.NewOpenAICompatProvider(cfg.EnvVars.GeminiAPIKey, baseURL, model, "gemini", cfg.Prompts)
-		p.WithMiddleware(mw)
-		return p
-	case "deepseek":
-		baseURL := cfg.EnvVars.LightBaseURL
-		if baseURL == "" {
-			baseURL = "https://api.deepseek.com"
-		}
-		model := cfg.EnvVars.LightModel
-		if model == "" {
-			model = "deepseek-chat"
-		}
-		p := ai.NewOpenAICompatProvider(cfg.EnvVars.DeepSeekAPIKey, baseURL, model, "deepseek", cfg.Prompts)
-		p.WithMiddleware(mw)
-		return p
-	default:
-		p := ai.NewAnthropicLightProvider(cfg.EnvVars.AnthropicAPIKey, cfg.EnvVars.AnthropicLightModel, cfg.Prompts)
-		p.WithMiddleware(mw)
-		return p
+// lightKeysFromConfig collects the light-tier API keys from config. Keys come
+// from env/SSM only — never the DB.
+func lightKeysFromConfig(cfg *config.Config) ai.LightKeys {
+	return ai.LightKeys{
+		AnthropicAPIKey:     cfg.EnvVars.AnthropicAPIKey,
+		AnthropicLightModel: cfg.EnvVars.AnthropicLightModel,
+		OpenAIAPIKey:        cfg.EnvVars.OpenAIAPIKey,
+		GeminiAPIKey:        cfg.EnvVars.GeminiAPIKey,
+		DeepSeekAPIKey:      cfg.EnvVars.DeepSeekAPIKey,
 	}
 }
 
@@ -149,8 +117,22 @@ func SetupRouter(cfg *config.Config, database *gorm.DB) *gin.Engine {
 	recipeHandler := handlers.NewRecipeHandler(recipeService)
 	recipeHandler.SubService = subService
 
+	// Light-tier model manager: owns the swappable cheap provider behind a
+	// single SwitchableTextProvider. It seeds the registry + active selection
+	// from the env default, applies whatever the DB marks active, and polls so a
+	// dashboard live-switch on one instance propagates to the others.
+	aiModelOptionRepo := repository.NewAIModelOptionRepository(database)
+	envLightSpec := ai.LightProviderSpec{
+		Provider: cfg.EnvVars.LightProvider,
+		Model:    cfg.EnvVars.LightModel,
+		BaseURL:  cfg.EnvVars.LightBaseURL,
+	}
+	modelManager := service.NewAIModelManager(aiModelOptionRepo, lightKeysFromConfig(cfg), cfg.Prompts, aiMW, envLightSpec)
+	modelManager.Load(context.Background())
+	modelManager.StartRefresh(context.Background(), 30*time.Second)
+	previewProvider := modelManager.Provider()
+
 	// Import-related routes setup
-	previewProvider := buildLightTextProvider(cfg, aiMW)
 	canonicalRepo := repository.NewCanonicalRecipeRepository(database)
 	importService := service.NewImportService(cfg, recipeRepo, recipeService, textProvider, textProvider, previewProvider)
 	importService.CanonicalRepo = canonicalRepo
@@ -170,6 +152,23 @@ func SetupRouter(cfg *config.Config, database *gorm.DB) *gin.Engine {
 		logger.Get().Info("video-link import enabled")
 	} else {
 		logger.Get().Info("video-link import disabled (no ScrapeCreators API key configured)")
+	}
+
+	// Admin API: light-tier model registry + live switch, used by the operator
+	// dashboard. Guarded by the shared ID header AND a dedicated admin token; the
+	// whole group is disabled (503) when ADMIN_TOKEN is unset, so it is never
+	// exposed by accident.
+	adminAIHandler := handlers.NewAdminAIHandler(modelManager)
+	apiAdmin := r.Group("/v1/admin")
+	apiAdmin.Use(middleware.CheckIDHeader(cfg.EnvVars.IDHeader))
+	apiAdmin.Use(middleware.RequireAdminToken(cfg.EnvVars.AdminToken))
+	{
+		apiAdmin.GET("/ai/models", adminAIHandler.ListModels)
+		apiAdmin.POST("/ai/models", adminAIHandler.CreateModel)
+		apiAdmin.PUT("/ai/models/:id", adminAIHandler.UpdateModel)
+		apiAdmin.DELETE("/ai/models/:id", adminAIHandler.DeleteModel)
+		apiAdmin.GET("/ai/active", adminAIHandler.GetActive)
+		apiAdmin.PUT("/ai/active", adminAIHandler.SetActive)
 	}
 
 	// Group for API routes that don't require token verification
