@@ -49,6 +49,18 @@ type CanonicalRecipeRepo interface {
 	IncrementHitCount(id uint) error
 }
 
+// VideoImportRepo is the interface for the video extraction cache and async
+// video-import jobs.
+type VideoImportRepo interface {
+	GetCacheByVideoKey(videoKey string) (*models.VideoExtractionCache, error)
+	UpsertCache(entry *models.VideoExtractionCache) error
+	IncrementCacheHit(id uint) error
+	CreateImport(job *models.VideoImport) error
+	GetImportByID(id uint) (*models.VideoImport, error)
+	UpdateImport(job *models.VideoImport) error
+	SumImportCostSince(t time.Time) (float64, error)
+}
+
 // SearchCacheRepo is the interface for search cache repository operations.
 type SearchCacheRepo interface {
 	GetByNormalizedQuery(query string) (*models.SearchCache, error)

@@ -83,6 +83,8 @@ func (s *SubscriptionService) IncrementUsage(userID uint, usageType string) erro
 		column = "web_searches_used"
 	case "ai_generation":
 		column = "ai_generations_used"
+	case "video_import":
+		column = "video_imports_used"
 	default:
 		return fmt.Errorf("unknown usage type: %s", usageType)
 	}
@@ -104,6 +106,8 @@ func (s *SubscriptionService) CheckLimit(userID uint, usageType string) (bool, e
 		return sub.CanUseWebSearch(), nil
 	case "ai_generation":
 		return sub.CanUseAIGeneration(), nil
+	case "video_import":
+		return sub.CanUseVideoImport(), nil
 	default:
 		return false, fmt.Errorf("unknown usage type: %s", usageType)
 	}

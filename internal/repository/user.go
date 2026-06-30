@@ -208,6 +208,7 @@ func (r *UserRepository) ResetSubscriptionUsage(userID uint, nextReset time.Time
 			"allergen_analyses_used": 0,
 			"web_searches_used":      0,
 			"ai_generations_used":    0,
+			"video_imports_used":     0,
 			"monthly_reset_at":       nextReset,
 		})
 	if result.Error != nil {
