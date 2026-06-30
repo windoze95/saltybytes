@@ -16,6 +16,7 @@ import (
 type SearchHandler struct {
 	Service       *service.SearchService
 	MultiResolver *service.MultiRecipeResolver // nil-safe
+	WarmService   *service.WarmService         // nil-safe
 }
 
 // NewSearchHandler creates a new SearchHandler.
@@ -117,6 +118,36 @@ func (h *SearchHandler) ResolveMultiRecipe(c *gin.Context) {
 		"status":     entry.GetStatus(),
 		"recipes":    entry.GetCards(),
 	})
+}
+
+// WarmRecipes handles POST /v1/recipes/search/warm. It proactively extracts and
+// caches the given recipe URLs (in parallel, in the background) so later taps
+// are instant cache hits, and returns each URL's current warm status. The call
+// is idempotent — cached and in-flight URLs are never re-extracted — so the
+// client can also poll it to watch statuses flip to "cached".
+func (h *SearchHandler) WarmRecipes(c *gin.Context) {
+	if h.WarmService == nil {
+		c.JSON(http.StatusOK, gin.H{"statuses": gin.H{}})
+		return
+	}
+
+	var req struct {
+		URLs []string `json:"urls"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request: " + err.Error()})
+		return
+	}
+	if len(req.URLs) == 0 {
+		c.JSON(http.StatusOK, gin.H{"statuses": gin.H{}})
+		return
+	}
+	const maxURLs = 20
+	if len(req.URLs) > maxURLs {
+		req.URLs = req.URLs[:maxURLs]
+	}
+
+	c.JSON(http.StatusOK, gin.H{"statuses": h.WarmService.WarmURLs(req.URLs)})
 }
 
 // CheckMultiRecipe handles POST /v1/recipes/search/check-multi

@@ -828,6 +828,88 @@ func (s *ImportService) PreviewFromURL(ctx context.Context, rawURL string) (*mod
 	return recipeDef, canonicalID, nil
 }
 
+// WarmURL extracts and caches a single recipe URL proactively (cache warming),
+// so a later preview/import is an instant cache hit. It is safe against
+// collection pages: if the URL is a multi-recipe page it is only marked
+// IsMultiPage (so it still expands later) rather than extracting every
+// sub-recipe. JSON-LD is used first (free); AI fills the gap when a page has no
+// structured data. The caller is expected to have already skipped cached and
+// in-flight URLs.
+func (s *ImportService) WarmURL(ctx context.Context, resolver *MultiRecipeResolver, rawURL string) error {
+	if err := ValidateExternalURL(rawURL); err != nil {
+		return err
+	}
+	normalizedURL, err := NormalizeURL(rawURL)
+	if err != nil {
+		return err
+	}
+	// Re-check the cache (a concurrent warm/import may have filled it).
+	if _, err := s.CanonicalRepo.GetByNormalizedURL(normalizedURL); err == nil {
+		return nil
+	}
+
+	html, err := s.fetchHTML(ctx, rawURL)
+	if err != nil {
+		return err
+	}
+
+	now := time.Now()
+	markMulti := func() error {
+		return s.CanonicalRepo.Upsert(&models.CanonicalRecipe{
+			NormalizedURL:    normalizedURL,
+			OriginalURL:      rawURL,
+			IsMultiPage:      true,
+			RecipeData:       models.RecipeDef{},
+			ExtractionMethod: models.ExtractionJSONLD,
+			FetchedAt:        now,
+			LastAccessedAt:   now,
+		})
+	}
+
+	// A JSON-LD listicle (multiple recipes in structured data)? Mark it and stop
+	// — free, and never warm every sub-recipe.
+	if len(extractAllJSONLDRecipes(html, rawURL)) > 1 {
+		return markMulti()
+	}
+
+	// A single JSON-LD recipe is the common, free case — cache it without AI.
+	recipeDef, _, _, method := s.extractRecipeFromHTML(html, rawURL)
+	if recipeDef == nil {
+		// No structured data. Only here do we spend AI: first confirm it isn't a
+		// link-style collection (so a listicle isn't mis-cached as one recipe),
+		// then extract.
+		if resolver != nil && resolver.DetectMultiFromHTML(ctx, rawURL, html) {
+			return markMulti()
+		}
+		provider := s.PreviewProvider
+		if provider == nil {
+			provider = s.TextProvider
+		}
+		if provider == nil {
+			return fmt.Errorf("no text provider configured for warming")
+		}
+		result, aiErr := provider.ExtractRecipeFromText(ctx, html, ai.UnitSystemPreserveSource)
+		if aiErr != nil {
+			return aiErr
+		}
+		def := recipeResultToRecipeDef(result)
+		def.SourceURL = rawURL
+		ensureUnitSystem(&def)
+		recipeDef = &def
+		method = models.ExtractionHaiku
+	}
+
+	return s.CanonicalRepo.Upsert(&models.CanonicalRecipe{
+		NormalizedURL:    normalizedURL,
+		OriginalURL:      rawURL,
+		RecipeData:       *recipeDef,
+		ExtractionMethod: method,
+		FetchedAt:        now,
+		LastAccessedAt:   now,
+		Embedding:        s.canonicalEmbedding(ctx, recipeDef),
+	})
+}
+
 // PreviewFromURLWithMultiCheck is like PreviewFromURL but also detects
 // multi-recipe pages. When multiple JSON-LD recipes are found, it returns
 // a PreviewResult with IsMulti=true and individual cards instead of

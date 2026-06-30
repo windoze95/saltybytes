@@ -515,25 +515,36 @@ func NewMultiRecipeResolver(registry *MultiRecipeRegistry, importService *Import
 	}
 }
 
-// ResolveFromHTML detects and begins resolving a multi-recipe page from fetched HTML.
-// Uses JSON-LD detection first, then falls back to AI-based detection.
-// Returns the entry if multi-recipe, or nil if single-recipe.
-func (r *MultiRecipeResolver) ResolveFromHTML(ctx context.Context, sourceURL string, html string) *MultiRecipeEntry {
-	// Try JSON-LD detection first (fast, no AI call)
+// detectCards returns the recipe cards found on a page: JSON-LD first (free),
+// then an AI fallback when JSON-LD finds 0-1. Detection only — no registration
+// or extraction.
+func (r *MultiRecipeResolver) detectCards(ctx context.Context, sourceURL string, html string) []MultiRecipeCard {
 	cards := extractAllJSONLDRecipes(html, sourceURL)
-
-	// Fall back to AI detection if JSON-LD found 0-1 recipes
 	if len(cards) <= 1 {
 		provider := r.ImportService.PreviewProvider
 		if provider == nil {
 			provider = r.ImportService.TextProvider
 		}
-		aiCards := detectMultipleRecipesFromHTML(ctx, provider, html, sourceURL)
-		if aiCards != nil {
+		if aiCards := detectMultipleRecipesFromHTML(ctx, provider, html, sourceURL); aiCards != nil {
 			cards = aiCards
 		}
 	}
+	return cards
+}
 
+// DetectMultiFromHTML reports whether the page holds multiple recipes, without
+// registering or extracting anything. Cache-warming uses this to mark a
+// collection page (so it still expands later) without paying to extract every
+// sub-recipe.
+func (r *MultiRecipeResolver) DetectMultiFromHTML(ctx context.Context, sourceURL string, html string) bool {
+	return len(r.detectCards(ctx, sourceURL, html)) > 1
+}
+
+// ResolveFromHTML detects and begins resolving a multi-recipe page from fetched HTML.
+// Uses JSON-LD detection first, then falls back to AI-based detection.
+// Returns the entry if multi-recipe, or nil if single-recipe.
+func (r *MultiRecipeResolver) ResolveFromHTML(ctx context.Context, sourceURL string, html string) *MultiRecipeEntry {
+	cards := r.detectCards(ctx, sourceURL, html)
 	if len(cards) <= 1 {
 		return nil
 	}
