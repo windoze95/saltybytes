@@ -28,6 +28,13 @@ var DefaultPricing = PricingTable{
 	"deepseek-chat":         {InputPerM: 0.27, OutputPerM: 1.10, CacheInputPerM: 0.07},
 }
 
+// Lookup resolves a model's published price by longest-prefix match, returning
+// false when the model is unknown. Exported so the model registry can seed an
+// option's list prices from the default table.
+func (p PricingTable) Lookup(model string) (ModelPrice, bool) {
+	return p.priceFor(model)
+}
+
 // priceFor resolves a model's price, matching by longest prefix so dated IDs
 // (e.g. "claude-haiku-4-5-20251001") map to their family price. Returns false
 // when unknown.
