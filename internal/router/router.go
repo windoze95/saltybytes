@@ -225,10 +225,16 @@ func SetupRouter(cfg *config.Config, database *gorm.DB) *gin.Engine {
 	multiResolver := service.NewMultiRecipeResolver(multiRegistry, importService)
 	importHandler.MultiResolver = multiResolver
 
-	searchHandler := &handlers.SearchHandler{Service: searchService, MultiResolver: multiResolver}
+	// Proactive cache warming — extract+cache search results before the user
+	// taps, so taps are instant and the (user-agnostic) cache pays off for the
+	// next searcher.
+	warmService := service.NewWarmService(importService, multiResolver, cfg.EnvVars.RecipeWarmingConcurrency, cfg.EnvVars.RecipeWarmingDailyLimit)
+
+	searchHandler := &handlers.SearchHandler{Service: searchService, MultiResolver: multiResolver, WarmService: warmService}
 	apiProtected.GET("/recipes/search", middleware.AttachUserToContext(userService), searchHandler.SearchRecipes)
 	apiProtected.GET("/recipes/search/resolve/:multi_id", middleware.AttachUserToContext(userService), searchHandler.ResolveMultiRecipe)
 	apiProtected.POST("/recipes/search/check-multi", middleware.AttachUserToContext(userService), searchHandler.CheckMultiRecipe)
+	apiProtected.POST("/recipes/search/warm", middleware.AttachUserToContext(userService), searchHandler.WarmRecipes)
 
 	// Vector similarity routes
 	similarityHandler := handlers.NewSimilarityHandler(vectorRepo, embedProvider, recipeService)

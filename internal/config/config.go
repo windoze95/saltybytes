@@ -44,6 +44,13 @@ type EnvVars struct {
 	// extractions; once the day's metered cost exceeds it, fresh extractions are
 	// refused (cache hits still serve). The kill switch.
 	VideoImportDailyBudgetUSD float64 `env:"VIDEO_IMPORT_DAILY_BUDGET_USD" envDefault:"25" optional:"true"`
+	// RecipeWarmingConcurrency bounds how many search results extract in parallel
+	// during proactive cache warming.
+	RecipeWarmingConcurrency int `env:"RECIPE_WARMING_CONCURRENCY" envDefault:"6" optional:"true"`
+	// RecipeWarmingDailyLimit is a daily kill-switch on the number of proactive
+	// warm extractions (a runaway guard, intentionally high — not a normal cap;
+	// JSON-LD/AI gap-fill runs freely under it). 0 disables the ceiling.
+	RecipeWarmingDailyLimit int `env:"RECIPE_WARMING_DAILY_LIMIT" envDefault:"5000" optional:"true"`
 }
 
 // LoadConfig parses environment variables into the Config struct.
