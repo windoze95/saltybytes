@@ -1,7 +1,6 @@
 package repository
 
 import (
-	"fmt"
 	"time"
 
 	"github.com/windoze95/saltybytes-api/internal/models"
@@ -55,15 +54,4 @@ func (r *CanonicalRecipeRepository) IncrementHitCount(id uint) error {
 			"hit_count":        gorm.Expr("hit_count + 1"),
 			"last_accessed_at": time.Now(),
 		}).Error
-}
-
-// GetStaleEntries returns canonical entries whose FetchedAt is older than maxAge.
-func (r *CanonicalRecipeRepository) GetStaleEntries(maxAge time.Duration) ([]models.CanonicalRecipe, error) {
-	cutoff := time.Now().Add(-maxAge)
-	var entries []models.CanonicalRecipe
-	err := r.DB.Where("fetched_at < ?", cutoff).Find(&entries).Error
-	if err != nil {
-		return nil, fmt.Errorf("failed to get stale canonical entries: %w", err)
-	}
-	return entries, nil
 }

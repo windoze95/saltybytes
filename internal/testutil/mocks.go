@@ -929,7 +929,6 @@ type MockCanonicalRecipeRepo struct {
 	GetByNormalizedURLFunc func(normalizedURL string) (*models.CanonicalRecipe, error)
 	UpsertFunc             func(entry *models.CanonicalRecipe) error
 	IncrementHitCountFunc  func(id uint) error
-	GetStaleEntriesFunc    func(maxAge time.Duration) ([]models.CanonicalRecipe, error)
 }
 
 func (m *MockCanonicalRecipeRepo) GetByID(id uint) (*models.CanonicalRecipe, error) {
@@ -959,13 +958,6 @@ func (m *MockCanonicalRecipeRepo) IncrementHitCount(id uint) error {
 		return m.IncrementHitCountFunc(id)
 	}
 	return nil
-}
-
-func (m *MockCanonicalRecipeRepo) GetStaleEntries(maxAge time.Duration) ([]models.CanonicalRecipe, error) {
-	if m.GetStaleEntriesFunc != nil {
-		return m.GetStaleEntriesFunc(maxAge)
-	}
-	return nil, nil
 }
 
 // Compile-time interface checks.

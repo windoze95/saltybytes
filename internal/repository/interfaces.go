@@ -47,7 +47,6 @@ type CanonicalRecipeRepo interface {
 	GetByNormalizedURL(normalizedURL string) (*models.CanonicalRecipe, error)
 	Upsert(entry *models.CanonicalRecipe) error
 	IncrementHitCount(id uint) error
-	GetStaleEntries(maxAge time.Duration) ([]models.CanonicalRecipe, error)
 }
 
 // SearchCacheRepo is the interface for search cache repository operations.

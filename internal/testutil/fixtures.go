@@ -105,9 +105,11 @@ func TestCanonicalLinkedRecipe() *models.Recipe {
 	}
 }
 
-// TestStaleCanonicalRecipe creates a test CanonicalRecipe with FetchedAt older than canonicalTTL.
-func TestStaleCanonicalRecipe() *models.CanonicalRecipe {
-	stale := time.Now().Add(-8 * 24 * time.Hour) // 8 days ago
+// TestOldCanonicalRecipe creates a CanonicalRecipe fetched long ago. Canonical
+// entries never expire, so this is used to assert old entries are still served
+// from cache (never re-fetched).
+func TestOldCanonicalRecipe() *models.CanonicalRecipe {
+	old := time.Now().Add(-365 * 24 * time.Hour) // a year ago
 	return &models.CanonicalRecipe{
 		Model:            gorm.Model{ID: 101},
 		NormalizedURL:    "https://example.com/classic-pancakes",
@@ -115,8 +117,8 @@ func TestStaleCanonicalRecipe() *models.CanonicalRecipe {
 		RecipeData:       TestRecipeDef(),
 		ExtractionMethod: models.ExtractionJSONLD,
 		HitCount:         3,
-		LastAccessedAt:   stale,
-		FetchedAt:        stale,
+		LastAccessedAt:   old,
+		FetchedAt:        old,
 	}
 }
 

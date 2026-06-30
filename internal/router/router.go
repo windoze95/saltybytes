@@ -198,7 +198,6 @@ func SetupRouter(cfg *config.Config, database *gorm.DB) *gin.Engine {
 	searchService := service.NewSearchService(cfg, searchProvider, subService, searchCacheRepo)
 	searchService.EmbedProvider = embedProvider
 	searchService.StartBackgroundTasks()
-	importService.StartCanonicalBackgroundTasks()
 
 	// Backfill missing recipe/canonical embeddings in the background
 	service.StartEmbeddingBackfill(vectorRepo, embedProvider)
