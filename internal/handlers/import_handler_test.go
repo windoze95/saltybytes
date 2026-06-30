@@ -1,9 +1,11 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -367,5 +369,73 @@ func TestImportManual_Handler_InvalidUnitSystem(t *testing.T) {
 	}
 	if len(repo.Recipes) != 0 {
 		t.Errorf("no recipe should be created for invalid unit_system")
+	}
+}
+
+func TestImportFromFiles_Handler_Success(t *testing.T) {
+	repo := testutil.NewMockRecipeRepo()
+	importSvc := newImportService(repo, nil)
+	importSvc.VisionProvider = &testutil.MockVisionProvider{
+		ExtractRecipesFromMediaFunc: func(ctx context.Context, media []ai.MediaInput, unitSystem, requirements string) ([]*ai.RecipeResult, error) {
+			r1 := testutil.TestRecipeResult()
+			r2 := testutil.TestRecipeResult()
+			r2.Title = "Second"
+			return []*ai.RecipeResult{r1, r2}, nil
+		},
+	}
+	handler := NewImportHandler(importSvc)
+
+	user := testutil.TestUser()
+	r := gin.New()
+	r.POST("/recipes/import/files", setUser(user), handler.ImportFromFiles)
+
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	jpegPart, _ := mw.CreateFormFile("files", "a.jpg")
+	jpegPart.Write([]byte{0xFF, 0xD8, 0xFF, 0xE0, 0x00})
+	pdfPart, _ := mw.CreateFormFile("files", "b.pdf")
+	pdfPart.Write([]byte("%PDF-1.7\nx"))
+	mw.Close()
+
+	req := httptest.NewRequest("POST", "/recipes/import/files", &buf)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d. body: %s", w.Code, http.StatusOK, w.Body.String())
+	}
+	var resp struct {
+		Recipes []map[string]interface{} `json:"recipes"`
+	}
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	if len(resp.Recipes) != 2 {
+		t.Errorf("expected 2 recipes in response, got %d", len(resp.Recipes))
+	}
+	if len(repo.Recipes) != 2 {
+		t.Errorf("expected 2 recipes saved, got %d", len(repo.Recipes))
+	}
+}
+
+func TestImportFromFiles_Handler_NoFiles(t *testing.T) {
+	repo := testutil.NewMockRecipeRepo()
+	importSvc := newImportService(repo, nil)
+	importSvc.VisionProvider = &testutil.MockVisionProvider{}
+	handler := NewImportHandler(importSvc)
+
+	user := testutil.TestUser()
+	r := gin.New()
+	r.POST("/recipes/import/files", setUser(user), handler.ImportFromFiles)
+
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	mw.Close()
+	req := httptest.NewRequest("POST", "/recipes/import/files", &buf)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d. body: %s", w.Code, http.StatusBadRequest, w.Body.String())
 	}
 }

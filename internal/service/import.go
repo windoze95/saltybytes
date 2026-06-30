@@ -557,6 +557,86 @@ func (s *ImportService) fetchHTML(ctx context.Context, rawURL string) (string, e
 	return string(body), nil
 }
 
+// FileInput is a single uploaded file (image or PDF) for multi-source import.
+type FileInput struct {
+	Data []byte
+}
+
+// maxRecipesPerFileImport bounds how many recipes one multi-file import yields.
+const maxRecipesPerFileImport = 20
+
+// detectMediaKind classifies uploaded bytes as an image or PDF via magic bytes.
+// ok is false for unsupported content.
+func detectMediaKind(data []byte) (kind ai.MediaKind, ok bool) {
+	switch {
+	case len(data) >= 4 && data[0] == 0x25 && data[1] == 0x50 && data[2] == 0x44 && data[3] == 0x46: // %PDF
+		return ai.MediaPDF, true
+	case len(data) >= 3 && data[0] == 0xFF && data[1] == 0xD8 && data[2] == 0xFF: // JPEG
+		return ai.MediaImage, true
+	case len(data) >= 4 && data[0] == 0x89 && data[1] == 0x50 && data[2] == 0x4E && data[3] == 0x47: // PNG
+		return ai.MediaImage, true
+	case len(data) >= 3 && data[0] == 0x47 && data[1] == 0x49 && data[2] == 0x46: // GIF
+		return ai.MediaImage, true
+	case len(data) >= 12 && data[0] == 0x52 && data[1] == 0x49 && data[2] == 0x46 && data[3] == 0x46 &&
+		data[8] == 0x57 && data[9] == 0x45 && data[10] == 0x42 && data[11] == 0x50: // WEBP
+		return ai.MediaImage, true
+	}
+	return "", false
+}
+
+// ImportFromFiles extracts every recipe found across the provided files (images
+// and/or PDFs) and saves each as a recipe for the user.
+func (s *ImportService) ImportFromFiles(ctx context.Context, files []FileInput, user *models.User) ([]*RecipeResponse, error) {
+	log := logger.Get().With(zap.Uint("user_id", user.ID), zap.Int("file_count", len(files)))
+
+	if s.VisionProvider == nil {
+		return nil, fmt.Errorf("no vision provider configured")
+	}
+	if len(files) == 0 {
+		return nil, &ExtractionError{Code: "no_files", Message: "no files provided"}
+	}
+
+	media := make([]ai.MediaInput, 0, len(files))
+	for _, f := range files {
+		kind, ok := detectMediaKind(f.Data)
+		if !ok {
+			return nil, &ExtractionError{Code: "unsupported_file", Message: "unsupported file type; provide images (JPEG, PNG, GIF, WebP) or PDF documents"}
+		}
+		media = append(media, ai.MediaInput{Data: f.Data, Kind: kind})
+	}
+
+	unitSystem := user.Personalization.UnitSystemText()
+	requirements := user.Personalization.Requirements
+
+	results, err := s.VisionProvider.ExtractRecipesFromMedia(ctx, media, unitSystem, requirements)
+	if err != nil {
+		log.Error("multi-file extraction failed", zap.Error(err))
+		return nil, &ExtractionError{Code: "extraction_failed", Message: "could not extract recipes from the provided files"}
+	}
+
+	if len(results) > maxRecipesPerFileImport {
+		log.Warn("capping extracted recipes", zap.Int("found", len(results)), zap.Int("cap", maxRecipesPerFileImport))
+		results = results[:maxRecipesPerFileImport]
+	}
+
+	responses := make([]*RecipeResponse, 0, len(results))
+	for _, result := range results {
+		def := recipeResultToRecipeDef(result)
+		ensureUnitSystem(&def)
+		resp, _, createErr := s.createImportedRecipe(ctx, &def, user, models.RecipeTypeImportVision, "", "", nil, result.Hashtags, result.PromptVersion)
+		if createErr != nil {
+			log.Error("failed to create recipe from file import", zap.String("title", def.Title), zap.Error(createErr))
+			continue
+		}
+		responses = append(responses, resp)
+	}
+
+	if len(responses) == 0 {
+		return nil, &ExtractionError{Code: "extraction_failed", Message: "could not extract any recipes from the provided files"}
+	}
+	return responses, nil
+}
+
 // ImportFromPhoto sends an image to the VisionProvider for recipe extraction.
 func (s *ImportService) ImportFromPhoto(ctx context.Context, imageData []byte, user *models.User) (*RecipeResponse, error) {
 	log := logger.Get().With(zap.Uint("user_id", user.ID))

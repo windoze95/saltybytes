@@ -73,73 +73,104 @@ func NewAnthropicLightProvider(apiKey string, model string, prompts *config.Prom
 
 // createRecipeTool builds the Claude tool definition that mirrors the existing
 // OpenAI create_recipe function-call schema.
+// recipeProperties is the JSON-schema property set describing a single recipe.
+// It is shared by the create_recipe (single) and extract_recipes (array) tools.
+func recipeProperties(summaryPrompt string) map[string]interface{} {
+	return map[string]interface{}{
+		"title": map[string]interface{}{
+			"type":        "string",
+			"description": "Title of the recipe or meal",
+		},
+		"ingredients": map[string]interface{}{
+			"type":        "array",
+			"description": "List of ingredients used in the recipe",
+			"items": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"name":          map[string]interface{}{"type": "string", "description": "Name of the ingredient, do not include unit or amount in this field"},
+					"unit":          map[string]interface{}{"type": "string", "description": "Unit for the ingredient, comply with UnitSystem specified.", "enum": []string{"pieces", "tsp", "tbsp", "fl oz", "cup", "pt", "qt", "gal", "oz", "lb", "mL", "L", "mg", "g", "kg", "pinch", "dash", "drop", "bushel"}},
+					"amount":        map[string]interface{}{"type": "number", "description": "Amount of the ingredient"},
+					"amount_high":   map[string]interface{}{"type": "number", "description": "Upper bound when the source gives a range (e.g. '2-3 cups' -> amount 2, amount_high 3). Omit or 0 for a single amount."},
+					"metric_unit":   map[string]interface{}{"type": "string", "description": "Metric equivalent unit. Always metric (g, kg, mL, L, mg). Duplicate primary if already metric.", "enum": []string{"mg", "g", "kg", "mL", "L"}},
+					"metric_amount": map[string]interface{}{"type": "number", "description": "Metric equivalent amount. Use accurate cooking conversions (1 cup flour=120g, 1 cup butter=227g, 1 cup water=240mL). Round to practical amounts."},
+					"original_text": map[string]interface{}{"type": "string", "description": "The verbatim ingredient line as written in the source (e.g. '1 1/2 cups all-purpose flour, sifted'). Copy it exactly; leave empty only when generating an original recipe with no source text."},
+				},
+			},
+		},
+		"instructions": map[string]interface{}{
+			"type":        "array",
+			"description": "Steps to prepare the recipe (no numbering)",
+			"items":       map[string]interface{}{"type": "string"},
+		},
+		"cook_time": map[string]interface{}{
+			"type":        "number",
+			"description": "Total time to prepare the recipe(s) in minutes",
+		},
+		"image_prompt": map[string]interface{}{
+			"type":        "string",
+			"description": "Prompt to generate an image for the recipe, this should be relevant to the recipe and not the user request",
+		},
+		"hashtags": map[string]interface{}{
+			"type":        "array",
+			"description": "Provide a lengthy and thorough list (ten or more) of hashtags relevant to the recipe, not the prompting. Alphanumeric characters only. No '#'. Exclude terms like 'recipe', 'homemade', 'DIY', or similar words. Use camelCase formatting if more than one word (first letter is always lowercase).",
+			"items":       map[string]interface{}{"type": "string"},
+		},
+		"linked_recipe_suggestions": map[string]interface{}{
+			"type":        "array",
+			"description": "Provide a list of recipe suggestions (just the titles) based on: 1. Homemade versions of store-bought ingredients used in this recipe. 2. Something that would pair well with this recipe.",
+			"items":       map[string]interface{}{"type": "string"},
+		},
+		"recipe_summary": map[string]interface{}{
+			"type":        "string",
+			"description": summaryPrompt,
+		},
+		"portions": map[string]interface{}{
+			"type":        "number",
+			"description": "Number of portions this recipe makes",
+		},
+		"portion_size": map[string]interface{}{
+			"type":        "string",
+			"description": "Description of a single portion size",
+		},
+		"unit_system": map[string]interface{}{
+			"type":        "string",
+			"description": "The measurement system used in the recipe",
+			"enum":        []string{"us_customary", "metric"},
+		},
+	}
+}
+
 func createRecipeTool(summaryPrompt string) anthropic.ToolUnionParam {
 	return anthropic.ToolUnionParam{
 		OfTool: &anthropic.ToolParam{
 			Name:        "create_recipe",
 			Description: anthropic.String("Create a structured recipe definition with all required fields."),
 			InputSchema: anthropic.ToolInputSchemaParam{
+				Type:       "object",
+				Properties: recipeProperties(summaryPrompt),
+			},
+		},
+	}
+}
+
+// createMultiRecipeTool builds a tool that returns an array of recipes, for
+// multimodal extraction where the provided images/documents may collectively
+// contain more than one recipe.
+func createMultiRecipeTool(summaryPrompt string) anthropic.ToolUnionParam {
+	return anthropic.ToolUnionParam{
+		OfTool: &anthropic.ToolParam{
+			Name:        "extract_recipes",
+			Description: anthropic.String("Extract every distinct recipe found across the provided images and documents. Return one entry per recipe."),
+			InputSchema: anthropic.ToolInputSchemaParam{
 				Type: "object",
 				Properties: map[string]interface{}{
-					"title": map[string]interface{}{
-						"type":        "string",
-						"description": "Title of the recipe or meal",
-					},
-					"ingredients": map[string]interface{}{
+					"recipes": map[string]interface{}{
 						"type":        "array",
-						"description": "List of ingredients used in the recipe",
+						"description": "Every distinct recipe found across all provided inputs, one entry per recipe.",
 						"items": map[string]interface{}{
-							"type": "object",
-							"properties": map[string]interface{}{
-								"name":          map[string]interface{}{"type": "string", "description": "Name of the ingredient, do not include unit or amount in this field"},
-								"unit":          map[string]interface{}{"type": "string", "description": "Unit for the ingredient, comply with UnitSystem specified.", "enum": []string{"pieces", "tsp", "tbsp", "fl oz", "cup", "pt", "qt", "gal", "oz", "lb", "mL", "L", "mg", "g", "kg", "pinch", "dash", "drop", "bushel"}},
-								"amount":        map[string]interface{}{"type": "number", "description": "Amount of the ingredient"},
-								"amount_high":   map[string]interface{}{"type": "number", "description": "Upper bound when the source gives a range (e.g. '2-3 cups' -> amount 2, amount_high 3). Omit or 0 for a single amount."},
-								"metric_unit":   map[string]interface{}{"type": "string", "description": "Metric equivalent unit. Always metric (g, kg, mL, L, mg). Duplicate primary if already metric.", "enum": []string{"mg", "g", "kg", "mL", "L"}},
-								"metric_amount": map[string]interface{}{"type": "number", "description": "Metric equivalent amount. Use accurate cooking conversions (1 cup flour=120g, 1 cup butter=227g, 1 cup water=240mL). Round to practical amounts."},
-								"original_text": map[string]interface{}{"type": "string", "description": "The verbatim ingredient line as written in the source (e.g. '1 1/2 cups all-purpose flour, sifted'). Copy it exactly; leave empty only when generating an original recipe with no source text."},
-							},
+							"type":       "object",
+							"properties": recipeProperties(summaryPrompt),
 						},
-					},
-					"instructions": map[string]interface{}{
-						"type":        "array",
-						"description": "Steps to prepare the recipe (no numbering)",
-						"items":       map[string]interface{}{"type": "string"},
-					},
-					"cook_time": map[string]interface{}{
-						"type":        "number",
-						"description": "Total time to prepare the recipe(s) in minutes",
-					},
-					"image_prompt": map[string]interface{}{
-						"type":        "string",
-						"description": "Prompt to generate an image for the recipe, this should be relevant to the recipe and not the user request",
-					},
-					"hashtags": map[string]interface{}{
-						"type":        "array",
-						"description": "Provide a lengthy and thorough list (ten or more) of hashtags relevant to the recipe, not the prompting. Alphanumeric characters only. No '#'. Exclude terms like 'recipe', 'homemade', 'DIY', or similar words. Use camelCase formatting if more than one word (first letter is always lowercase).",
-						"items":       map[string]interface{}{"type": "string"},
-					},
-					"linked_recipe_suggestions": map[string]interface{}{
-						"type":        "array",
-						"description": "Provide a list of recipe suggestions (just the titles) based on: 1. Homemade versions of store-bought ingredients used in this recipe. 2. Something that would pair well with this recipe.",
-						"items":       map[string]interface{}{"type": "string"},
-					},
-					"recipe_summary": map[string]interface{}{
-						"type":        "string",
-						"description": summaryPrompt,
-					},
-					"portions": map[string]interface{}{
-						"type":        "number",
-						"description": "Number of portions this recipe makes",
-					},
-					"portion_size": map[string]interface{}{
-						"type":        "string",
-						"description": "Description of a single portion size",
-					},
-					"unit_system": map[string]interface{}{
-						"type":        "string",
-						"description": "The measurement system used in the recipe",
-						"enum":        []string{"us_customary", "metric"},
 					},
 				},
 			},
@@ -170,6 +201,11 @@ type ingredientToolRes struct {
 	MetricUnit   string  `json:"metric_unit"`
 	MetricAmount float64 `json:"metric_amount"`
 	OriginalText string  `json:"original_text"`
+}
+
+// multiRecipeToolResult is the JSON structure returned by the extract_recipes tool.
+type multiRecipeToolResult struct {
+	Recipes []recipeToolResult `json:"recipes"`
 }
 
 // analyzeAllergensTool builds the Claude tool definition for allergen analysis.
@@ -555,6 +591,29 @@ func extractRecipeFromToolUse(msg *anthropic.Message) (*RecipeResult, error) {
 				return nil, NewAIError(FailureContentParse, fmt.Errorf("failed to unmarshal recipe: %w", err), "failed to parse recipe tool result")
 			}
 			return toolResultToRecipeResult(&tr), nil
+		}
+	}
+	return nil, NewAIError(FailureContentEmpty, errors.New("no tool_use block found in Claude response"), "no tool_use block in response")
+}
+
+// extractRecipesFromToolUse parses the extract_recipes tool call into one or
+// more RecipeResults.
+func extractRecipesFromToolUse(msg *anthropic.Message) ([]*RecipeResult, error) {
+	for _, block := range msg.Content {
+		if block.Type == "tool_use" {
+			raw, err := json.Marshal(block.Input)
+			if err != nil {
+				return nil, NewAIError(FailureContentParse, fmt.Errorf("failed to marshal tool input: %w", err), "failed to parse recipes tool result")
+			}
+			var tr multiRecipeToolResult
+			if err := json.Unmarshal(raw, &tr); err != nil {
+				return nil, NewAIError(FailureContentParse, fmt.Errorf("failed to unmarshal recipes: %w", err), "failed to parse recipes tool result")
+			}
+			results := make([]*RecipeResult, 0, len(tr.Recipes))
+			for i := range tr.Recipes {
+				results = append(results, toolResultToRecipeResult(&tr.Recipes[i]))
+			}
+			return results, nil
 		}
 	}
 	return nil, NewAIError(FailureContentEmpty, errors.New("no tool_use block found in Claude response"), "no tool_use block in response")
@@ -1368,6 +1427,97 @@ func (p *AnthropicProvider) ExtractRecipeFromImage(ctx context.Context, imageDat
 		}
 		result.PromptVersion = config.PromptVersion(p.prompts)
 		return result, nil
+	})
+}
+
+// ExtractRecipesFromMedia extracts every distinct recipe found across the
+// provided images and/or PDF documents in a single Claude request.
+func (p *AnthropicProvider) ExtractRecipesFromMedia(ctx context.Context, media []MediaInput, unitSystem string, requirements string) ([]*RecipeResult, error) {
+	op := AIOperation{
+		Name:      "ExtractRecipesFromMedia",
+		Provider:  "anthropic",
+		Model:     string(p.model),
+		StartTime: time.Now(),
+	}
+
+	return runWithMiddleware(ctx, p.middleware, op, func(ctx context.Context) ([]*RecipeResult, error) {
+		sysSuffix, err := config.RenderPrompt(p.prompts.Recipe.Import.Vision.System, map[string]interface{}{
+			"UnitSystem":   unitSystem,
+			"Requirements": requirements,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("render system prompt: %w", err)
+		}
+
+		blocks := make([]anthropic.ContentBlockParamUnion, 0, len(media)+1)
+		for _, m := range media {
+			if m.Kind == MediaPDF {
+				blocks = append(blocks, anthropic.ContentBlockParamUnion{
+					OfRequestDocumentBlock: &anthropic.DocumentBlockParam{
+						Source: anthropic.DocumentBlockParamSourceUnion{
+							OfBase64PDFSource: &anthropic.Base64PDFSourceParam{
+								Data: base64.StdEncoding.EncodeToString(m.Data),
+							},
+						},
+					},
+				})
+				continue
+			}
+			blocks = append(blocks, anthropic.ContentBlockParamUnion{
+				OfRequestImageBlock: &anthropic.ImageBlockParam{
+					Source: anthropic.ImageBlockParamSourceUnion{
+						OfBase64ImageSource: &anthropic.Base64ImageSourceParam{
+							MediaType: anthropic.Base64ImageSourceMediaType(detectImageMediaType(m.Data)),
+							Data:      base64.StdEncoding.EncodeToString(m.Data),
+						},
+					},
+				},
+			})
+		}
+		blocks = append(blocks, anthropic.NewTextBlock("These images and/or documents contain one or more recipes. Extract EVERY distinct recipe you find across all of them, returning one entry per recipe. If an item shows a prepared dish with no written recipe, infer a reasonable recipe for it."))
+
+		summaryDesc := p.prompts.Recipe.Summarize.Recipe
+		tool := createMultiRecipeTool(summaryDesc)
+
+		params := anthropic.MessageNewParams{
+			Model:     p.model,
+			MaxTokens: 16000,
+			System:    buildCachedSystemPrompt(p.prompts.Recipe.Import.Vision.SystemPrefix, sysSuffix),
+			Messages: []anthropic.MessageParam{
+				newUserMessage(blocks...),
+			},
+			Tools: []anthropic.ToolUnionParam{tool},
+			ToolChoice: anthropic.ToolChoiceUnionParam{
+				OfToolChoiceTool: &anthropic.ToolChoiceToolParam{
+					Name: "extract_recipes",
+				},
+			},
+		}
+
+		resp, err := p.createMessageWithRetry(ctx, params)
+		if err != nil {
+			return nil, err
+		}
+
+		results, err := extractRecipesFromToolUse(resp)
+		if err != nil {
+			return nil, err
+		}
+
+		pv := config.PromptVersion(p.prompts)
+		valid := make([]*RecipeResult, 0, len(results))
+		for _, r := range results {
+			if err := validateRecipeResult(r); err != nil {
+				logger.Get().Warn("skipping invalid extracted recipe", zap.String("title", r.Title), zap.Error(err))
+				continue
+			}
+			r.PromptVersion = pv
+			valid = append(valid, r)
+		}
+		if len(valid) == 0 {
+			return nil, NewAIError(FailureContentQuality, errors.New("no valid recipes extracted from media"), "no recipes found in the provided files")
+		}
+		return valid, nil
 	})
 }
 

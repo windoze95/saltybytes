@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -107,6 +108,89 @@ func (h *ImportHandler) ImportFromPhoto(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"recipe": recipeResponse})
+}
+
+// ImportFromFiles handles POST /v1/recipes/import/files — one or more images
+// and/or PDF documents in a single request, each yielding one or more recipes.
+func (h *ImportHandler) ImportFromFiles(c *gin.Context) {
+	user, err := util.GetUserFromContext(c)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	const (
+		maxFiles      = 10
+		maxPerFile    = 10 * 1024 * 1024 // 10MB per file
+		maxTotalBytes = 28 * 1024 * 1024 // keep the Claude request under its 32MB ceiling
+	)
+
+	form, err := c.MultipartForm()
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid multipart form: " + err.Error()})
+		return
+	}
+	headers := form.File["files"]
+	if len(headers) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "At least one file is required (field 'files')"})
+		return
+	}
+	if len(headers) > maxFiles {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("Too many files (max %d)", maxFiles)})
+		return
+	}
+
+	var files []service.FileInput
+	var total int
+	for _, fh := range headers {
+		f, err := fh.Open()
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to read an uploaded file"})
+			return
+		}
+		data, err := io.ReadAll(io.LimitReader(f, maxPerFile+1))
+		f.Close()
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to read an uploaded file"})
+			return
+		}
+		if len(data) == 0 {
+			continue
+		}
+		if len(data) > maxPerFile {
+			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("File %q exceeds the %dMB limit", fh.Filename, maxPerFile/(1024*1024))})
+			return
+		}
+		total += len(data)
+		if total > maxTotalBytes {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Total upload size is too large"})
+			return
+		}
+		files = append(files, service.FileInput{Data: data})
+	}
+
+	if len(files) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "No non-empty files provided"})
+		return
+	}
+
+	recipes, err := h.Service.ImportFromFiles(c.Request.Context(), files, user)
+	if err != nil {
+		logger.Get().Error("failed to import recipes from files", zap.Error(err))
+		var extractErr *service.ExtractionError
+		if errors.As(err, &extractErr) {
+			status := http.StatusUnprocessableEntity
+			if extractErr.Code == "unsupported_file" || extractErr.Code == "no_files" {
+				status = http.StatusBadRequest
+			}
+			c.JSON(status, gin.H{"error": extractErr.Message, "code": extractErr.Code})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to import recipes from files"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"recipes": recipes})
 }
 
 // ImportFromText handles POST /v1/recipes/import/text
