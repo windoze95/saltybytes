@@ -2,6 +2,7 @@ package video
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"strings"
@@ -111,6 +112,96 @@ func TestFetchVideo_TikTok_FallsBackToPlayAddr(t *testing.T) {
 	}
 	if m.MediaURL != "https://cdn.example/play.mp4" {
 		t.Errorf("media url = %q, want play_addr fallback", m.MediaURL)
+	}
+}
+
+func TestFetchVideo_Instagram(t *testing.T) {
+	// The caption deliberately contains a RAW newline byte (between "rice" and
+	// "with") — invalid per JSON spec and rejected by encoding/json — to prove
+	// the client's control-char sanitizer makes real Instagram responses parse.
+	const postFixture = `{"success":true,"data":{"xdt_shortcode_media":{"__typename":"XDTGraphVideo","id":"3890383696589050992","shortcode":"DX9a1wjKVRw","is_video":true,"video_url":"https://scontent.cdninstagram.com/v.mp4","video_duration":22.547,"edge_media_to_caption":{"edges":[{"node":{"text":"Thai mango sticky rice
+with creamy coconut sauce #recipe"}}]}}}}`
+	const transcriptFixture = `{"success":true,"transcripts":["Soak the rice then steam it with coconut milk."]}`
+
+	c := NewScrapeCreatorsClient("k")
+	var gotPostURL, gotTranscriptURL string
+	c.httpDo = func(req *http.Request) (*http.Response, error) {
+		body := postFixture
+		if strings.Contains(req.URL.Path, "/v2/instagram/media/transcript") {
+			gotTranscriptURL = req.URL.String()
+			body = transcriptFixture
+		} else {
+			gotPostURL = req.URL.String()
+		}
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(body))}, nil
+	}
+
+	m, err := c.FetchVideo(context.Background(), "https://www.instagram.com/reel/DX9a1wjKVRw/")
+	if err != nil {
+		t.Fatalf("FetchVideo error: %v", err)
+	}
+	if !strings.Contains(gotPostURL, "/v1/instagram/post") {
+		t.Errorf("post URL = %q, want /v1/instagram/post", gotPostURL)
+	}
+	if !strings.Contains(gotTranscriptURL, "/v2/instagram/media/transcript") {
+		t.Errorf("transcript URL = %q, want the transcript endpoint", gotTranscriptURL)
+	}
+	if m.Platform != PlatformInstagram {
+		t.Errorf("platform = %q, want instagram", m.Platform)
+	}
+	if m.VideoID != "DX9a1wjKVRw" {
+		t.Errorf("video id = %q, want the shortcode", m.VideoID)
+	}
+	if !strings.Contains(m.Caption, "Thai mango sticky rice") || !strings.Contains(m.Caption, "creamy coconut sauce") {
+		t.Errorf("caption did not survive sanitization: %q", m.Caption)
+	}
+	if m.MediaURL != "https://scontent.cdninstagram.com/v.mp4" {
+		t.Errorf("media url = %q", m.MediaURL)
+	}
+	if m.DurationMS != 22547 { // 22.547s rounded to ms
+		t.Errorf("duration = %d ms, want 22547", m.DurationMS)
+	}
+	if m.Transcript == "" {
+		t.Error("expected the best-effort transcript to be populated")
+	}
+}
+
+func TestFetchVideo_Instagram_NotAVideo(t *testing.T) {
+	const fixture = `{"success":true,"data":{"xdt_shortcode_media":{"__typename":"XDTGraphImage","shortcode":"ABC123","is_video":false}}}`
+	c := NewScrapeCreatorsClient("k")
+	c.httpDo = func(req *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(fixture))}, nil
+	}
+	if _, err := c.FetchVideo(context.Background(), "https://www.instagram.com/p/ABC123/"); err == nil {
+		t.Fatal("expected an error for a non-video (image) post")
+	}
+}
+
+func TestSanitizeJSONControlChars(t *testing.T) {
+	// Raw newline + tab inside a string value → must become valid, parseable JSON.
+	raw := []byte("{\"text\":\"a\nb\tc\",\"keep\":\"x\\ny\",\"n\":7}")
+	var v struct {
+		Text string `json:"text"`
+		Keep string `json:"keep"`
+		N    int    `json:"n"`
+	}
+	if err := json.Unmarshal(sanitizeJSONControlChars(raw), &v); err != nil {
+		t.Fatalf("sanitized JSON should parse, got: %v", err)
+	}
+	if v.Text != "a\nb\tc" {
+		t.Errorf("text = %q, want the control chars decoded back", v.Text)
+	}
+	if v.Keep != "x\ny" { // already-escaped \n must be left intact
+		t.Errorf("keep = %q, want already-escaped sequence preserved", v.Keep)
+	}
+	if v.N != 7 {
+		t.Errorf("n = %d, want 7", v.N)
+	}
+
+	// Clean JSON (control chars only as structural whitespace) is unchanged.
+	clean := []byte("{\n  \"a\": 1\n}")
+	if got := sanitizeJSONControlChars(clean); string(got) != string(clean) {
+		t.Errorf("clean JSON was modified:\n got %q\nwant %q", got, clean)
 	}
 }
 
