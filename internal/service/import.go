@@ -48,6 +48,12 @@ type ImportService struct {
 	Policy          *ImportPolicy
 	Normalize       *NormalizeService // optional; estimates portions when imports lack them
 
+	// Video-link import (premium). All three are nil until a ScrapeCreators key
+	// is configured at startup, which keeps the feature dark by default.
+	VideoRepo         repository.VideoImportRepo
+	VideoFetcher      VideoFetcher
+	VideoFrameSampler VideoFrameSampler
+
 	// Test seams — nil in production, set in tests to bypass real HTTP/Firecrawl calls
 	HTTPFetchOverride      func(ctx context.Context, url string) (body []byte, statusCode int, err error)
 	FirecrawlFetchOverride func(ctx context.Context, url string) (html string, statusCode int, err error)
@@ -609,7 +615,7 @@ func (s *ImportService) ImportFromFiles(ctx context.Context, files []FileInput, 
 	unitSystem := user.Personalization.UnitSystemText()
 	requirements := user.Personalization.Requirements
 
-	results, err := s.VisionProvider.ExtractRecipesFromMedia(ctx, media, unitSystem, requirements)
+	results, err := s.VisionProvider.ExtractRecipesFromMedia(ctx, media, "", unitSystem, requirements)
 	if err != nil {
 		log.Error("multi-file extraction failed", zap.Error(err))
 		return nil, &ExtractionError{Code: "extraction_failed", Message: "could not extract recipes from the provided files"}

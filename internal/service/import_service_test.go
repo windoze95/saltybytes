@@ -403,7 +403,7 @@ func TestImportFromFiles_MultipleRecipes(t *testing.T) {
 	repo := testutil.NewMockRecipeRepo()
 	var gotMedia []ai.MediaInput
 	vision := &testutil.MockVisionProvider{
-		ExtractRecipesFromMediaFunc: func(ctx context.Context, media []ai.MediaInput, unitSystem, requirements string) ([]*ai.RecipeResult, error) {
+		ExtractRecipesFromMediaFunc: func(ctx context.Context, media []ai.MediaInput, contextText, unitSystem, requirements string) ([]*ai.RecipeResult, error) {
 			gotMedia = media
 			r1 := testutil.TestRecipeResult()
 			r2 := testutil.TestRecipeResult()
