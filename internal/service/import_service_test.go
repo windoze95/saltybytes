@@ -292,6 +292,65 @@ func TestPreviewFromURL_OldCanonicalStillServed(t *testing.T) {
 	}
 }
 
+func TestPreviewFromURLWithMultiCheck_ServesCachedSingle(t *testing.T) {
+	repo := testutil.NewMockRecipeRepo()
+	canonical := testutil.TestCanonicalRecipe() // IsMultiPage defaults to false
+	fetched := false
+	svc := newTestImportService(repo, nil, nil)
+	svc.CanonicalRepo = &testutil.MockCanonicalRecipeRepo{
+		GetByNormalizedURLFunc: func(string) (*models.CanonicalRecipe, error) { return canonical, nil },
+	}
+	svc.HTTPFetchOverride = func(ctx context.Context, url string) ([]byte, int, error) {
+		fetched = true
+		return []byte("<html></html>"), 200, nil
+	}
+	// A resolver is present (the realistic case) — previously this disabled the
+	// canonical cache for any URL not already in the in-memory registry, so the
+	// recipe re-extracted on every open. It must now serve straight from cache.
+	resolver := NewMultiRecipeResolver(NewMultiRecipeRegistry(), svc)
+
+	result, err := svc.PreviewFromURLWithMultiCheck(context.Background(), "https://example.com/classic-pancakes", resolver)
+	if err != nil {
+		t.Fatalf("PreviewFromURLWithMultiCheck error: %v", err)
+	}
+	if result.IsMulti {
+		t.Error("should not be multi")
+	}
+	if result.Recipe == nil || result.Recipe.Title != "Classic Pancakes" {
+		t.Errorf("recipe = %+v, want the cached 'Classic Pancakes'", result.Recipe)
+	}
+	if !result.FromCache {
+		t.Error("expected FromCache=true (served from the canonical cache)")
+	}
+	if fetched {
+		t.Error("must NOT fetch when served from cache")
+	}
+}
+
+func TestPreviewFromURLWithMultiCheck_SkipsMultiPageMarker(t *testing.T) {
+	repo := testutil.NewMockRecipeRepo()
+	marker := &models.CanonicalRecipe{NormalizedURL: "x", IsMultiPage: true, RecipeData: models.RecipeDef{}}
+	fetched := false
+	svc := newTestImportService(repo, nil, nil)
+	svc.CanonicalRepo = &testutil.MockCanonicalRecipeRepo{
+		GetByNormalizedURLFunc: func(string) (*models.CanonicalRecipe, error) { return marker, nil },
+	}
+	svc.HTTPFetchOverride = func(ctx context.Context, url string) ([]byte, int, error) {
+		fetched = true
+		return nil, 404, nil // fail extraction so we can prove the marker wasn't served
+	}
+
+	// A collection marker must never be served as a recipe — preview must skip
+	// it and proceed to (re-)fetch/expand.
+	_, err := svc.PreviewFromURLWithMultiCheck(context.Background(), "https://example.com/30-beef-dinners", nil)
+	if err == nil {
+		t.Fatal("expected the marker to be skipped and the fetch to proceed (404)")
+	}
+	if !fetched {
+		t.Error("a multi-page marker must NOT be served as a recipe — a fetch was expected")
+	}
+}
+
 func TestImportFromURL_OldCanonicalStillServed(t *testing.T) {
 	repo := testutil.NewMockRecipeRepo()
 	old := testutil.TestOldCanonicalRecipe()

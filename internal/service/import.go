@@ -162,7 +162,7 @@ func (s *ImportService) ImportFromURL(ctx context.Context, rawURL string, user *
 	if s.CanonicalRepo != nil {
 		normalizedURL, normErr := NormalizeURL(rawURL)
 		if normErr == nil {
-			if canonical, err := s.CanonicalRepo.GetByNormalizedURL(normalizedURL); err == nil {
+			if canonical, err := s.CanonicalRepo.GetByNormalizedURL(normalizedURL); err == nil && !canonical.IsMultiPage {
 				log.Info("import from canonical cache hit")
 				go s.CanonicalRepo.IncrementHitCount(canonical.ID)
 				canonicalID := canonical.ID
@@ -763,6 +763,10 @@ type PreviewResult struct {
 	IsMulti     bool              `json:"is_multi"`
 	MultiID     string            `json:"multi_id,omitempty"`
 	MultiCards  []MultiRecipeCard `json:"recipes,omitempty"`
+	// FromCache is true when the recipe was served from the canonical cache
+	// (an instant load), so the client can show "loading saved recipe" rather
+	// than an "extracting" state.
+	FromCache bool `json:"from_cache,omitempty"`
 }
 
 // PreviewFromURL fetches a page and extracts recipe data without saving.
@@ -779,7 +783,7 @@ func (s *ImportService) PreviewFromURL(ctx context.Context, rawURL string) (*mod
 	if s.CanonicalRepo != nil {
 		normalizedURL, normErr := NormalizeURL(rawURL)
 		if normErr == nil {
-			if canonical, err := s.CanonicalRepo.GetByNormalizedURL(normalizedURL); err == nil {
+			if canonical, err := s.CanonicalRepo.GetByNormalizedURL(normalizedURL); err == nil && !canonical.IsMultiPage {
 				log.Info("preview canonical cache hit")
 				go s.CanonicalRepo.IncrementHitCount(canonical.ID)
 				data := canonical.RecipeData
@@ -847,25 +851,13 @@ func (s *ImportService) PreviewFromURLWithMultiCheck(ctx context.Context, rawURL
 		}
 	}
 
-	// Use canonical cache when:
-	// - no resolver (multi detection unavailable), OR
-	// - resolver confirms this URL was already checked and is NOT multi-recipe
-	// This prevents previously-cached listicle URLs from bypassing detection,
-	// while still caching confirmed single-recipe URLs.
-	canUseCanonicalCache := resolver == nil
-	if !canUseCanonicalCache {
-		if checked := resolver.Registry.Get(rawURL); checked != nil {
-			status := checked.GetStatus()
-			cards := checked.GetCards()
-			if (status == "resolved" || status == "failed") && len(cards) <= 1 {
-				canUseCanonicalCache = true // confirmed single-recipe
-			}
-		}
-	}
-	if s.CanonicalRepo != nil && canUseCanonicalCache {
-		normalizedURL, normErr := NormalizeURL(rawURL)
-		if normErr == nil {
-			if canonical, err := s.CanonicalRepo.GetByNormalizedURL(normalizedURL); err == nil {
+	// Serve a previously-extracted single recipe straight from the cache (an
+	// instant load — no re-extraction). The IsMultiPage marker keeps
+	// collection/listicle URLs out of this fast path so they still expand into
+	// their individual recipes.
+	if s.CanonicalRepo != nil {
+		if normalizedURL, normErr := NormalizeURL(rawURL); normErr == nil {
+			if canonical, err := s.CanonicalRepo.GetByNormalizedURL(normalizedURL); err == nil && !canonical.IsMultiPage {
 				log.Info("preview canonical cache hit")
 				go s.CanonicalRepo.IncrementHitCount(canonical.ID)
 				data := canonical.RecipeData
@@ -873,7 +865,7 @@ func (s *ImportService) PreviewFromURLWithMultiCheck(ctx context.Context, rawURL
 					data.SourceURL = rawURL
 				}
 				canonicalID := canonical.ID
-				return &PreviewResult{Recipe: &data, CanonicalID: &canonicalID}, nil
+				return &PreviewResult{Recipe: &data, CanonicalID: &canonicalID, FromCache: true}, nil
 			}
 		}
 	}
@@ -889,6 +881,25 @@ func (s *ImportService) PreviewFromURLWithMultiCheck(ctx context.Context, rawURL
 	if resolver != nil {
 		entry := resolver.ResolveFromHTML(ctx, rawURL, html)
 		if entry != nil {
+			// Durably mark this URL as a collection so future previews skip the
+			// single-recipe cache and re-expand it (the in-memory registry is
+			// lost on restart).
+			if s.CanonicalRepo != nil {
+				if normalizedURL, normErr := NormalizeURL(rawURL); normErr == nil {
+					now := time.Now()
+					if err := s.CanonicalRepo.Upsert(&models.CanonicalRecipe{
+						NormalizedURL:    normalizedURL,
+						OriginalURL:      rawURL,
+						IsMultiPage:      true,
+						RecipeData:       models.RecipeDef{},
+						ExtractionMethod: models.ExtractionJSONLD,
+						FetchedAt:        now,
+						LastAccessedAt:   now,
+					}); err != nil {
+						log.Warn("failed to mark multi-recipe page", zap.Error(err))
+					}
+				}
+			}
 			return &PreviewResult{
 				IsMulti:    true,
 				MultiID:    entry.ID,

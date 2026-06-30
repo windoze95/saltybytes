@@ -28,4 +28,10 @@ type CanonicalRecipe struct {
 	FetchedAt        time.Time        `gorm:"index;not null"`
 	Embedding        *string          `gorm:"type:vector(1536)" json:"-"`
 	PromptVersion    string           `gorm:"size:16"`
+	// IsMultiPage marks this URL as a collection/listicle (an index of links to
+	// separate recipes) rather than a single recipe. Such rows are markers with
+	// empty RecipeData and must never be served as a recipe — they keep
+	// collection URLs out of the single-recipe cache fast path so they still
+	// expand into their individual recipes.
+	IsMultiPage bool `gorm:"default:false"`
 }
