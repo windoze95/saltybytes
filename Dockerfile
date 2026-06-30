@@ -18,7 +18,13 @@ WORKDIR /app/cmd/api
 RUN go build -o /saltybytes-api .
 
 # Stage 2: Runtime
-FROM gcr.io/distroless/base-debian12
+FROM debian:12-slim
+
+# ffmpeg powers video-link import frame extraction; ca-certificates is needed
+# for outbound HTTPS (it ships in distroless but not debian-slim).
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
 
 # Copy the binary and config files from the builder
 COPY --from=builder /saltybytes-api /saltybytes-api
