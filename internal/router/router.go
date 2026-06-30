@@ -10,6 +10,7 @@ import (
 	"github.com/windoze95/saltybytes-api/internal/handlers"
 	"github.com/windoze95/saltybytes-api/internal/logger"
 	"github.com/windoze95/saltybytes-api/internal/middleware"
+	"github.com/windoze95/saltybytes-api/internal/models"
 	"github.com/windoze95/saltybytes-api/internal/repository"
 	"github.com/windoze95/saltybytes-api/internal/service"
 	"github.com/windoze95/saltybytes-api/internal/video"
@@ -66,8 +67,31 @@ func SetupRouter(cfg *config.Config, database *gorm.DB) *gin.Engine {
 	textProvider := ai.NewAnthropicProvider(cfg.EnvVars.AnthropicAPIKey, cfg.EnvVars.AnthropicModel, cfg.Prompts)
 	imageProvider := ai.NewDALLEProvider(cfg.EnvVars.OpenAIAPIKey)
 
-	// AI observability middleware
-	aiMW := ai.NewMiddlewareChain(&ai.LoggingMiddleware{})
+	// AI observability + cost metering. The cost middleware records every AI
+	// call's tokens + metered cost to ai_usage_logs (off the request path) —
+	// the data behind the dashboard's model cost comparison + counterfactuals.
+	aiUsageRepo := repository.NewAIUsageRepository(database)
+	costMW := &ai.CostMiddleware{
+		Pricing: ai.DefaultPricing,
+		Sink: func(rec ai.UsageRecord) {
+			go func() {
+				if err := aiUsageRepo.Insert(&models.AIUsageLog{
+					Operation:        rec.Operation,
+					Provider:         rec.Provider,
+					Model:            rec.Model,
+					InputTokens:      rec.InputTokens,
+					OutputTokens:     rec.OutputTokens,
+					CacheInputTokens: rec.CacheInputTokens,
+					CostUSD:          rec.CostUSD,
+					DurationMS:       rec.DurationMS,
+					Success:          rec.Success,
+				}); err != nil {
+					logger.Get().Warn("failed to record AI usage", zap.Error(err))
+				}
+			}()
+		},
+	}
+	aiMW := ai.NewMiddlewareChain(&ai.LoggingMiddleware{}, costMW)
 	textProvider.WithMiddleware(aiMW)
 
 	// Recipe-related routes setup

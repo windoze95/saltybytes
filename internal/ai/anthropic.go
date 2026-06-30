@@ -601,6 +601,10 @@ func (p *AnthropicProvider) createMessageWithRetry(ctx context.Context, params a
 	for i := 0; i < maxRetries; i++ {
 		resp, err := p.client.Messages.New(ctx, params)
 		if err == nil {
+			recordUsage(ctx, TokenUsage{
+				InputTokens:  int(resp.Usage.InputTokens),
+				OutputTokens: int(resp.Usage.OutputTokens),
+			})
 			return resp, nil
 		}
 
