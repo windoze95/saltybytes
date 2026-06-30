@@ -116,6 +116,10 @@ func (c *ScrapeCreatorsClient) FetchVideo(ctx context.Context, rawURL string) (*
 		return c.fetchInstagram(ctx, rawURL)
 	case PlatformFacebook:
 		return c.fetchFacebook(ctx, rawURL)
+	case PlatformYouTube:
+		return c.fetchYouTube(ctx, rawURL)
+	case PlatformPinterest:
+		return c.fetchPinterest(ctx, rawURL)
 	default:
 		return nil, fmt.Errorf("platform %q not yet supported", platform)
 	}
@@ -334,6 +338,96 @@ func (c *ScrapeCreatorsClient) facebookTranscript(ctx context.Context, rawURL st
 		return *r.Transcript
 	}
 	return ""
+}
+
+// youtubeVideoResponse is the subset of the /v1/youtube/video response we use.
+// YouTube exposes no downloadable media here, so the recipe is extracted from
+// the title + description (which recipe channels routinely fill out).
+type youtubeVideoResponse struct {
+	ID          string `json:"id"`
+	Title       string `json:"title"`
+	Description string `json:"description"`
+	DurationMs  int    `json:"durationMs"`
+}
+
+func (c *ScrapeCreatorsClient) fetchYouTube(ctx context.Context, rawURL string) (*VideoMeta, error) {
+	q := url.Values{}
+	q.Set("url", rawURL)
+
+	body, err := c.get(ctx, "/v1/youtube/video", q)
+	if err != nil {
+		return nil, err
+	}
+	var r youtubeVideoResponse
+	if err := json.Unmarshal(body, &r); err != nil {
+		return nil, fmt.Errorf("parse youtube response: %w", err)
+	}
+	if r.ID == "" {
+		return nil, fmt.Errorf("youtube response missing video detail")
+	}
+
+	return &VideoMeta{
+		Platform:   PlatformYouTube,
+		VideoID:    r.ID,
+		Caption:    joinTitleDescription(r.Title, r.Description),
+		MediaURL:   "", // no downloadable media → text-extraction path
+		DurationMS: r.DurationMs,
+	}, nil
+}
+
+// pinterestPinResponse is the subset of the /v1/pinterest/pin response we use.
+// Recipe pins are description-driven (most are images, not video), so we
+// extract from the title + description text.
+type pinterestPinResponse struct {
+	EntityID           string `json:"entityId"`
+	Title              string `json:"title"`
+	Description        string `json:"description"`
+	CloseupDescription string `json:"closeupDescription"`
+}
+
+func (c *ScrapeCreatorsClient) fetchPinterest(ctx context.Context, rawURL string) (*VideoMeta, error) {
+	q := url.Values{}
+	q.Set("url", rawURL)
+
+	body, err := c.get(ctx, "/v1/pinterest/pin", q)
+	if err != nil {
+		return nil, err
+	}
+	var r pinterestPinResponse
+	if err := json.Unmarshal(body, &r); err != nil {
+		return nil, fmt.Errorf("parse pinterest response: %w", err)
+	}
+	if r.EntityID == "" {
+		return nil, fmt.Errorf("pinterest response missing pin detail")
+	}
+
+	desc := r.Description
+	if desc == "" {
+		desc = r.CloseupDescription
+	}
+
+	return &VideoMeta{
+		Platform:   PlatformPinterest,
+		VideoID:    r.EntityID,
+		Caption:    joinTitleDescription(r.Title, desc),
+		MediaURL:   "", // pins are description-driven → text-extraction path
+		DurationMS: 0,
+	}, nil
+}
+
+// joinTitleDescription combines a title and description into a single text
+// block, dropping either if empty.
+func joinTitleDescription(title, description string) string {
+	t := strings.TrimSpace(title)
+	d := strings.TrimSpace(description)
+	switch {
+	case t != "" && d != "":
+		return t + "\n\n" + d
+	case t != "":
+		return t
+	default:
+		return d
+	}
 }
 
 // sanitizeJSONControlChars escapes raw control characters (U+0000–U+001F) that

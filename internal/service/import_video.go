@@ -166,49 +166,68 @@ func (s *ImportService) processVideoImport(jobID uint, rawURL string, user *mode
 		}
 	}
 
-	if meta.MediaURL == "" {
-		fail("no_media", "the video could not be downloaded", fmt.Errorf("empty media url for %s", videoKey))
-		return
-	}
-	// The media URL comes from a third-party scraper; treat it as untrusted and
-	// block private/internal addresses before the sampler fetches it (SSRF).
-	if err := ValidateExternalURL(meta.MediaURL); err != nil {
-		fail("no_media", "the video could not be downloaded", err)
-		return
-	}
-
-	// 4. Sample representative frames (scene changes catch on-screen text and
-	//    flashy cuts; even sampling backs it up).
-	frames, err := s.VideoFrameSampler.Sample(ctx, meta.MediaURL, meta.DurationMS)
-	if err != nil {
-		fail("sampling_failed", "could not process the video", err)
-		return
-	}
-
-	media := make([]ai.MediaInput, 0, len(frames))
-	for _, f := range frames {
-		media = append(media, ai.MediaInput{Data: f, Kind: ai.MediaImage})
-	}
-
-	// 5. Multimodal extraction: frames + transcript/caption together.
+	// 4. Extract the recipe. Video platforms give a downloadable media URL and
+	//    go through frame sampling + multimodal extraction; text platforms
+	//    (YouTube, Pinterest) have no video to sample, so they extract from the
+	//    title/description/transcript instead.
 	contextText := buildVideoContext(meta)
 	unitSystem := user.Personalization.UnitSystemText()
-	requirements := user.Personalization.Requirements
-	results, err := s.VisionProvider.ExtractRecipesFromMedia(ctx, media, contextText, unitSystem, requirements)
-	if err != nil || len(results) == 0 {
-		fail("extraction_failed", "could not find a recipe in this video", err)
-		return
+
+	var chosen *ai.RecipeResult
+	var frames [][]byte
+
+	if meta.MediaURL != "" {
+		// The media URL comes from a third-party scraper; treat it as untrusted
+		// and block private/internal addresses before the sampler fetches it.
+		if err := ValidateExternalURL(meta.MediaURL); err != nil {
+			fail("no_media", "the video could not be downloaded", err)
+			return
+		}
+		// Scene-change frames catch on-screen text and flashy cuts; even
+		// sampling backs it up.
+		sampled, sErr := s.VideoFrameSampler.Sample(ctx, meta.MediaURL, meta.DurationMS)
+		if sErr != nil {
+			fail("sampling_failed", "could not process the video", sErr)
+			return
+		}
+		frames = sampled
+
+		media := make([]ai.MediaInput, 0, len(frames))
+		for _, f := range frames {
+			media = append(media, ai.MediaInput{Data: f, Kind: ai.MediaImage})
+		}
+		results, eErr := s.VisionProvider.ExtractRecipesFromMedia(ctx, media, contextText, unitSystem, user.Personalization.Requirements)
+		if eErr != nil || len(results) == 0 {
+			fail("extraction_failed", "could not find a recipe in this video", eErr)
+			return
+		}
+		chosen = results[0] // a single video yields a single recipe
+	} else {
+		if strings.TrimSpace(contextText) == "" {
+			fail("no_content", "this link did not contain a recipe", fmt.Errorf("no media or text for %s", videoKey))
+			return
+		}
+		if s.TextProvider == nil {
+			fail("extraction_failed", "could not find a recipe in this video", fmt.Errorf("no text provider configured"))
+			return
+		}
+		r, eErr := s.TextProvider.ExtractRecipeFromText(ctx, contextText, unitSystem)
+		if eErr != nil || r == nil {
+			fail("extraction_failed", "could not find a recipe in this video", eErr)
+			return
+		}
+		chosen = r
 	}
 
-	// A single video yields a single recipe; take the most prominent.
-	def := recipeResultToRecipeDef(results[0])
+	def := recipeResultToRecipeDef(chosen)
 	def.SourceURL = rawURL
 	ensureUnitSystem(&def)
 
-	// Use a representative frame as the recipe thumbnail (best-effort).
+	// Use a representative frame as the recipe thumbnail (best-effort; the text
+	// path has no frames, so this is a no-op there).
 	thumbnailURL := s.uploadVideoThumbnail(ctx, frames, videoKey)
 
-	_, recipeID, createErr := s.createImportedRecipe(ctx, &def, user, models.RecipeTypeImportVideo, rawURL, thumbnailURL, nil, results[0].Hashtags, results[0].PromptVersion)
+	_, recipeID, createErr := s.createImportedRecipe(ctx, &def, user, models.RecipeTypeImportVideo, rawURL, thumbnailURL, nil, chosen.Hashtags, chosen.PromptVersion)
 	if createErr != nil {
 		fail("save_failed", "could not save the recipe", createErr)
 		return
@@ -225,7 +244,7 @@ func (s *ImportService) processVideoImport(jobID uint, rawURL string, user *mode
 		ThumbnailURL:   thumbnailURL,
 		FetchedAt:      now,
 		LastAccessedAt: now,
-		PromptVersion:  results[0].PromptVersion,
+		PromptVersion:  chosen.PromptVersion,
 	}
 	if err := s.VideoRepo.UpsertCache(cacheEntry); err != nil {
 		log.Warn("failed to cache video extraction", zap.Error(err))
