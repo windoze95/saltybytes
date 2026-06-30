@@ -145,6 +145,7 @@ func SetupRouter(cfg *config.Config, database *gorm.DB) *gin.Engine {
 		apiProtected.POST("/recipes/import/url", middleware.AttachUserToContext(userService), importHandler.ImportFromURL)
 		apiProtected.POST("/recipes/import/photo", middleware.AttachUserToContext(userService), importHandler.ImportFromPhoto)
 		apiProtected.POST("/recipes/import/files", middleware.AttachUserToContext(userService), importHandler.ImportFromFiles)
+		apiProtected.POST("/recipes/import/voice", middleware.AttachUserToContext(userService), importHandler.ImportFromVoice)
 		apiProtected.POST("/recipes/import/text", middleware.AttachUserToContext(userService), importHandler.ImportFromText)
 		apiProtected.POST("/recipes/import/manual", middleware.AttachUserToContext(userService), importHandler.ImportManual)
 		apiProtected.POST("/recipes/import/canonical", middleware.AttachUserToContext(userService), importHandler.ImportFromCanonical)
@@ -230,6 +231,7 @@ func SetupRouter(cfg *config.Config, database *gorm.DB) *gin.Engine {
 	hub := ws.NewHub()
 	go hub.Run()
 	speechProvider := ai.NewWhisperProvider(cfg.EnvVars.OpenAIAPIKey)
+	importService.SpeechProvider = speechProvider
 	voiceService := service.NewVoiceService(cfg, textProvider, speechProvider)
 	cookingHandler := ws.NewCookingHandler(hub, cfg.EnvVars.JwtSecretKey, voiceService, recipeRepo)
 	r.GET("/v1/ws/cook/:recipe_id", cookingHandler.HandleCookingSession)

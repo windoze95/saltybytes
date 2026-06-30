@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -191,6 +192,52 @@ func (h *ImportHandler) ImportFromFiles(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"recipes": recipes})
+}
+
+// ImportFromVoice handles POST /v1/recipes/import/voice — a spoken-audio recipe,
+// transcribed via Whisper and extracted from the transcript.
+func (h *ImportHandler) ImportFromVoice(c *gin.Context) {
+	user, err := util.GetUserFromContext(c)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	file, header, err := c.Request.FormFile("audio")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Audio file is required (field 'audio')"})
+		return
+	}
+	defer file.Close()
+
+	audioData, err := io.ReadAll(io.LimitReader(file, 25*1024*1024)) // 25MB (Whisper file limit)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to read audio data"})
+		return
+	}
+	if len(audioData) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Audio file is empty"})
+		return
+	}
+
+	format := strings.TrimSpace(c.PostForm("format"))
+	if format == "" {
+		format = filepath.Ext(header.Filename)
+	}
+
+	recipeResponse, err := h.Service.ImportFromVoice(c.Request.Context(), audioData, format, user)
+	if err != nil {
+		logger.Get().Error("failed to import recipe from voice", zap.Error(err))
+		var extractErr *service.ExtractionError
+		if errors.As(err, &extractErr) {
+			c.JSON(http.StatusUnprocessableEntity, gin.H{"error": extractErr.Message, "code": extractErr.Code})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to import recipe from voice"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"recipe": recipeResponse})
 }
 
 // ImportFromText handles POST /v1/recipes/import/text
