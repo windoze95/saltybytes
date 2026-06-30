@@ -62,6 +62,7 @@ func connectToDatabaseWithRetry(databaseURL string) (*gorm.DB, error) {
 		&models.CanonicalRecipe{},
 		&models.VideoExtractionCache{},
 		&models.VideoImport{},
+		&models.AIUsageLog{},
 	); migrateErr != nil {
 		return nil, fmt.Errorf("database auto-migration failed: %w", migrateErr)
 	}

@@ -16,11 +16,32 @@ type AIOperation struct {
 	StartTime time.Time
 }
 
+// TokenUsage is the token consumption reported by a provider call.
+type TokenUsage struct {
+	InputTokens      int
+	OutputTokens     int
+	CacheInputTokens int
+}
+
 // AIOperationResult captures the outcome of an AI call.
 type AIOperationResult struct {
 	Operation AIOperation
 	Duration  time.Duration
 	Err       error
+	Usage     TokenUsage
+}
+
+type usageKeyType struct{}
+
+// usageKey marks the per-call usage sink stored in the context.
+var usageKey usageKeyType
+
+// recordUsage reports a provider call's token usage to the in-flight sink so the
+// middleware can meter cost. A no-op if no sink is in the context.
+func recordUsage(ctx context.Context, u TokenUsage) {
+	if sink, ok := ctx.Value(usageKey).(*TokenUsage); ok && sink != nil {
+		*sink = u
+	}
 }
 
 // AIMiddleware intercepts AI calls for observability and control.
@@ -83,6 +104,10 @@ func (c *MiddlewareChain) After(ctx context.Context, result AIOperationResult) {
 // runWithMiddleware executes an AI operation with middleware hooks.
 // If mw is nil, the operation runs without middleware.
 func runWithMiddleware[T any](ctx context.Context, mw AIMiddleware, op AIOperation, fn func(context.Context) (T, error)) (T, error) {
+	// Install a usage sink the provider call fills via recordUsage.
+	var usage TokenUsage
+	ctx = context.WithValue(ctx, usageKey, &usage)
+
 	if mw != nil {
 		ctx = mw.Before(ctx, op)
 	}
@@ -94,8 +119,59 @@ func runWithMiddleware[T any](ctx context.Context, mw AIMiddleware, op AIOperati
 			Operation: op,
 			Duration:  time.Since(op.StartTime),
 			Err:       err,
+			Usage:     usage,
 		})
 	}
 
 	return result, err
+}
+
+// UsageRecord is one metered AI call handed to a CostMiddleware sink.
+type UsageRecord struct {
+	Operation        string
+	Provider         string
+	Model            string
+	InputTokens      int
+	OutputTokens     int
+	CacheInputTokens int
+	CostUSD          float64
+	DurationMS       int64
+	Success          bool
+}
+
+// CostMiddleware meters each AI call's token usage + cost and hands it to a sink
+// (e.g. a DB insert). Pricing defaults to DefaultPricing when nil.
+type CostMiddleware struct {
+	Pricing PricingTable
+	Sink    func(UsageRecord)
+}
+
+func (m *CostMiddleware) Before(ctx context.Context, op AIOperation) context.Context {
+	return ctx
+}
+
+func (m *CostMiddleware) After(ctx context.Context, result AIOperationResult) {
+	if m.Sink == nil {
+		return
+	}
+	u := result.Usage
+	// Only record calls that consumed tokens (skip failures with no spend).
+	if u.InputTokens == 0 && u.OutputTokens == 0 {
+		return
+	}
+	pricing := m.Pricing
+	if pricing == nil {
+		pricing = DefaultPricing
+	}
+	m.Sink(UsageRecord{
+		Operation:        result.Operation.Name,
+		Provider:         result.Operation.Provider,
+		Model:            result.Operation.Model,
+		InputTokens:      u.InputTokens,
+		OutputTokens:     u.OutputTokens,
+		CacheInputTokens: u.CacheInputTokens,
+		CostUSD:          pricing.Cost(result.Operation.Model, u),
+		DurationMS:       result.Duration.Milliseconds(),
+		Success:          result.Err == nil,
+	})
 }
