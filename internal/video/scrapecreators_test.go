@@ -177,6 +177,69 @@ func TestFetchVideo_Instagram_NotAVideo(t *testing.T) {
 	}
 }
 
+func TestFetchVideo_Facebook(t *testing.T) {
+	const postFixture = `{"success":true,"post_id":"1417081470454978","description":"Civico - Focaccia & Pesto","video":{"id":"1680614736552635","sd_url":"https://video.fbcdn.net/sd.mp4","hd_url":"https://video.fbcdn.net/hd.mp4","length_in_second":109.859,"captions_url":null}}`
+	const transcriptFixture = `{"success":true,"transcript":"Mix the flour, water, and yeast, then let it rise."}`
+
+	c := NewScrapeCreatorsClient("k")
+	c.httpDo = func(req *http.Request) (*http.Response, error) {
+		body := postFixture
+		if strings.Contains(req.URL.Path, "/v1/facebook/post/transcript") {
+			body = transcriptFixture
+		}
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(body))}, nil
+	}
+
+	m, err := c.FetchVideo(context.Background(), "https://www.facebook.com/reel/1680614736552635")
+	if err != nil {
+		t.Fatalf("FetchVideo error: %v", err)
+	}
+	if m.Platform != PlatformFacebook {
+		t.Errorf("platform = %q, want facebook", m.Platform)
+	}
+	if m.VideoID != "1417081470454978" {
+		t.Errorf("video id = %q, want the post_id", m.VideoID)
+	}
+	if m.Caption != "Civico - Focaccia & Pesto" {
+		t.Errorf("caption = %q", m.Caption)
+	}
+	if m.MediaURL != "https://video.fbcdn.net/sd.mp4" {
+		t.Errorf("media url = %q, want the sd_url", m.MediaURL)
+	}
+	if m.DurationMS != 109859 { // 109.859s → ms
+		t.Errorf("duration = %d ms, want 109859", m.DurationMS)
+	}
+	if m.Transcript == "" {
+		t.Error("expected the best-effort transcript to be populated")
+	}
+}
+
+func TestFetchVideo_Facebook_FallsBackToHD(t *testing.T) {
+	const fixture = `{"success":true,"post_id":"1","description":"x","video":{"hd_url":"https://video.fbcdn.net/hd.mp4","length_in_second":12.0}}`
+	c := NewScrapeCreatorsClient("k")
+	c.httpDo = func(req *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(fixture))}, nil
+	}
+	m, err := c.FetchVideo(context.Background(), "https://www.facebook.com/reel/1")
+	if err != nil {
+		t.Fatalf("error: %v", err)
+	}
+	if m.MediaURL != "https://video.fbcdn.net/hd.mp4" {
+		t.Errorf("media url = %q, want hd_url fallback", m.MediaURL)
+	}
+}
+
+func TestFetchVideo_Facebook_NotAVideo(t *testing.T) {
+	const fixture = `{"success":true,"post_id":"1","description":"a photo post","video":{}}`
+	c := NewScrapeCreatorsClient("k")
+	c.httpDo = func(req *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(fixture))}, nil
+	}
+	if _, err := c.FetchVideo(context.Background(), "https://www.facebook.com/reel/1"); err == nil {
+		t.Fatal("expected an error for a post with no downloadable video")
+	}
+}
+
 func TestSanitizeJSONControlChars(t *testing.T) {
 	// Raw newline + tab inside a string value → must become valid, parseable JSON.
 	raw := []byte("{\"text\":\"a\nb\tc\",\"keep\":\"x\\ny\",\"n\":7}")
