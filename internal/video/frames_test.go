@@ -108,6 +108,31 @@ func TestFrameSampler_DownloadError(t *testing.T) {
 	}
 }
 
+func TestFrameSampler_ExtractAudio(t *testing.T) {
+	s := NewFrameSampler()
+	s.download = writeFakeVideo
+	s.runFFmpeg = func(ctx context.Context, args []string) error {
+		out := args[len(args)-1] // the audio output path
+		return os.WriteFile(out, []byte("fake-audio-bytes"), 0o600)
+	}
+	audio, err := s.ExtractAudio(context.Background(), "https://x/v.mp4")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(audio) != "fake-audio-bytes" {
+		t.Errorf("audio = %q, want the extracted bytes", audio)
+	}
+}
+
+func TestFrameSampler_ExtractAudio_DownloadError(t *testing.T) {
+	s := NewFrameSampler()
+	s.download = func(ctx context.Context, url, dest string) error { return fmt.Errorf("boom") }
+	s.runFFmpeg = func(ctx context.Context, args []string) error { return nil }
+	if _, err := s.ExtractAudio(context.Background(), "https://x/v.mp4"); err == nil {
+		t.Fatal("expected error on download failure")
+	}
+}
+
 func TestSafeDialControl(t *testing.T) {
 	cases := []struct {
 		addr    string
