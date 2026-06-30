@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"regexp"
 	"strings"
 	"sync"
@@ -190,6 +191,130 @@ func extractAllJSONLDRecipes(html string, sourceURL string) []MultiRecipeCard {
 	}
 
 	return cards
+}
+
+// slugStopwords are dropped from titles/slugs before matching so short
+// connecting words don't create false link matches.
+var slugStopwords = map[string]bool{
+	"with": true, "and": true, "the": true, "a": true, "an": true, "in": true,
+	"of": true, "for": true, "to": true, "on": true, "or": true, "your": true,
+	"my": true, "recipe": true, "recipes": true,
+}
+
+// slugTokens lowercases a string and splits it into significant alphanumeric
+// tokens, dropping stopwords and single-character tokens.
+func slugTokens(s string) []string {
+	var tokens []string
+	for _, w := range strings.FieldsFunc(strings.ToLower(s), func(r rune) bool {
+		return !((r >= 'a' && r <= 'z') || (r >= '0' && r <= '9'))
+	}) {
+		if len(w) <= 1 || slugStopwords[w] {
+			continue
+		}
+		tokens = append(tokens, w)
+	}
+	return tokens
+}
+
+// linkCandidate is a same-site link with the token set of its final path
+// segment, used to match a card title to its individual recipe page.
+type linkCandidate struct {
+	url    string
+	tokens map[string]bool
+}
+
+// extractRecipeLinkCandidates returns deduped same-host links from the page (as
+// absolute URLs), each with the token set of its final path segment. These are
+// matched against card titles so collection/listicle pages (an index of links,
+// not inline recipes) resolve each card to its own recipe page.
+func extractRecipeLinkCandidates(html, baseURL string) []linkCandidate {
+	base, err := url.Parse(baseURL)
+	if err != nil {
+		return nil
+	}
+	re := regexp.MustCompile(`(?i)href=["']([^"'<> ]+)["']`)
+	matches := re.FindAllStringSubmatch(html, -1)
+	seen := make(map[string]bool)
+	var out []linkCandidate
+	for _, m := range matches {
+		ref, err := url.Parse(strings.TrimSpace(m[1]))
+		if err != nil {
+			continue
+		}
+		abs := base.ResolveReference(ref)
+		if (abs.Scheme != "http" && abs.Scheme != "https") || abs.Host != base.Host {
+			continue
+		}
+		abs.RawQuery = ""
+		abs.Fragment = ""
+		clean := strings.TrimRight(abs.String(), "/")
+		if clean == "" || seen[clean] {
+			continue
+		}
+		segs := strings.Split(strings.Trim(abs.Path, "/"), "/")
+		toks := slugTokens(strings.ReplaceAll(segs[len(segs)-1], "-", " "))
+		if len(toks) < 2 {
+			continue // path segment too generic to match safely
+		}
+		seen[clean] = true
+		tokenSet := make(map[string]bool, len(toks))
+		for _, t := range toks {
+			tokenSet[t] = true
+		}
+		out = append(out, linkCandidate{url: clean, tokens: tokenSet})
+	}
+	return out
+}
+
+// matchRecipeURL finds the individual recipe page whose slug best matches a
+// card title. It is deliberately conservative: every significant title token
+// must appear in the link slug, and the tightest such link wins (fewest extra
+// tokens, capped). Returns ok=false when no confident match exists, so a card
+// never resolves to the wrong recipe.
+func matchRecipeURL(title string, candidates []linkCandidate) (string, bool) {
+	titleToks := slugTokens(title)
+	if len(titleToks) < 2 {
+		return "", false
+	}
+	bestURL := ""
+	bestExtra := 1 << 30
+	for _, c := range candidates {
+		allPresent := true
+		for _, t := range titleToks {
+			if !c.tokens[t] {
+				allPresent = false
+				break
+			}
+		}
+		if !allPresent {
+			continue
+		}
+		if extra := len(c.tokens) - len(titleToks); extra < bestExtra {
+			bestExtra = extra
+			bestURL = c.url
+		}
+	}
+	// Reject loose matches where the link slug carries many extra tokens (likely
+	// a different, longer recipe that merely contains these words).
+	if bestURL == "" || bestExtra > 3 {
+		return "", false
+	}
+	return bestURL, true
+}
+
+// assignRecipeURLs points each card at its own recipe page when the source is a
+// collection of links rather than inline recipes. Cards without a confident
+// match keep the original (page) URL and fall back to inline extraction.
+func assignRecipeURLs(cards []MultiRecipeCard, html, sourceURL string) {
+	candidates := extractRecipeLinkCandidates(html, sourceURL)
+	if len(candidates) == 0 {
+		return
+	}
+	for i := range cards {
+		if u, ok := matchRecipeURL(cards[i].Title, candidates); ok {
+			cards[i].SourceURL = u
+		}
+	}
 }
 
 // recipePreview holds lightweight data extracted from JSON-LD.
@@ -413,6 +538,10 @@ func (r *MultiRecipeResolver) ResolveFromHTML(ctx context.Context, sourceURL str
 		return nil
 	}
 
+	// Point cards at their own recipe pages when this is a collection/listicle
+	// of links (so each card extracts from its real recipe page, not the index).
+	assignRecipeURLs(cards, html, sourceURL)
+
 	entry, isNew := r.Registry.Register(sourceURL)
 	if !isNew {
 		return entry // already being resolved
@@ -494,6 +623,39 @@ func (r *MultiRecipeResolver) extractSingleCard(entry *MultiRecipeEntry, idx int
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
+
+	// Preferred path: when this card resolved to its own recipe page (a
+	// collection/listicle of links, not inline recipes), fetch and extract that
+	// page directly — it carries the full recipe, usually via free JSON-LD.
+	if sourceURL != "" && sourceURL != entry.SourceURL {
+		if def, hashtags, _, ferr := r.ImportService.fetchAndExtractWithHTML(ctx, sourceURL); ferr == nil && def != nil && len(def.Ingredients) > 0 {
+			def.SourceURL = sourceURL
+			ensureUnitSystem(def)
+			entry.mu.Lock()
+			entry.Cards[idx].ExtractionStatus = "done"
+			entry.Cards[idx].RecipeDef = def
+			entry.Cards[idx].Hashtags = hashtags
+			entry.mu.Unlock()
+			if r.ImportService.CanonicalRepo != nil {
+				if normalizedURL, nerr := NormalizeURL(sourceURL); nerr == nil {
+					now := time.Now()
+					if uerr := r.ImportService.CanonicalRepo.Upsert(&models.CanonicalRecipe{
+						NormalizedURL:    normalizedURL,
+						OriginalURL:      sourceURL,
+						RecipeData:       *def,
+						ExtractionMethod: models.ExtractionJSONLD,
+						FetchedAt:        now,
+						LastAccessedAt:   now,
+					}); uerr != nil {
+						log.Warn("failed to cache extracted recipe", zap.Error(uerr))
+					}
+				}
+			}
+			log.Info("extracted recipe from its own page", zap.Int("ingredients", len(def.Ingredients)))
+			return
+		}
+		log.Info("individual recipe page unavailable; falling back to collection text")
+	}
 
 	provider := r.ImportService.PreviewProvider
 	if provider == nil {

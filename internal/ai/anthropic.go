@@ -1,12 +1,14 @@
 package ai
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/anthropics/anthropic-sdk-go"
@@ -180,17 +182,17 @@ func createMultiRecipeTool(summaryPrompt string) anthropic.ToolUnionParam {
 
 // recipeToolResult is the JSON structure returned by the create_recipe tool call.
 type recipeToolResult struct {
-	Title                   string              `json:"title"`
-	Ingredients             []ingredientToolRes `json:"ingredients"`
-	Instructions            []string            `json:"instructions"`
-	CookTime                int                 `json:"cook_time"`
-	ImagePrompt             string              `json:"image_prompt"`
-	Hashtags                []string            `json:"hashtags"`
-	LinkedRecipeSuggestions []string            `json:"linked_recipe_suggestions"`
-	RecipeSummary           string              `json:"recipe_summary"`
-	Portions                int                 `json:"portions"`
-	PortionSize             string              `json:"portion_size"`
-	UnitSystem              string              `json:"unit_system"`
+	Title                   string                `json:"title"`
+	Ingredients             ingredientToolResList `json:"ingredients"`
+	Instructions            []string              `json:"instructions"`
+	CookTime                int                   `json:"cook_time"`
+	ImagePrompt             string                `json:"image_prompt"`
+	Hashtags                []string              `json:"hashtags"`
+	LinkedRecipeSuggestions []string              `json:"linked_recipe_suggestions"`
+	RecipeSummary           string                `json:"recipe_summary"`
+	Portions                int                   `json:"portions"`
+	PortionSize             string                `json:"portion_size"`
+	UnitSystem              string                `json:"unit_system"`
 }
 
 type ingredientToolRes struct {
@@ -201,6 +203,71 @@ type ingredientToolRes struct {
 	MetricUnit   string  `json:"metric_unit"`
 	MetricAmount float64 `json:"metric_amount"`
 	OriginalText string  `json:"original_text"`
+}
+
+// ingredientToolResList tolerates the model occasionally returning ingredients
+// as a bare string or an array that mixes strings with objects, instead of the
+// expected array of objects. Stray shapes are coerced into ingredients carrying
+// the raw text (rather than failing the whole extraction), and the normalize
+// step downstream fills in measurement fields.
+type ingredientToolResList []ingredientToolRes
+
+func (l *ingredientToolResList) UnmarshalJSON(data []byte) error {
+	data = bytes.TrimSpace(data)
+	if len(data) == 0 || string(data) == "null" {
+		*l = nil
+		return nil
+	}
+	switch data[0] {
+	case '[':
+		var raw []json.RawMessage
+		if err := json.Unmarshal(data, &raw); err != nil {
+			return err
+		}
+		out := make([]ingredientToolRes, 0, len(raw))
+		for _, item := range raw {
+			item = bytes.TrimSpace(item)
+			if len(item) > 0 && item[0] == '{' {
+				var ing ingredientToolRes
+				if err := json.Unmarshal(item, &ing); err != nil {
+					continue // skip a malformed element rather than fail the lot
+				}
+				out = append(out, ing)
+			} else {
+				var s string
+				if err := json.Unmarshal(item, &s); err == nil && strings.TrimSpace(s) != "" {
+					out = append(out, ingredientToolRes{Name: s, OriginalText: s})
+				}
+			}
+		}
+		*l = out
+		return nil
+	case '"':
+		var s string
+		if err := json.Unmarshal(data, &s); err != nil {
+			return err
+		}
+		*l = splitIngredientString(s)
+		return nil
+	default:
+		return fmt.Errorf("unexpected ingredients JSON shape")
+	}
+}
+
+// splitIngredientString breaks a single ingredients blob into one entry per
+// line (falling back to comma separation when there are no line breaks).
+func splitIngredientString(s string) ingredientToolResList {
+	parts := strings.Split(s, "\n")
+	if len(parts) <= 1 {
+		parts = strings.Split(s, ",")
+	}
+	var out ingredientToolResList
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, ingredientToolRes{Name: p, OriginalText: p})
+		}
+	}
+	return out
 }
 
 // multiRecipeToolResult is the JSON structure returned by the extract_recipes tool.
