@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/windoze95/saltybytes-api/internal/ai"
 	"github.com/windoze95/saltybytes-api/internal/models"
@@ -149,6 +150,40 @@ func TestWarmURLs_Statuses(t *testing.T) {
 	}
 	if got := statuses["https://site.com/new-dish"]; got != WarmExtracting {
 		t.Errorf("new URL = %q, want %q", got, WarmExtracting)
+	}
+}
+
+func TestWarmURLs_FailedCooldown(t *testing.T) {
+	canon := &testutil.MockCanonicalRecipeRepo{
+		GetByNormalizedURLFunc: func(string) (*models.CanonicalRecipe, error) {
+			return nil, errors.New("miss")
+		},
+		UpsertFunc: func(*models.CanonicalRecipe) error { return nil },
+	}
+	imp := newTestImportService(testutil.NewMockRecipeRepo(), nil, nil)
+	imp.CanonicalRepo = canon
+	imp.HTTPFetchOverride = func(context.Context, string) ([]byte, int, error) {
+		return nil, 0, errors.New("blocked")
+	}
+	resolver := NewMultiRecipeResolver(NewMultiRecipeRegistry(), imp)
+	w := NewWarmService(imp, resolver, 2, 0)
+
+	const url = "https://site.com/blocked"
+	if got := w.WarmURLs([]string{url})[url]; got != WarmExtracting {
+		t.Fatalf("first warm = %q, want %q", got, WarmExtracting)
+	}
+	// Once the background warm fails it enters cooldown and reports terminal —
+	// it must not re-kick on every poll.
+	var status string
+	for i := 0; i < 200; i++ {
+		status = w.WarmURLs([]string{url})[url]
+		if status == WarmFailed {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if status != WarmFailed {
+		t.Errorf("after a failed warm, status = %q, want %q", status, WarmFailed)
 	}
 }
 
