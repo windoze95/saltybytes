@@ -37,6 +37,13 @@ type EnvVars struct {
 	GoogleSearchCX  string `env:"GOOGLE_SEARCH_CX" optional:"true"`
 	BraveSearchKey  string `env:"BRAVE_SEARCH_KEY" optional:"true"`
 	FirecrawlAPIKey string `env:"FIRECRAWL_API_KEY" optional:"true"`
+	// ScrapeCreatorsAPIKey enables video-link import (TikTok/Instagram/YouTube/
+	// Facebook/Pinterest). When empty, video import is disabled.
+	ScrapeCreatorsAPIKey string `env:"SCRAPECREATORS_API_KEY" optional:"true"`
+	// VideoImportDailyBudgetUSD is the global daily spend ceiling for fresh video
+	// extractions; once the day's metered cost exceeds it, fresh extractions are
+	// refused (cache hits still serve). The kill switch.
+	VideoImportDailyBudgetUSD float64 `env:"VIDEO_IMPORT_DAILY_BUDGET_USD" envDefault:"25" optional:"true"`
 }
 
 // LoadConfig parses environment variables into the Config struct.

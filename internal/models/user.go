@@ -91,6 +91,7 @@ type Subscription struct {
 	AllergenAnalysesUsed int `gorm:"default:0"`
 	WebSearchesUsed      int `gorm:"default:0"`
 	AIGenerationsUsed    int `gorm:"default:0"`
+	VideoImportsUsed     int `gorm:"default:0"`
 	MonthlyResetAt       time.Time
 }
 
@@ -116,6 +117,16 @@ func (s *Subscription) CanUseAIGeneration() bool {
 		return true
 	}
 	return s.AIGenerationsUsed < 50
+}
+
+// CanUseVideoImport checks if the user can import a recipe from a video link.
+// Both tiers are capped (premium included) to bound per-video AI cost:
+// free = 2/month, premium = 20/month.
+func (s *Subscription) CanUseVideoImport() bool {
+	if s.Tier == TierPremium {
+		return s.VideoImportsUsed < 20
+	}
+	return s.VideoImportsUsed < 2
 }
 
 // IsValidSubscriptionTier checks if the SubscriptionTier is valid.
