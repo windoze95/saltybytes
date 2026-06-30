@@ -15,7 +15,13 @@ const (
 	WarmExtracting = "extracting" // being warmed now (or just kicked off)
 	WarmMulti      = "multi"      // a collection page (expands on tap)
 	WarmUncached   = "uncached"   // not warmed (skipped: bad URL or safety cap)
+	WarmFailed     = "failed"     // recently failed to extract (in cooldown)
 )
+
+// warmFailCooldown is how long a URL that failed to warm (e.g. a bot-blocked
+// page) is reported terminal before another attempt, so we don't re-kick a
+// failing extraction on every poll.
+const warmFailCooldown = 15 * time.Minute
 
 // WarmService proactively extracts and caches recipe URLs (cache warming) so a
 // later preview/import is an instant cache hit. Extraction runs in parallel,
@@ -28,6 +34,7 @@ type WarmService struct {
 
 	sem      chan struct{}
 	inflight sync.Map // normalizedURL -> struct{}{}
+	failed   sync.Map // normalizedURL -> int64 (unix-nano cooldown expiry)
 
 	mu       sync.Mutex
 	day      string
@@ -81,6 +88,15 @@ func (w *WarmService) statusAndKick(rawURL string) string {
 		return WarmCached
 	}
 
+	// Recently failed? Report it terminal during the cooldown instead of
+	// re-kicking a failing/blocked page on every poll.
+	if exp, ok := w.failed.Load(normalizedURL); ok {
+		if time.Now().UnixNano() < exp.(int64) {
+			return WarmFailed
+		}
+		w.failed.Delete(normalizedURL)
+	}
+
 	// Already being warmed by another request/goroutine?
 	if _, loaded := w.inflight.LoadOrStore(normalizedURL, struct{}{}); loaded {
 		return WarmExtracting
@@ -107,7 +123,11 @@ func (w *WarmService) warmOne(rawURL, normalizedURL string) {
 	defer cancel()
 
 	if err := w.Import.WarmURL(ctx, w.Resolver, rawURL); err != nil {
+		// Remember the failure so we stop hammering a blocked/failing page.
+		w.failed.Store(normalizedURL, time.Now().Add(warmFailCooldown).UnixNano())
 		logger.Get().Info("cache warming skipped", zap.String("url", rawURL), zap.Error(err))
+	} else {
+		w.failed.Delete(normalizedURL)
 	}
 }
 
