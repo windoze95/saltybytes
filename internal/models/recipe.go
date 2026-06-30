@@ -55,6 +55,7 @@ const (
 	RecipeTypeCopycat         RecipeType = "copycat"
 	RecipeTypeImportVision    RecipeType = "import_vision"
 	RecipeTypeImportLink      RecipeType = "import_link"
+	RecipeTypeImportVideo     RecipeType = "import_video"
 	RecipeTypeImportCopypasta RecipeType = "import_text"
 	RecipeTypeManualEntry     RecipeType = "user_input"
 	RecipeTypeRemix           RecipeType = "remix"

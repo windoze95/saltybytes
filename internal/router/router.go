@@ -12,6 +12,7 @@ import (
 	"github.com/windoze95/saltybytes-api/internal/middleware"
 	"github.com/windoze95/saltybytes-api/internal/repository"
 	"github.com/windoze95/saltybytes-api/internal/service"
+	"github.com/windoze95/saltybytes-api/internal/video"
 	"github.com/windoze95/saltybytes-api/internal/ws"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
@@ -88,7 +89,19 @@ func SetupRouter(cfg *config.Config, database *gorm.DB) *gin.Engine {
 	// Portion estimation for imports that lack a serving count (cheap Haiku task)
 	importService.Normalize = service.NewNormalizeService(cfg, previewProvider)
 	importHandler := handlers.NewImportHandler(importService)
+	importHandler.SubService = subService
 	// MultiResolver is wired later after search setup; set via field
+
+	// Video-link import (premium). Stays dark until a ScrapeCreators API key is
+	// configured, so the endpoint returns 503 until the feature is switched on.
+	if cfg.EnvVars.ScrapeCreatorsAPIKey != "" {
+		importService.VideoRepo = repository.NewVideoImportRepository(database)
+		importService.VideoFetcher = video.NewScrapeCreatorsClient(cfg.EnvVars.ScrapeCreatorsAPIKey)
+		importService.VideoFrameSampler = video.NewFrameSampler()
+		logger.Get().Info("video-link import enabled")
+	} else {
+		logger.Get().Info("video-link import disabled (no ScrapeCreators API key configured)")
+	}
 
 	// Group for API routes that don't require token verification
 	apiPublic := r.Group("/v1")
@@ -146,6 +159,8 @@ func SetupRouter(cfg *config.Config, database *gorm.DB) *gin.Engine {
 		apiProtected.POST("/recipes/import/photo", middleware.AttachUserToContext(userService), importHandler.ImportFromPhoto)
 		apiProtected.POST("/recipes/import/files", middleware.AttachUserToContext(userService), importHandler.ImportFromFiles)
 		apiProtected.POST("/recipes/import/voice", middleware.AttachUserToContext(userService), importHandler.ImportFromVoice)
+		apiProtected.POST("/recipes/import/video", middleware.AttachUserToContext(userService), importHandler.ImportFromVideo)
+		apiProtected.GET("/recipes/import/video/:id", middleware.AttachUserToContext(userService), importHandler.GetVideoImportStatus)
 		apiProtected.POST("/recipes/import/text", middleware.AttachUserToContext(userService), importHandler.ImportFromText)
 		apiProtected.POST("/recipes/import/manual", middleware.AttachUserToContext(userService), importHandler.ImportManual)
 		apiProtected.POST("/recipes/import/canonical", middleware.AttachUserToContext(userService), importHandler.ImportFromCanonical)

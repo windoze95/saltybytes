@@ -376,7 +376,7 @@ func TestImportFromFiles_Handler_Success(t *testing.T) {
 	repo := testutil.NewMockRecipeRepo()
 	importSvc := newImportService(repo, nil)
 	importSvc.VisionProvider = &testutil.MockVisionProvider{
-		ExtractRecipesFromMediaFunc: func(ctx context.Context, media []ai.MediaInput, unitSystem, requirements string) ([]*ai.RecipeResult, error) {
+		ExtractRecipesFromMediaFunc: func(ctx context.Context, media []ai.MediaInput, contextText, unitSystem, requirements string) ([]*ai.RecipeResult, error) {
 			r1 := testutil.TestRecipeResult()
 			r2 := testutil.TestRecipeResult()
 			r2.Title = "Second"

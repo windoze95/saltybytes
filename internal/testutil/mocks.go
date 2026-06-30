@@ -95,7 +95,7 @@ func (m *MockTextProvider) DietaryInterview(ctx context.Context, messages []ai.M
 // MockVisionProvider is a mock implementation of ai.VisionProvider.
 type MockVisionProvider struct {
 	ExtractRecipeFromImageFunc  func(ctx context.Context, imageData []byte, unitSystem string, requirements string) (*ai.RecipeResult, error)
-	ExtractRecipesFromMediaFunc func(ctx context.Context, media []ai.MediaInput, unitSystem string, requirements string) ([]*ai.RecipeResult, error)
+	ExtractRecipesFromMediaFunc func(ctx context.Context, media []ai.MediaInput, contextText string, unitSystem string, requirements string) ([]*ai.RecipeResult, error)
 }
 
 func (m *MockVisionProvider) ExtractRecipeFromImage(ctx context.Context, imageData []byte, unitSystem string, requirements string) (*ai.RecipeResult, error) {
@@ -105,9 +105,9 @@ func (m *MockVisionProvider) ExtractRecipeFromImage(ctx context.Context, imageDa
 	return nil, fmt.Errorf("ExtractRecipeFromImage not configured")
 }
 
-func (m *MockVisionProvider) ExtractRecipesFromMedia(ctx context.Context, media []ai.MediaInput, unitSystem string, requirements string) ([]*ai.RecipeResult, error) {
+func (m *MockVisionProvider) ExtractRecipesFromMedia(ctx context.Context, media []ai.MediaInput, contextText string, unitSystem string, requirements string) ([]*ai.RecipeResult, error) {
 	if m.ExtractRecipesFromMediaFunc != nil {
-		return m.ExtractRecipesFromMediaFunc(ctx, media, unitSystem, requirements)
+		return m.ExtractRecipesFromMediaFunc(ctx, media, contextText, unitSystem, requirements)
 	}
 	return nil, fmt.Errorf("ExtractRecipesFromMedia not configured")
 }
@@ -756,6 +756,8 @@ func (m *MockUserRepo) IncrementSubscriptionUsage(userID uint, column string) er
 		u.Subscription.WebSearchesUsed++
 	case "ai_generations_used":
 		u.Subscription.AIGenerationsUsed++
+	case "video_imports_used":
+		u.Subscription.VideoImportsUsed++
 	default:
 		return fmt.Errorf("unknown usage column: %s", column)
 	}
@@ -773,6 +775,7 @@ func (m *MockUserRepo) ResetSubscriptionUsage(userID uint, nextReset time.Time) 
 	u.Subscription.AllergenAnalysesUsed = 0
 	u.Subscription.WebSearchesUsed = 0
 	u.Subscription.AIGenerationsUsed = 0
+	u.Subscription.VideoImportsUsed = 0
 	u.Subscription.MonthlyResetAt = nextReset
 	return nil
 }
@@ -968,6 +971,110 @@ func (m *MockCanonicalRecipeRepo) IncrementHitCount(id uint) error {
 	return nil
 }
 
+// --- MockVideoImportRepo ---
+
+// MockVideoImportRepo is an in-memory mock of repository.VideoImportRepo.
+// Jobs and cache entries are stored in maps so async orchestration
+// (create → update → poll) can be observed by tests. The *Func fields
+// override individual methods when set. Returned values are copies so the
+// stored structs are never mutated through an aliased pointer.
+type MockVideoImportRepo struct {
+	mu      sync.Mutex
+	imports map[uint]*models.VideoImport
+	cache   map[string]*models.VideoExtractionCache
+	nextID  uint
+
+	GetCacheByVideoKeyFunc func(videoKey string) (*models.VideoExtractionCache, error)
+	SumImportCostSinceFunc func(t time.Time) (float64, error)
+}
+
+// NewMockVideoImportRepo creates an empty in-memory video-import repo.
+func NewMockVideoImportRepo() *MockVideoImportRepo {
+	return &MockVideoImportRepo{
+		imports: make(map[uint]*models.VideoImport),
+		cache:   make(map[string]*models.VideoExtractionCache),
+	}
+}
+
+func (m *MockVideoImportRepo) GetCacheByVideoKey(videoKey string) (*models.VideoExtractionCache, error) {
+	if m.GetCacheByVideoKeyFunc != nil {
+		return m.GetCacheByVideoKeyFunc(videoKey)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	entry, ok := m.cache[videoKey]
+	if !ok {
+		return nil, gorm.ErrRecordNotFound
+	}
+	cp := *entry
+	return &cp, nil
+}
+
+func (m *MockVideoImportRepo) UpsertCache(entry *models.VideoExtractionCache) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if entry.ID == 0 {
+		m.nextID++
+		entry.ID = m.nextID
+	}
+	cp := *entry
+	m.cache[entry.VideoKey] = &cp
+	return nil
+}
+
+func (m *MockVideoImportRepo) IncrementCacheHit(id uint) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, e := range m.cache {
+		if e.ID == id {
+			e.HitCount++
+		}
+	}
+	return nil
+}
+
+func (m *MockVideoImportRepo) CreateImport(job *models.VideoImport) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.nextID++
+	job.ID = m.nextID
+	cp := *job
+	m.imports[job.ID] = &cp
+	return nil
+}
+
+func (m *MockVideoImportRepo) GetImportByID(id uint) (*models.VideoImport, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	job, ok := m.imports[id]
+	if !ok {
+		return nil, gorm.ErrRecordNotFound
+	}
+	cp := *job
+	return &cp, nil
+}
+
+func (m *MockVideoImportRepo) UpdateImport(job *models.VideoImport) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cp := *job
+	m.imports[job.ID] = &cp
+	return nil
+}
+
+func (m *MockVideoImportRepo) SumImportCostSince(t time.Time) (float64, error) {
+	if m.SumImportCostSinceFunc != nil {
+		return m.SumImportCostSinceFunc(t)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var total float64
+	for _, j := range m.imports {
+		total += j.CostUSD
+	}
+	return total, nil
+}
+
 // Compile-time interface checks.
 var _ ai.TextProvider = (*MockTextProvider)(nil)
 var _ ai.VisionProvider = (*MockVisionProvider)(nil)
@@ -980,3 +1087,4 @@ var _ repository.UserRepo = (*MockUserRepo)(nil)
 var _ repository.SearchCacheRepo = (*MockSearchCacheRepo)(nil)
 var _ repository.CanonicalRecipeRepo = (*MockCanonicalRecipeRepo)(nil)
 var _ repository.FamilyRepo = (*MockFamilyRepo)(nil)
+var _ repository.VideoImportRepo = (*MockVideoImportRepo)(nil)

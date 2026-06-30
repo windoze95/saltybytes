@@ -58,6 +58,7 @@ func (s *SubscriptionService) GetSubscription(userID uint) (*models.Subscription
 		user.Subscription.AllergenAnalysesUsed = 0
 		user.Subscription.WebSearchesUsed = 0
 		user.Subscription.AIGenerationsUsed = 0
+		user.Subscription.VideoImportsUsed = 0
 		user.Subscription.MonthlyResetAt = nextReset
 	}
 

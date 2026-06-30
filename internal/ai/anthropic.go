@@ -1432,7 +1432,7 @@ func (p *AnthropicProvider) ExtractRecipeFromImage(ctx context.Context, imageDat
 
 // ExtractRecipesFromMedia extracts every distinct recipe found across the
 // provided images and/or PDF documents in a single Claude request.
-func (p *AnthropicProvider) ExtractRecipesFromMedia(ctx context.Context, media []MediaInput, unitSystem string, requirements string) ([]*RecipeResult, error) {
+func (p *AnthropicProvider) ExtractRecipesFromMedia(ctx context.Context, media []MediaInput, contextText string, unitSystem string, requirements string) ([]*RecipeResult, error) {
 	op := AIOperation{
 		Name:      "ExtractRecipesFromMedia",
 		Provider:  "anthropic",
@@ -1473,6 +1473,9 @@ func (p *AnthropicProvider) ExtractRecipesFromMedia(ctx context.Context, media [
 					},
 				},
 			})
+		}
+		if contextText != "" {
+			blocks = append(blocks, anthropic.NewTextBlock("The following is the spoken transcript and caption from the source video. Treat it as a primary source of the ingredient quantities and step order; the images above are stills sampled from the same video and often show on-screen text, ingredients, and amounts not spoken aloud. Reconcile the two.\n\n"+contextText))
 		}
 		blocks = append(blocks, anthropic.NewTextBlock("These images and/or documents contain one or more recipes. Extract EVERY distinct recipe you find across all of them, returning one entry per recipe. If an item shows a prepared dish with no written recipe, infer a reasonable recipe for it."))
 

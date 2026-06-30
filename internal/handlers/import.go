@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -22,6 +23,9 @@ import (
 type ImportHandler struct {
 	Service       *service.ImportService
 	MultiResolver *service.MultiRecipeResolver // nil-safe; set for multi-recipe detection
+	// SubService gates the premium video-import endpoint by subscription usage
+	// when set (nil skips gating, e.g. in isolated tests).
+	SubService *service.SubscriptionService
 }
 
 // NewImportHandler creates a new ImportHandler.
@@ -238,6 +242,121 @@ func (h *ImportHandler) ImportFromVoice(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"recipe": recipeResponse})
+}
+
+// videoImportResponse serializes an async video-import job for the client.
+func videoImportResponse(job *models.VideoImport) gin.H {
+	resp := gin.H{
+		"id":        job.ID,
+		"status":    job.Status,
+		"platform":  job.Platform,
+		"cache_hit": job.CacheHit,
+	}
+	if job.RecipeID != nil {
+		resp["recipe_id"] = *job.RecipeID
+	}
+	if job.Error != "" {
+		resp["error"] = job.Error
+	}
+	return resp
+}
+
+// ImportFromVideo handles POST /v1/recipes/import/video — a premium, paywalled
+// import from a social/video link (TikTok, Instagram, YouTube, Facebook,
+// Pinterest). It returns a queued job immediately; the client polls
+// GetVideoImportStatus until the job is done and a recipe_id is present.
+func (h *ImportHandler) ImportFromVideo(c *gin.Context) {
+	user, err := util.GetUserFromContext(c)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	var request struct {
+		URL string `json:"url" binding:"required"`
+	}
+	if err := c.BindJSON(&request); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request: " + err.Error()})
+		return
+	}
+
+	url := strings.TrimSpace(request.URL)
+	if url == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "URL is required"})
+		return
+	}
+
+	// Subscription gate: free tier gets a small monthly allotment, premium more.
+	if h.SubService != nil {
+		allowed, err := h.SubService.CheckLimit(user.ID, "video_import")
+		if err != nil {
+			logger.Get().Error("failed to check video import limit", zap.Uint("user_id", user.ID), zap.Error(err))
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to check subscription limits"})
+			return
+		}
+		if !allowed {
+			c.JSON(http.StatusForbidden, gin.H{
+				"error": "Video import limit reached; upgrade to premium for more video imports",
+				"code":  "video_limit_reached",
+			})
+			return
+		}
+	}
+
+	job, err := h.Service.StartVideoImport(c.Request.Context(), url, user)
+	if err != nil {
+		logger.Get().Error("failed to start video import", zap.String("url", url), zap.Error(err))
+		var extractErr *service.ExtractionError
+		if errors.As(err, &extractErr) {
+			status := http.StatusUnprocessableEntity
+			switch extractErr.Code {
+			case "unsupported_platform":
+				status = http.StatusBadRequest
+			case "video_unavailable":
+				status = http.StatusServiceUnavailable
+			}
+			c.JSON(status, gin.H{"error": extractErr.Message, "code": extractErr.Code})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to start video import"})
+		return
+	}
+
+	// Count the accepted job against the user's monthly quota. Done after the
+	// job is created so a rejected request (bad platform, feature off) is free.
+	if h.SubService != nil {
+		if err := h.SubService.IncrementUsage(user.ID, "video_import"); err != nil {
+			logger.Get().Error("failed to increment video import usage", zap.Uint("user_id", user.ID), zap.Error(err))
+		}
+	}
+
+	c.JSON(http.StatusAccepted, gin.H{"job": videoImportResponse(job)})
+}
+
+// GetVideoImportStatus handles GET /v1/recipes/import/video/:id — polling for an
+// async video-import job. Only the job's owner may read it.
+func (h *ImportHandler) GetVideoImportStatus(c *gin.Context) {
+	user, err := util.GetUserFromContext(c)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil || id == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid job id"})
+		return
+	}
+
+	job, err := h.Service.GetVideoImport(uint(id))
+	// Return 404 both when the job is missing and when it belongs to another
+	// user, so a caller cannot probe for others' job IDs.
+	if err != nil || job == nil || job.UserID != user.ID {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Video import job not found"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"job": videoImportResponse(job)})
 }
 
 // ImportFromText handles POST /v1/recipes/import/text

@@ -39,8 +39,10 @@ type VisionProvider interface {
 	ExtractRecipeFromImage(ctx context.Context, imageData []byte, unitSystem string, requirements string) (*RecipeResult, error)
 	// ExtractRecipesFromMedia extracts every distinct recipe found across the
 	// given images and/or PDF documents in a single request, returning one
-	// RecipeResult per recipe.
-	ExtractRecipesFromMedia(ctx context.Context, media []MediaInput, unitSystem string, requirements string) ([]*RecipeResult, error)
+	// RecipeResult per recipe. contextText, when non-empty, supplies additional
+	// source text (e.g. a video's transcript and caption) that the model should
+	// treat as a primary source of steps and quantities alongside the media.
+	ExtractRecipesFromMedia(ctx context.Context, media []MediaInput, contextText string, unitSystem string, requirements string) ([]*RecipeResult, error)
 }
 
 // ImageProvider handles image generation (DALL-E 3).
