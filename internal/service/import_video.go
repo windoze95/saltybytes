@@ -9,6 +9,7 @@ import (
 	"github.com/windoze95/saltybytes-api/internal/ai"
 	"github.com/windoze95/saltybytes-api/internal/logger"
 	"github.com/windoze95/saltybytes-api/internal/models"
+	"github.com/windoze95/saltybytes-api/internal/s3"
 	"github.com/windoze95/saltybytes-api/internal/video"
 	"go.uber.org/zap"
 )
@@ -109,6 +110,13 @@ func (s *ImportService) processVideoImport(jobID uint, rawURL string, user *mode
 		if uErr := s.VideoRepo.UpdateImport(job); uErr != nil {
 			log.Error("failed to persist video import failure", zap.Error(uErr))
 		}
+		// The quota was consumed on acceptance; refund it since the user got no
+		// recipe and the failure is on our side.
+		if s.SubService != nil {
+			if rErr := s.SubService.DecrementUsage(user.ID, "video_import"); rErr != nil {
+				log.Warn("failed to refund video import quota", zap.Error(rErr))
+			}
+		}
 	}
 
 	job.Status = models.VideoImportProcessing
@@ -134,7 +142,7 @@ func (s *ImportService) processVideoImport(jobID uint, rawURL string, user *mode
 		if def.SourceURL == "" {
 			def.SourceURL = rawURL
 		}
-		_, recipeID, createErr := s.createImportedRecipe(ctx, &def, user, models.RecipeTypeImportVideo, rawURL, "", nil, nil, entry.PromptVersion)
+		_, recipeID, createErr := s.createImportedRecipe(ctx, &def, user, models.RecipeTypeImportVideo, rawURL, entry.ThumbnailURL, nil, nil, entry.PromptVersion)
 		if createErr != nil {
 			fail("save_failed", "could not save the recipe", createErr)
 			return
@@ -197,19 +205,24 @@ func (s *ImportService) processVideoImport(jobID uint, rawURL string, user *mode
 	def.SourceURL = rawURL
 	ensureUnitSystem(&def)
 
-	_, recipeID, createErr := s.createImportedRecipe(ctx, &def, user, models.RecipeTypeImportVideo, rawURL, "", nil, results[0].Hashtags, results[0].PromptVersion)
+	// Use a representative frame as the recipe thumbnail (best-effort).
+	thumbnailURL := s.uploadVideoThumbnail(ctx, frames, videoKey)
+
+	_, recipeID, createErr := s.createImportedRecipe(ctx, &def, user, models.RecipeTypeImportVideo, rawURL, thumbnailURL, nil, results[0].Hashtags, results[0].PromptVersion)
 	if createErr != nil {
 		fail("save_failed", "could not save the recipe", createErr)
 		return
 	}
 
-	// 6. Cache the extraction so the next importer of this video pays nothing.
+	// 6. Cache the extraction (and its thumbnail) so the next importer of this
+	//    video pays nothing and reuses the same hero image.
 	now := time.Now()
 	cacheEntry := &models.VideoExtractionCache{
 		VideoKey:       videoKey,
 		Platform:       string(meta.Platform),
 		OriginalURL:    rawURL,
 		RecipeData:     def,
+		ThumbnailURL:   thumbnailURL,
 		FetchedAt:      now,
 		LastAccessedAt: now,
 		PromptVersion:  results[0].PromptVersion,
@@ -226,6 +239,30 @@ func (s *ImportService) processVideoImport(jobID uint, rawURL string, user *mode
 		log.Error("failed to persist completed video import", zap.Error(err))
 	}
 	log.Info("video import complete", zap.Int("frames", len(frames)), zap.Float64("cost_usd", job.CostUSD))
+}
+
+// uploadVideoThumbnail stores a representative frame (the middle one — past any
+// intro, before any outro) as the recipe's hero image and returns its URL.
+// Best-effort: returns "" on any failure so the import still succeeds.
+func (s *ImportService) uploadVideoThumbnail(ctx context.Context, frames [][]byte, videoKey string) string {
+	if len(frames) == 0 {
+		return ""
+	}
+	frame := frames[len(frames)/2]
+	if s.ThumbnailUploader != nil {
+		url, err := s.ThumbnailUploader(ctx, frame, videoKey)
+		if err != nil {
+			return ""
+		}
+		return url
+	}
+	key := "recipes/video_thumbnails/" + strings.ReplaceAll(videoKey, ":", "_") + ".jpg"
+	url, err := s3.UploadRecipeImageToS3(ctx, s.Cfg, frame, key, "image/jpeg")
+	if err != nil {
+		logger.Get().Warn("failed to upload video thumbnail", zap.String("video_key", videoKey), zap.Error(err))
+		return ""
+	}
+	return url
 }
 
 // videoCacheKey is the per-video cache key: "<platform>:<video_id>".

@@ -106,6 +106,7 @@ type UserRepo interface {
 	IncrementTokenVersion(userID uint) error
 	CreateSubscription(sub *models.Subscription) error
 	IncrementSubscriptionUsage(userID uint, column string) error
+	DecrementSubscriptionUsage(userID uint, column string) error
 	ResetSubscriptionUsage(userID uint, nextReset time.Time) error
 }
 

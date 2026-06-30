@@ -199,6 +199,23 @@ func (r *UserRepository) IncrementSubscriptionUsage(userID uint, column string) 
 	return nil
 }
 
+// DecrementSubscriptionUsage atomically decrements a usage counter on the
+// subscription row, flooring at zero. Used to refund a counted action that
+// later failed on our side (e.g. a video import that errored after acceptance).
+func (r *UserRepository) DecrementSubscriptionUsage(userID uint, column string) error {
+	result := r.DB.Model(&models.Subscription{}).
+		Where("user_id = ?", userID).
+		UpdateColumn(column, gorm.Expr("GREATEST("+column+" - 1, 0)"))
+	if result.Error != nil {
+		logger.Get().Error("failed to decrement subscription usage", zap.Uint("user_id", userID), zap.String("column", column), zap.Error(result.Error))
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return errors.New("no subscription found for user")
+	}
+	return nil
+}
+
 // ResetSubscriptionUsage zeroes all usage counters and advances the monthly
 // reset timestamp for the given user's subscription.
 func (r *UserRepository) ResetSubscriptionUsage(userID uint, nextReset time.Time) error {

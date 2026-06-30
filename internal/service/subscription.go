@@ -73,24 +73,40 @@ func (s *SubscriptionService) UpgradeSubscription(userID uint) (*models.Subscrip
 	return nil, fmt.Errorf("paid plans are not yet available")
 }
 
-// IncrementUsage atomically increments a usage counter in the database.
-// Valid usageType values: "allergen", "search", "ai_generation".
-func (s *SubscriptionService) IncrementUsage(userID uint, usageType string) error {
-	var column string
+// usageColumn maps a usage type to its subscription counter column.
+func usageColumn(usageType string) (string, error) {
 	switch usageType {
 	case "allergen":
-		column = "allergen_analyses_used"
+		return "allergen_analyses_used", nil
 	case "search":
-		column = "web_searches_used"
+		return "web_searches_used", nil
 	case "ai_generation":
-		column = "ai_generations_used"
+		return "ai_generations_used", nil
 	case "video_import":
-		column = "video_imports_used"
+		return "video_imports_used", nil
 	default:
-		return fmt.Errorf("unknown usage type: %s", usageType)
+		return "", fmt.Errorf("unknown usage type: %s", usageType)
 	}
+}
 
+// IncrementUsage atomically increments a usage counter in the database.
+// Valid usageType values: "allergen", "search", "ai_generation", "video_import".
+func (s *SubscriptionService) IncrementUsage(userID uint, usageType string) error {
+	column, err := usageColumn(usageType)
+	if err != nil {
+		return err
+	}
 	return s.Repo.IncrementSubscriptionUsage(userID, column)
+}
+
+// DecrementUsage refunds one unit of a usage counter (floored at zero) — used
+// when an action that was counted on acceptance later fails on our side.
+func (s *SubscriptionService) DecrementUsage(userID uint, usageType string) error {
+	column, err := usageColumn(usageType)
+	if err != nil {
+		return err
+	}
+	return s.Repo.DecrementSubscriptionUsage(userID, column)
 }
 
 // CheckLimit returns true if the user is within their usage limits for the given type.

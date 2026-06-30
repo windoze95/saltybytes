@@ -243,6 +243,119 @@ func TestVideoImport_BudgetExceeded(t *testing.T) {
 	}
 }
 
+func TestVideoImport_SetsThumbnail(t *testing.T) {
+	repo := testutil.NewMockRecipeRepo()
+	vrepo := testutil.NewMockVideoImportRepo()
+	svc := newVideoTestService(repo, vrepo)
+	svc.VideoFetcher = &fakeVideoFetcher{meta: tiktokMeta()}
+	svc.VideoFrameSampler = &fakeFrameSampler{frames: [][]byte{{0xFF, 1}, {0xFF, 2}, {0xFF, 3}}}
+	svc.VisionProvider = &testutil.MockVisionProvider{
+		ExtractRecipesFromMediaFunc: func(ctx context.Context, media []ai.MediaInput, contextText, unitSystem, requirements string) ([]*ai.RecipeResult, error) {
+			return []*ai.RecipeResult{testutil.TestRecipeResult()}, nil
+		},
+	}
+	var gotKey string
+	var gotFrame []byte
+	svc.ThumbnailUploader = func(ctx context.Context, frame []byte, videoKey string) (string, error) {
+		gotKey, gotFrame = videoKey, frame
+		return "https://s3.example/thumb.jpg", nil
+	}
+
+	job, err := svc.StartVideoImport(context.Background(), "https://www.tiktok.com/@chef/video/7499229683859426602", testutil.TestUser())
+	if err != nil {
+		t.Fatalf("StartVideoImport: %v", err)
+	}
+	done := waitForVideoJob(t, svc, job.ID)
+	if done.Status != models.VideoImportDone || done.RecipeID == nil {
+		t.Fatalf("status=%q recipe=%v, want done with a recipe", done.Status, done.RecipeID)
+	}
+	if gotKey != "tiktok:7499229683859426602" {
+		t.Errorf("thumbnail keyed by %q", gotKey)
+	}
+	if len(gotFrame) < 2 || gotFrame[1] != 2 {
+		t.Errorf("uploaded frame = %v, want the middle frame (marker 2)", gotFrame)
+	}
+	if got := repo.Recipes[*done.RecipeID].ImageURL; got != "https://s3.example/thumb.jpg" {
+		t.Errorf("recipe ImageURL = %q, want the thumbnail", got)
+	}
+	entry, err := vrepo.GetCacheByVideoKey("tiktok:7499229683859426602")
+	if err != nil {
+		t.Fatalf("cache lookup: %v", err)
+	}
+	if entry.ThumbnailURL != "https://s3.example/thumb.jpg" {
+		t.Errorf("cache ThumbnailURL = %q, want the thumbnail", entry.ThumbnailURL)
+	}
+}
+
+func TestVideoImport_CacheHitReusesThumbnail(t *testing.T) {
+	repo := testutil.NewMockRecipeRepo()
+	vrepo := testutil.NewMockVideoImportRepo()
+	svc := newVideoTestService(repo, vrepo)
+
+	cached := recipeResultToRecipeDef(testutil.TestRecipeResult())
+	if err := vrepo.UpsertCache(&models.VideoExtractionCache{
+		VideoKey: "tiktok:7499229683859426602", Platform: "tiktok",
+		OriginalURL: "https://x", RecipeData: cached,
+		ThumbnailURL: "https://s3.example/cached-thumb.jpg",
+	}); err != nil {
+		t.Fatalf("seed cache: %v", err)
+	}
+	svc.VideoFetcher = &fakeVideoFetcher{meta: tiktokMeta()}
+	svc.VideoFrameSampler = &fakeFrameSampler{}
+	svc.VisionProvider = &testutil.MockVisionProvider{}
+
+	job, err := svc.StartVideoImport(context.Background(), "https://www.tiktok.com/@chef/video/7499229683859426602", testutil.TestUser())
+	if err != nil {
+		t.Fatalf("StartVideoImport: %v", err)
+	}
+	done := waitForVideoJob(t, svc, job.ID)
+	if !done.CacheHit || done.RecipeID == nil {
+		t.Fatalf("want cache hit with a recipe, got hit=%v recipe=%v", done.CacheHit, done.RecipeID)
+	}
+	if got := repo.Recipes[*done.RecipeID].ImageURL; got != "https://s3.example/cached-thumb.jpg" {
+		t.Errorf("recipe ImageURL = %q, want the cached thumbnail", got)
+	}
+}
+
+func TestVideoImport_RefundsQuotaOnFailure(t *testing.T) {
+	repo := testutil.NewMockRecipeRepo()
+	vrepo := testutil.NewMockVideoImportRepo()
+	svc := newVideoTestService(repo, vrepo)
+
+	// The handler increments quota on acceptance; model that as Used=1.
+	user := testutil.TestUser()
+	user.Subscription = &models.Subscription{
+		UserID: user.ID, Tier: models.TierFree,
+		VideoImportsUsed: 1, MonthlyResetAt: time.Now().Add(time.Hour),
+	}
+	userRepo := testutil.NewMockUserRepo()
+	userRepo.Users[user.ID] = user
+	svc.SubService = NewSubscriptionService(&config.Config{}, userRepo)
+
+	// Fail on our side (fetch error) → quota should be refunded.
+	svc.VideoFetcher = &fakeVideoFetcher{err: context.DeadlineExceeded}
+	svc.VideoFrameSampler = &fakeFrameSampler{}
+	svc.VisionProvider = &testutil.MockVisionProvider{}
+
+	job, err := svc.StartVideoImport(context.Background(), "https://www.tiktok.com/@x/video/1", user)
+	if err != nil {
+		t.Fatalf("StartVideoImport: %v", err)
+	}
+	done := waitForVideoJob(t, svc, job.ID)
+	if done.Status != models.VideoImportFailed {
+		t.Fatalf("want failed, got %s", done.Status)
+	}
+	// The refund runs in the goroutine after the job is marked failed; poll the
+	// lock-synchronized counter until it lands.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && userRepo.SubscriptionUsage(user.ID, "video_imports_used") != 0 {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if got := userRepo.SubscriptionUsage(user.ID, "video_imports_used"); got != 0 {
+		t.Errorf("VideoImportsUsed = %d, want 0 after refund", got)
+	}
+}
+
 func TestVideoImport_FetchFailed(t *testing.T) {
 	repo := testutil.NewMockRecipeRepo()
 	vrepo := testutil.NewMockVideoImportRepo()
