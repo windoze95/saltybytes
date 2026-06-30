@@ -557,6 +557,9 @@ func (h *ImportHandler) PreviewFromURL(c *gin.Context) {
 	if result.Recipe != nil && result.Recipe.UnitSystem != "" {
 		response["unit_system"] = result.Recipe.UnitSystem
 	}
+	if result.FromCache {
+		response["from_cache"] = true
+	}
 	c.JSON(http.StatusOK, response)
 }
 
