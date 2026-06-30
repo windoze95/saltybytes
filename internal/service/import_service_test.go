@@ -461,6 +461,76 @@ func TestImportFromFiles_NoFiles(t *testing.T) {
 	}
 }
 
+func TestImportFromVoice_Success(t *testing.T) {
+	repo := testutil.NewMockRecipeRepo()
+	text := &testutil.MockTextProvider{
+		ExtractRecipeFromTextFunc: func(ctx context.Context, transcript, unitSystem string) (*ai.RecipeResult, error) {
+			if transcript == "" {
+				t.Error("expected a non-empty transcript passed to text extraction")
+			}
+			return testutil.TestRecipeResult(), nil
+		},
+	}
+	svc := newTestImportService(repo, text, nil)
+	svc.SpeechProvider = &testutil.MockSpeechProvider{
+		TranscribeAudioFunc: func(ctx context.Context, audioData []byte, format string) (string, error) {
+			return "Pancakes: mix flour, eggs, and milk, then cook on a griddle.", nil
+		},
+	}
+	user := testutil.TestUser()
+
+	resp, err := svc.ImportFromVoice(context.Background(), []byte("fake-audio"), "m4a", user)
+	if err != nil {
+		t.Fatalf("ImportFromVoice error: %v", err)
+	}
+	if resp == nil {
+		t.Fatal("expected a recipe response")
+	}
+	if len(repo.Recipes) != 1 {
+		t.Errorf("expected 1 recipe saved, got %d", len(repo.Recipes))
+	}
+}
+
+func TestImportFromVoice_EmptyTranscript(t *testing.T) {
+	repo := testutil.NewMockRecipeRepo()
+	svc := newTestImportService(repo, &testutil.MockTextProvider{}, nil)
+	svc.SpeechProvider = &testutil.MockSpeechProvider{
+		TranscribeAudioFunc: func(ctx context.Context, audioData []byte, format string) (string, error) {
+			return "   ", nil
+		},
+	}
+	user := testutil.TestUser()
+
+	_, err := svc.ImportFromVoice(context.Background(), []byte("x"), "m4a", user)
+	if err == nil {
+		t.Fatal("expected error for an empty transcript")
+	}
+	var extractErr *ExtractionError
+	if !errors.As(err, &extractErr) || extractErr.Code != "empty_transcript" {
+		t.Errorf("expected empty_transcript ExtractionError, got %v", err)
+	}
+}
+
+func TestImportFromVoice_TranscriptionError(t *testing.T) {
+	repo := testutil.NewMockRecipeRepo()
+	svc := newTestImportService(repo, &testutil.MockTextProvider{}, nil)
+	svc.SpeechProvider = &testutil.MockSpeechProvider{
+		TranscribeAudioFunc: func(ctx context.Context, audioData []byte, format string) (string, error) {
+			return "", fmt.Errorf("whisper unavailable")
+		},
+	}
+	user := testutil.TestUser()
+
+	_, err := svc.ImportFromVoice(context.Background(), []byte("x"), "m4a", user)
+	if err == nil {
+		t.Fatal("expected error when transcription fails")
+	}
+	var extractErr *ExtractionError
+	if !errors.As(err, &extractErr) || extractErr.Code != "transcription_failed" {
+		t.Errorf("expected transcription_failed ExtractionError, got %v", err)
+	}
+}
+
 func TestCreateImportedRecipe_CreatesTree(t *testing.T) {
 	repo := testutil.NewMockRecipeRepo()
 	svc := newTestImportService(repo, nil, nil)

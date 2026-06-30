@@ -42,6 +42,7 @@ type ImportService struct {
 	RecipeService   *RecipeService
 	TextProvider    ai.TextProvider
 	VisionProvider  ai.VisionProvider
+	SpeechProvider  ai.SpeechProvider
 	PreviewProvider ai.TextProvider
 	CanonicalRepo   repository.CanonicalRecipeRepo
 	Policy          *ImportPolicy
@@ -693,6 +694,40 @@ func (s *ImportService) ImportFromText(ctx context.Context, text string, user *m
 	if err != nil {
 		log.Error("text extraction failed", zap.Error(err))
 		return nil, fmt.Errorf("failed to extract recipe from text: %w", err)
+	}
+
+	def := recipeResultToRecipeDef(result)
+	ensureUnitSystem(&def)
+	resp, _, err := s.createImportedRecipe(ctx, &def, user, models.RecipeTypeImportCopypasta, "", "", nil, result.Hashtags, result.PromptVersion)
+	return resp, err
+}
+
+// ImportFromVoice transcribes spoken audio and extracts a recipe from the
+// transcript, then saves it.
+func (s *ImportService) ImportFromVoice(ctx context.Context, audioData []byte, format string, user *models.User) (*RecipeResponse, error) {
+	log := logger.Get().With(zap.Uint("user_id", user.ID))
+
+	if s.SpeechProvider == nil {
+		return nil, fmt.Errorf("no speech provider configured")
+	}
+	if s.TextProvider == nil {
+		return nil, fmt.Errorf("no AI text provider configured")
+	}
+
+	transcript, err := s.SpeechProvider.TranscribeAudio(ctx, audioData, format)
+	if err != nil {
+		log.Error("voice transcription failed", zap.Error(err))
+		return nil, &ExtractionError{Code: "transcription_failed", Message: "could not transcribe the audio"}
+	}
+	if strings.TrimSpace(transcript) == "" {
+		return nil, &ExtractionError{Code: "empty_transcript", Message: "no speech detected in the audio"}
+	}
+
+	unitSystem := user.Personalization.UnitSystemText()
+	result, err := s.TextProvider.ExtractRecipeFromText(ctx, transcript, unitSystem)
+	if err != nil {
+		log.Error("voice text extraction failed", zap.Error(err))
+		return nil, fmt.Errorf("failed to extract recipe from transcript: %w", err)
 	}
 
 	def := recipeResultToRecipeDef(result)

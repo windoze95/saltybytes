@@ -439,3 +439,64 @@ func TestImportFromFiles_Handler_NoFiles(t *testing.T) {
 		t.Errorf("status = %d, want %d. body: %s", w.Code, http.StatusBadRequest, w.Body.String())
 	}
 }
+
+func TestImportFromVoice_Handler_Success(t *testing.T) {
+	repo := testutil.NewMockRecipeRepo()
+	text := &testutil.MockTextProvider{
+		ExtractRecipeFromTextFunc: func(ctx context.Context, transcript, unitSystem string) (*ai.RecipeResult, error) {
+			return testutil.TestRecipeResult(), nil
+		},
+	}
+	importSvc := newImportService(repo, text)
+	importSvc.SpeechProvider = &testutil.MockSpeechProvider{
+		TranscribeAudioFunc: func(ctx context.Context, audioData []byte, format string) (string, error) {
+			return "recipe transcript text", nil
+		},
+	}
+	handler := NewImportHandler(importSvc)
+
+	user := testutil.TestUser()
+	r := gin.New()
+	r.POST("/recipes/import/voice", setUser(user), handler.ImportFromVoice)
+
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	part, _ := mw.CreateFormFile("audio", "note.m4a")
+	part.Write([]byte("fake audio bytes"))
+	mw.Close()
+
+	req := httptest.NewRequest("POST", "/recipes/import/voice", &buf)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d. body: %s", w.Code, http.StatusOK, w.Body.String())
+	}
+	if len(repo.Recipes) != 1 {
+		t.Errorf("expected 1 recipe saved, got %d", len(repo.Recipes))
+	}
+}
+
+func TestImportFromVoice_Handler_MissingAudio(t *testing.T) {
+	repo := testutil.NewMockRecipeRepo()
+	importSvc := newImportService(repo, nil)
+	importSvc.SpeechProvider = &testutil.MockSpeechProvider{}
+	handler := NewImportHandler(importSvc)
+
+	user := testutil.TestUser()
+	r := gin.New()
+	r.POST("/recipes/import/voice", setUser(user), handler.ImportFromVoice)
+
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	mw.Close()
+	req := httptest.NewRequest("POST", "/recipes/import/voice", &buf)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusBadRequest)
+	}
+}
