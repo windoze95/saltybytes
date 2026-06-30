@@ -19,6 +19,51 @@ import (
 	"gorm.io/gorm"
 )
 
+// buildLightTextProvider constructs the cheap "light" tier text provider from
+// config. Defaults to Anthropic Haiku; LIGHT_PROVIDER=openai/gemini/deepseek
+// runs a cheaper OpenAI-compatible model instead. The middleware (cost metering
+// + logging) is attached so usage is recorded regardless of provider.
+func buildLightTextProvider(cfg *config.Config, mw ai.AIMiddleware) ai.TextProvider {
+	switch cfg.EnvVars.LightProvider {
+	case "openai":
+		model := cfg.EnvVars.LightModel
+		if model == "" {
+			model = "gpt-4o-mini"
+		}
+		p := ai.NewOpenAICompatProvider(cfg.EnvVars.OpenAIAPIKey, cfg.EnvVars.LightBaseURL, model, "openai", cfg.Prompts)
+		p.WithMiddleware(mw)
+		return p
+	case "gemini":
+		baseURL := cfg.EnvVars.LightBaseURL
+		if baseURL == "" {
+			baseURL = "https://generativelanguage.googleapis.com/v1beta/openai"
+		}
+		model := cfg.EnvVars.LightModel
+		if model == "" {
+			model = "gemini-2.0-flash"
+		}
+		p := ai.NewOpenAICompatProvider(cfg.EnvVars.GeminiAPIKey, baseURL, model, "gemini", cfg.Prompts)
+		p.WithMiddleware(mw)
+		return p
+	case "deepseek":
+		baseURL := cfg.EnvVars.LightBaseURL
+		if baseURL == "" {
+			baseURL = "https://api.deepseek.com"
+		}
+		model := cfg.EnvVars.LightModel
+		if model == "" {
+			model = "deepseek-chat"
+		}
+		p := ai.NewOpenAICompatProvider(cfg.EnvVars.DeepSeekAPIKey, baseURL, model, "deepseek", cfg.Prompts)
+		p.WithMiddleware(mw)
+		return p
+	default:
+		p := ai.NewAnthropicLightProvider(cfg.EnvVars.AnthropicAPIKey, cfg.EnvVars.AnthropicLightModel, cfg.Prompts)
+		p.WithMiddleware(mw)
+		return p
+	}
+}
+
 // SetupRouter sets up the Gin router.
 func SetupRouter(cfg *config.Config, database *gorm.DB) *gin.Engine {
 	// Create default Gin router
@@ -105,8 +150,7 @@ func SetupRouter(cfg *config.Config, database *gorm.DB) *gin.Engine {
 	recipeHandler.SubService = subService
 
 	// Import-related routes setup
-	previewProvider := ai.NewAnthropicLightProvider(cfg.EnvVars.AnthropicAPIKey, cfg.EnvVars.AnthropicLightModel, cfg.Prompts)
-	previewProvider.WithMiddleware(aiMW)
+	previewProvider := buildLightTextProvider(cfg, aiMW)
 	canonicalRepo := repository.NewCanonicalRecipeRepository(database)
 	importService := service.NewImportService(cfg, recipeRepo, recipeService, textProvider, textProvider, previewProvider)
 	importService.CanonicalRepo = canonicalRepo

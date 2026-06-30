@@ -347,27 +347,34 @@ func classifyVoiceIntentTool() anthropic.ToolUnionParam {
 }
 
 // estimatePortionsTool builds the Claude tool definition for portion estimation.
+// portionProperties is the JSON-schema property set for the estimate_portions
+// tool. It is shared by the Anthropic tool definition and the OpenAI-compatible
+// light provider (openai_text.go) so both request the identical schema.
+func portionProperties() map[string]interface{} {
+	return map[string]interface{}{
+		"portions": map[string]interface{}{
+			"type":        "integer",
+			"description": "Number of portions this recipe makes",
+		},
+		"portion_size": map[string]interface{}{
+			"type":        "string",
+			"description": "Description of a single portion size",
+		},
+		"confidence": map[string]interface{}{
+			"type":        "number",
+			"description": "Confidence score from 0 to 1",
+		},
+	}
+}
+
 func estimatePortionsTool() anthropic.ToolUnionParam {
 	return anthropic.ToolUnionParam{
 		OfTool: &anthropic.ToolParam{
 			Name:        "estimate_portions",
 			Description: anthropic.String("Estimate the number of portions and portion size for a recipe."),
 			InputSchema: anthropic.ToolInputSchemaParam{
-				Type: "object",
-				Properties: map[string]interface{}{
-					"portions": map[string]interface{}{
-						"type":        "integer",
-						"description": "Number of portions this recipe makes",
-					},
-					"portion_size": map[string]interface{}{
-						"type":        "string",
-						"description": "Description of a single portion size",
-					},
-					"confidence": map[string]interface{}{
-						"type":        "number",
-						"description": "Confidence score from 0 to 1",
-					},
-				},
+				Type:       "object",
+				Properties: portionProperties(),
 			},
 		},
 	}

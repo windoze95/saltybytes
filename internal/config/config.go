@@ -30,6 +30,16 @@ type EnvVars struct {
 	AnthropicModel      string `env:"ANTHROPIC_MODEL" envDefault:"claude-sonnet-4-6" optional:"true"`
 	AnthropicLightModel string `env:"ANTHROPIC_LIGHT_MODEL" envDefault:"claude-haiku-4-5-20251001" optional:"true"`
 	OpenAIAPIKey        string `env:"OPENAI_API_KEY"`
+	// Light-tier provider selection. LightProvider defaults to "anthropic"
+	// (Haiku); set to "openai"/"gemini"/"deepseek" to run a cheaper model for the
+	// high-volume preview/extraction tasks. LightModel/LightBaseURL override the
+	// model ID and endpoint; empty LightBaseURL uses the provider's default.
+	// This is the startup default — the dashboard live-switch overrides it via DB.
+	LightProvider  string `env:"LIGHT_PROVIDER" envDefault:"anthropic" optional:"true"`
+	LightModel     string `env:"LIGHT_MODEL" optional:"true"`
+	LightBaseURL   string `env:"LIGHT_BASE_URL" optional:"true"`
+	GeminiAPIKey   string `env:"GEMINI_API_KEY" optional:"true"`
+	DeepSeekAPIKey string `env:"DEEPSEEK_API_KEY" optional:"true"`
 	// PromptsPath overrides the location of the prompts YAML file, which is
 	// cwd-relative by default and only resolves from the Docker workdir.
 	PromptsPath     string `env:"PROMPTS_PATH" envDefault:"configs/prompts.yaml" optional:"true"`
