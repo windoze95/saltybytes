@@ -114,6 +114,8 @@ func (c *ScrapeCreatorsClient) FetchVideo(ctx context.Context, rawURL string) (*
 		return c.fetchTikTok(ctx, rawURL)
 	case PlatformInstagram:
 		return c.fetchInstagram(ctx, rawURL)
+	case PlatformFacebook:
+		return c.fetchFacebook(ctx, rawURL)
 	default:
 		return nil, fmt.Errorf("platform %q not yet supported", platform)
 	}
@@ -260,6 +262,76 @@ func (c *ScrapeCreatorsClient) instagramTranscript(ctx context.Context, rawURL s
 		if t != nil && *t != "" {
 			return *t
 		}
+	}
+	return ""
+}
+
+// facebookPostResponse is the subset of the /v1/facebook/post response we use.
+type facebookPostResponse struct {
+	PostID      string `json:"post_id"`
+	Description string `json:"description"`
+	Video       struct {
+		SDURL          string  `json:"sd_url"`
+		HDURL          string  `json:"hd_url"`
+		LengthInSecond float64 `json:"length_in_second"`
+	} `json:"video"`
+}
+
+// facebookTranscriptResponse is the /v1/facebook/post/transcript response.
+type facebookTranscriptResponse struct {
+	Transcript *string `json:"transcript"`
+}
+
+func (c *ScrapeCreatorsClient) fetchFacebook(ctx context.Context, rawURL string) (*VideoMeta, error) {
+	q := url.Values{}
+	q.Set("url", rawURL)
+
+	body, err := c.get(ctx, "/v1/facebook/post", q)
+	if err != nil {
+		return nil, err
+	}
+	var r facebookPostResponse
+	if err := json.Unmarshal(body, &r); err != nil {
+		return nil, fmt.Errorf("parse facebook response: %w", err)
+	}
+	if r.PostID == "" {
+		return nil, fmt.Errorf("facebook response missing post detail")
+	}
+
+	// Prefer the smaller SD stream — it downloads faster and stays under the
+	// sampler's size cap, and frames are scaled down regardless.
+	media := r.Video.SDURL
+	if media == "" {
+		media = r.Video.HDURL
+	}
+	if media == "" {
+		return nil, fmt.Errorf("facebook post is not a downloadable video")
+	}
+
+	return &VideoMeta{
+		Platform:   PlatformFacebook,
+		VideoID:    r.PostID,
+		Caption:    r.Description,
+		Transcript: c.facebookTranscript(ctx, rawURL), // best-effort; often empty
+		MediaURL:   media,
+		DurationMS: int(math.Round(r.Video.LengthInSecond * 1000)),
+	}, nil
+}
+
+// facebookTranscript fetches a reel's spoken transcript, best-effort.
+func (c *ScrapeCreatorsClient) facebookTranscript(ctx context.Context, rawURL string) string {
+	q := url.Values{}
+	q.Set("url", rawURL)
+	body, err := c.get(ctx, "/v1/facebook/post/transcript", q)
+	if err != nil {
+		return ""
+	}
+	var r facebookTranscriptResponse
+	if err := json.Unmarshal(body, &r); err != nil {
+		return ""
+	}
+	if r.Transcript != nil {
+		return *r.Transcript
 	}
 	return ""
 }
