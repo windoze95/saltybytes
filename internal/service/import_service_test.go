@@ -375,6 +375,92 @@ func TestImportFromCanonical_NotFound(t *testing.T) {
 	}
 }
 
+func TestDetectMediaKind(t *testing.T) {
+	cases := []struct {
+		name string
+		data []byte
+		want ai.MediaKind
+		ok   bool
+	}{
+		{"pdf", []byte("%PDF-1.4"), ai.MediaPDF, true},
+		{"jpeg", []byte{0xFF, 0xD8, 0xFF, 0xE0}, ai.MediaImage, true},
+		{"png", []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A}, ai.MediaImage, true},
+		{"gif", []byte{0x47, 0x49, 0x46, 0x38}, ai.MediaImage, true},
+		{"garbage", []byte("hello world"), ai.MediaKind(""), false},
+		{"empty", []byte{}, ai.MediaKind(""), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			kind, ok := detectMediaKind(tc.data)
+			if ok != tc.ok || kind != tc.want {
+				t.Errorf("detectMediaKind(%s) = (%q, %v), want (%q, %v)", tc.name, kind, ok, tc.want, tc.ok)
+			}
+		})
+	}
+}
+
+func TestImportFromFiles_MultipleRecipes(t *testing.T) {
+	repo := testutil.NewMockRecipeRepo()
+	var gotMedia []ai.MediaInput
+	vision := &testutil.MockVisionProvider{
+		ExtractRecipesFromMediaFunc: func(ctx context.Context, media []ai.MediaInput, unitSystem, requirements string) ([]*ai.RecipeResult, error) {
+			gotMedia = media
+			r1 := testutil.TestRecipeResult()
+			r2 := testutil.TestRecipeResult()
+			r2.Title = "Second Recipe"
+			return []*ai.RecipeResult{r1, r2}, nil
+		},
+	}
+
+	svc := newTestImportService(repo, nil, nil)
+	svc.VisionProvider = vision
+	user := testutil.TestUser()
+
+	jpeg := []byte{0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10}
+	pdf := []byte("%PDF-1.7\nfake pdf bytes")
+	resps, err := svc.ImportFromFiles(context.Background(), []FileInput{{Data: jpeg}, {Data: pdf}}, user)
+	if err != nil {
+		t.Fatalf("ImportFromFiles error: %v", err)
+	}
+	if len(resps) != 2 {
+		t.Fatalf("expected 2 recipe responses, got %d", len(resps))
+	}
+	if len(repo.Recipes) != 2 {
+		t.Errorf("expected 2 recipes saved, got %d", len(repo.Recipes))
+	}
+	// The image and the PDF should be classified and forwarded with the right kinds.
+	if len(gotMedia) != 2 || gotMedia[0].Kind != ai.MediaImage || gotMedia[1].Kind != ai.MediaPDF {
+		t.Errorf("media kinds = %+v, want [image pdf]", gotMedia)
+	}
+}
+
+func TestImportFromFiles_UnsupportedFile(t *testing.T) {
+	repo := testutil.NewMockRecipeRepo()
+	svc := newTestImportService(repo, nil, nil)
+	svc.VisionProvider = &testutil.MockVisionProvider{}
+	user := testutil.TestUser()
+
+	_, err := svc.ImportFromFiles(context.Background(), []FileInput{{Data: []byte("definitely not an image or pdf")}}, user)
+	if err == nil {
+		t.Fatal("expected error for unsupported file type")
+	}
+	var extractErr *ExtractionError
+	if !errors.As(err, &extractErr) || extractErr.Code != "unsupported_file" {
+		t.Errorf("expected unsupported_file ExtractionError, got %v", err)
+	}
+}
+
+func TestImportFromFiles_NoFiles(t *testing.T) {
+	repo := testutil.NewMockRecipeRepo()
+	svc := newTestImportService(repo, nil, nil)
+	svc.VisionProvider = &testutil.MockVisionProvider{}
+	user := testutil.TestUser()
+
+	if _, err := svc.ImportFromFiles(context.Background(), nil, user); err == nil {
+		t.Fatal("expected error when no files are provided")
+	}
+}
+
 func TestCreateImportedRecipe_CreatesTree(t *testing.T) {
 	repo := testutil.NewMockRecipeRepo()
 	svc := newTestImportService(repo, nil, nil)

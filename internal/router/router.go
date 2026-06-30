@@ -144,6 +144,7 @@ func SetupRouter(cfg *config.Config, database *gorm.DB) *gin.Engine {
 		// Recipe import routes
 		apiProtected.POST("/recipes/import/url", middleware.AttachUserToContext(userService), importHandler.ImportFromURL)
 		apiProtected.POST("/recipes/import/photo", middleware.AttachUserToContext(userService), importHandler.ImportFromPhoto)
+		apiProtected.POST("/recipes/import/files", middleware.AttachUserToContext(userService), importHandler.ImportFromFiles)
 		apiProtected.POST("/recipes/import/text", middleware.AttachUserToContext(userService), importHandler.ImportFromText)
 		apiProtected.POST("/recipes/import/manual", middleware.AttachUserToContext(userService), importHandler.ImportManual)
 		apiProtected.POST("/recipes/import/canonical", middleware.AttachUserToContext(userService), importHandler.ImportFromCanonical)

@@ -20,9 +20,27 @@ type TextProvider interface {
 	DietaryInterview(ctx context.Context, messages []Message, memberName string) (*DietaryInterviewResult, error)
 }
 
-// VisionProvider handles image-based recipe extraction (Claude).
+// MediaKind identifies whether a MediaInput is a raster image or a PDF document.
+type MediaKind string
+
+const (
+	MediaImage MediaKind = "image"
+	MediaPDF   MediaKind = "pdf"
+)
+
+// MediaInput is a single image or PDF document supplied for recipe extraction.
+type MediaInput struct {
+	Data []byte
+	Kind MediaKind
+}
+
+// VisionProvider handles image- and document-based recipe extraction (Claude).
 type VisionProvider interface {
 	ExtractRecipeFromImage(ctx context.Context, imageData []byte, unitSystem string, requirements string) (*RecipeResult, error)
+	// ExtractRecipesFromMedia extracts every distinct recipe found across the
+	// given images and/or PDF documents in a single request, returning one
+	// RecipeResult per recipe.
+	ExtractRecipesFromMedia(ctx context.Context, media []MediaInput, unitSystem string, requirements string) ([]*RecipeResult, error)
 }
 
 // ImageProvider handles image generation (DALL-E 3).

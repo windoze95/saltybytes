@@ -94,7 +94,8 @@ func (m *MockTextProvider) DietaryInterview(ctx context.Context, messages []ai.M
 
 // MockVisionProvider is a mock implementation of ai.VisionProvider.
 type MockVisionProvider struct {
-	ExtractRecipeFromImageFunc func(ctx context.Context, imageData []byte, unitSystem string, requirements string) (*ai.RecipeResult, error)
+	ExtractRecipeFromImageFunc  func(ctx context.Context, imageData []byte, unitSystem string, requirements string) (*ai.RecipeResult, error)
+	ExtractRecipesFromMediaFunc func(ctx context.Context, media []ai.MediaInput, unitSystem string, requirements string) ([]*ai.RecipeResult, error)
 }
 
 func (m *MockVisionProvider) ExtractRecipeFromImage(ctx context.Context, imageData []byte, unitSystem string, requirements string) (*ai.RecipeResult, error) {
@@ -102,6 +103,13 @@ func (m *MockVisionProvider) ExtractRecipeFromImage(ctx context.Context, imageDa
 		return m.ExtractRecipeFromImageFunc(ctx, imageData, unitSystem, requirements)
 	}
 	return nil, fmt.Errorf("ExtractRecipeFromImage not configured")
+}
+
+func (m *MockVisionProvider) ExtractRecipesFromMedia(ctx context.Context, media []ai.MediaInput, unitSystem string, requirements string) ([]*ai.RecipeResult, error) {
+	if m.ExtractRecipesFromMediaFunc != nil {
+		return m.ExtractRecipesFromMediaFunc(ctx, media, unitSystem, requirements)
+	}
+	return nil, fmt.Errorf("ExtractRecipesFromMedia not configured")
 }
 
 // --- MockImageProvider ---
