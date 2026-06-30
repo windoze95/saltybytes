@@ -265,34 +265,40 @@ func TestPreviewFromURL_CanonicalCacheHit(t *testing.T) {
 	}
 }
 
-func TestPreviewFromURL_StaleCanonicalSkipped(t *testing.T) {
+func TestPreviewFromURL_OldCanonicalStillServed(t *testing.T) {
 	repo := testutil.NewMockRecipeRepo()
-	stale := testutil.TestStaleCanonicalRecipe()
+	old := testutil.TestOldCanonicalRecipe()
 
 	canonicalRepo := &testutil.MockCanonicalRecipeRepo{
 		GetByNormalizedURLFunc: func(normalizedURL string) (*models.CanonicalRecipe, error) {
-			return stale, nil
+			return old, nil
 		},
 	}
 
 	svc := newTestImportService(repo, nil, nil)
 	svc.CanonicalRepo = canonicalRepo
 
-	// With a stale canonical and no real server to fetch from, this should fail
-	// during extraction — proving the stale cache was skipped.
-	_, _, err := svc.PreviewFromURL(context.Background(), "https://example.com/classic-pancakes")
-	if err == nil {
-		t.Fatal("expected error when stale canonical is skipped and extraction fails")
+	// Canonical entries never expire: even a year-old entry is served straight
+	// from cache and never re-fetched (there is no real server to fetch from).
+	recipeDef, canonicalID, err := svc.PreviewFromURL(context.Background(), "https://example.com/classic-pancakes")
+	if err != nil {
+		t.Fatalf("expected cache hit for old entry, got error: %v", err)
+	}
+	if recipeDef == nil {
+		t.Fatal("expected cached recipe, got nil")
+	}
+	if canonicalID == nil || *canonicalID != old.ID {
+		t.Errorf("canonical_id = %v, want %d", canonicalID, old.ID)
 	}
 }
 
-func TestImportFromURL_StaleCanonicalSkipped(t *testing.T) {
+func TestImportFromURL_OldCanonicalStillServed(t *testing.T) {
 	repo := testutil.NewMockRecipeRepo()
-	stale := testutil.TestStaleCanonicalRecipe()
+	old := testutil.TestOldCanonicalRecipe()
 
 	canonicalRepo := &testutil.MockCanonicalRecipeRepo{
 		GetByNormalizedURLFunc: func(normalizedURL string) (*models.CanonicalRecipe, error) {
-			return stale, nil
+			return old, nil
 		},
 	}
 
@@ -300,11 +306,17 @@ func TestImportFromURL_StaleCanonicalSkipped(t *testing.T) {
 	svc.CanonicalRepo = canonicalRepo
 	user := testutil.TestUser()
 
-	// With a stale canonical and no real server to fetch from, this should fail
-	// during extraction — proving the stale cache was skipped.
-	_, err := svc.ImportFromURL(context.Background(), "https://example.com/classic-pancakes", user)
-	if err == nil {
-		t.Fatal("expected error when stale canonical is skipped and extraction fails")
+	// Old entries never expire: import is served from the cached canonical with
+	// no re-fetch, creating the recipe from cached data.
+	resp, err := svc.ImportFromURL(context.Background(), "https://example.com/classic-pancakes", user)
+	if err != nil {
+		t.Fatalf("expected cache hit for old entry, got error: %v", err)
+	}
+	if resp == nil {
+		t.Fatal("expected recipe response, got nil")
+	}
+	if len(repo.Recipes) != 1 {
+		t.Errorf("recipes in repo = %d, want 1", len(repo.Recipes))
 	}
 }
 

@@ -1,13 +1,9 @@
 package service
 
 import (
-	"time"
-
 	"github.com/windoze95/saltybytes-api/internal/models"
 	"github.com/windoze95/saltybytes-api/internal/repository"
 )
-
-const canonicalTTL = 7 * 24 * time.Hour
 
 // MaterializeCanonical performs copy-on-write: if the recipe references a canonical
 // and has not yet diverged, it copies the canonical's RecipeData into the recipe's

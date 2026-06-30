@@ -144,18 +144,17 @@ func (s *ImportService) ImportFromURL(ctx context.Context, rawURL string, user *
 		return nil, fmt.Errorf("URL validation failed: %w", err)
 	}
 
-	// Check canonical cache if available
+	// Serve from the canonical cache when present. Entries never expire; a
+	// cached URL is never automatically re-fetched.
 	if s.CanonicalRepo != nil {
 		normalizedURL, normErr := NormalizeURL(rawURL)
 		if normErr == nil {
 			if canonical, err := s.CanonicalRepo.GetByNormalizedURL(normalizedURL); err == nil {
-				if time.Since(canonical.FetchedAt) < canonicalTTL {
-					log.Info("import from canonical cache hit")
-					go s.CanonicalRepo.IncrementHitCount(canonical.ID)
-					canonicalID := canonical.ID
-					recipeResp, _, createErr := s.createImportedRecipe(ctx, &canonical.RecipeData, user, models.RecipeTypeImportLink, rawURL, "", &canonicalID, nil, canonical.PromptVersion)
-					return recipeResp, createErr
-				}
+				log.Info("import from canonical cache hit")
+				go s.CanonicalRepo.IncrementHitCount(canonical.ID)
+				canonicalID := canonical.ID
+				recipeResp, _, createErr := s.createImportedRecipe(ctx, &canonical.RecipeData, user, models.RecipeTypeImportLink, rawURL, "", &canonicalID, nil, canonical.PromptVersion)
+				return recipeResp, createErr
 			}
 		}
 	}
@@ -649,21 +648,19 @@ func (s *ImportService) PreviewFromURL(ctx context.Context, rawURL string) (*mod
 		return nil, nil, fmt.Errorf("URL validation failed: %w", err)
 	}
 
-	// Check canonical cache if available
+	// Serve from the canonical cache when present. Entries never expire.
 	if s.CanonicalRepo != nil {
 		normalizedURL, normErr := NormalizeURL(rawURL)
 		if normErr == nil {
 			if canonical, err := s.CanonicalRepo.GetByNormalizedURL(normalizedURL); err == nil {
-				if time.Since(canonical.FetchedAt) < canonicalTTL {
-					log.Info("preview canonical cache hit")
-					go s.CanonicalRepo.IncrementHitCount(canonical.ID)
-					data := canonical.RecipeData
-					if data.SourceURL == "" {
-						data.SourceURL = rawURL
-					}
-					canonicalID := canonical.ID
-					return &data, &canonicalID, nil
+				log.Info("preview canonical cache hit")
+				go s.CanonicalRepo.IncrementHitCount(canonical.ID)
+				data := canonical.RecipeData
+				if data.SourceURL == "" {
+					data.SourceURL = rawURL
 				}
+				canonicalID := canonical.ID
+				return &data, &canonicalID, nil
 			}
 		}
 	}
@@ -742,16 +739,14 @@ func (s *ImportService) PreviewFromURLWithMultiCheck(ctx context.Context, rawURL
 		normalizedURL, normErr := NormalizeURL(rawURL)
 		if normErr == nil {
 			if canonical, err := s.CanonicalRepo.GetByNormalizedURL(normalizedURL); err == nil {
-				if time.Since(canonical.FetchedAt) < canonicalTTL {
-					log.Info("preview canonical cache hit")
-					go s.CanonicalRepo.IncrementHitCount(canonical.ID)
-					data := canonical.RecipeData
-					if data.SourceURL == "" {
-						data.SourceURL = rawURL
-					}
-					canonicalID := canonical.ID
-					return &PreviewResult{Recipe: &data, CanonicalID: &canonicalID}, nil
+				log.Info("preview canonical cache hit")
+				go s.CanonicalRepo.IncrementHitCount(canonical.ID)
+				data := canonical.RecipeData
+				if data.SourceURL == "" {
+					data.SourceURL = rawURL
 				}
+				canonicalID := canonical.ID
+				return &PreviewResult{Recipe: &data, CanonicalID: &canonicalID}, nil
 			}
 		}
 	}
@@ -896,63 +891,6 @@ func (s *ImportService) createImportedRecipe(ctx context.Context, recipeDef *mod
 
 	recipeResponse := s.RecipeService.ToRecipeResponse(recipe)
 	return recipeResponse, recipe.ID, nil
-}
-
-// StartCanonicalBackgroundTasks starts periodic refresh goroutines
-// for the canonical recipe cache.
-func (s *ImportService) StartCanonicalBackgroundTasks() {
-	if s.CanonicalRepo == nil {
-		return
-	}
-
-	go func() {
-		ticker := time.NewTicker(30 * time.Minute)
-		defer ticker.Stop()
-		for range ticker.C {
-			s.refreshStaleCanonicals()
-		}
-	}()
-}
-
-func (s *ImportService) refreshStaleCanonicals() {
-	log := logger.Get()
-
-	entries, err := s.CanonicalRepo.GetStaleEntries(canonicalTTL)
-	if err != nil {
-		log.Error("failed to get stale canonical entries", zap.Error(err))
-		return
-	}
-
-	for _, entry := range entries {
-		// Skip multi-recipe card entries — they have _recipe= in the URL
-		// and can't be refreshed by generic extractFromURL (which grabs
-		// the first recipe). They'll be re-extracted when clicked.
-		if strings.Contains(entry.OriginalURL, "_recipe=") {
-			continue
-		}
-
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		recipeDef, _, _, method, _, err := s.extractFromURL(ctx, entry.OriginalURL)
-		cancel()
-		if err != nil {
-			log.Warn("failed to refresh canonical entry", zap.String("url", entry.OriginalURL), zap.Error(err))
-			continue
-		}
-
-		now := time.Now()
-		entry.RecipeData = *recipeDef
-		entry.ExtractionMethod = method
-		entry.FetchedAt = now
-		entry.LastAccessedAt = now
-		// The extract context above is already cancelled; bound the embedding
-		// call separately so a stalled provider can't wedge the refresh loop.
-		embedCtx, embedCancel := context.WithTimeout(context.Background(), embeddingCallTimeout)
-		entry.Embedding = s.canonicalEmbedding(embedCtx, recipeDef)
-		embedCancel()
-		if err := s.CanonicalRepo.Upsert(&entry); err != nil {
-			log.Warn("failed to upsert refreshed canonical", zap.String("url", entry.OriginalURL), zap.Error(err))
-		}
-	}
 }
 
 // jsonLDRecipe represents the JSON-LD Recipe schema (subset of fields we care about).
