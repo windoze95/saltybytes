@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"strings"
@@ -96,7 +97,9 @@ func (c *ScrapeCreatorsClient) get(ctx context.Context, path string, q url.Value
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("scrapecreators %s returned status %d", path, resp.StatusCode)
 	}
-	return body, nil
+	// Some providers (e.g. Instagram captions) emit raw control characters inside
+	// JSON string values, which encoding/json rejects. Escape them defensively.
+	return sanitizeJSONControlChars(body), nil
 }
 
 // FetchVideo resolves a supported video URL to normalized metadata (caption,
@@ -109,6 +112,8 @@ func (c *ScrapeCreatorsClient) FetchVideo(ctx context.Context, rawURL string) (*
 	switch platform {
 	case PlatformTikTok:
 		return c.fetchTikTok(ctx, rawURL)
+	case PlatformInstagram:
+		return c.fetchInstagram(ctx, rawURL)
 	default:
 		return nil, fmt.Errorf("platform %q not yet supported", platform)
 	}
@@ -173,4 +178,137 @@ func firstNonEmpty(list []string) string {
 		}
 	}
 	return ""
+}
+
+// instagramPostResponse is the subset of the /v1/instagram/post response we use.
+type instagramPostResponse struct {
+	Data struct {
+		Media struct {
+			Typename      string  `json:"__typename"`
+			ID            string  `json:"id"`
+			Shortcode     string  `json:"shortcode"`
+			IsVideo       bool    `json:"is_video"`
+			VideoURL      string  `json:"video_url"`
+			VideoDuration float64 `json:"video_duration"` // seconds (float)
+			Caption       struct {
+				Edges []struct {
+					Node struct {
+						Text string `json:"text"`
+					} `json:"node"`
+				} `json:"edges"`
+			} `json:"edge_media_to_caption"`
+		} `json:"xdt_shortcode_media"`
+	} `json:"data"`
+}
+
+// instagramTranscriptResponse is the /v2/instagram/media/transcript response.
+// transcripts entries may be null when no transcript is available.
+type instagramTranscriptResponse struct {
+	Transcripts []*string `json:"transcripts"`
+}
+
+func (c *ScrapeCreatorsClient) fetchInstagram(ctx context.Context, rawURL string) (*VideoMeta, error) {
+	q := url.Values{}
+	q.Set("url", rawURL)
+
+	body, err := c.get(ctx, "/v1/instagram/post", q)
+	if err != nil {
+		return nil, err
+	}
+	var r instagramPostResponse
+	if err := json.Unmarshal(body, &r); err != nil {
+		return nil, fmt.Errorf("parse instagram response: %w", err)
+	}
+	m := r.Data.Media
+	if m.Shortcode == "" {
+		return nil, fmt.Errorf("instagram response missing media detail")
+	}
+	if m.VideoURL == "" {
+		return nil, fmt.Errorf("instagram post is not a downloadable video")
+	}
+
+	caption := ""
+	if len(m.Caption.Edges) > 0 {
+		caption = m.Caption.Edges[0].Node.Text
+	}
+
+	return &VideoMeta{
+		Platform:   PlatformInstagram,
+		VideoID:    m.Shortcode,
+		Caption:    caption,
+		Transcript: c.instagramTranscript(ctx, rawURL), // best-effort; often empty
+		MediaURL:   m.VideoURL,
+		DurationMS: int(math.Round(m.VideoDuration * 1000)),
+	}, nil
+}
+
+// instagramTranscript fetches the spoken transcript for a reel. It is
+// best-effort: any error or absent transcript yields an empty string, and the
+// caller falls back to the caption plus sampled frames.
+func (c *ScrapeCreatorsClient) instagramTranscript(ctx context.Context, rawURL string) string {
+	q := url.Values{}
+	q.Set("url", rawURL)
+	body, err := c.get(ctx, "/v2/instagram/media/transcript", q)
+	if err != nil {
+		return ""
+	}
+	var r instagramTranscriptResponse
+	if err := json.Unmarshal(body, &r); err != nil {
+		return ""
+	}
+	for _, t := range r.Transcripts {
+		if t != nil && *t != "" {
+			return *t
+		}
+	}
+	return ""
+}
+
+// sanitizeJSONControlChars escapes raw control characters (U+0000–U+001F) that
+// appear inside JSON string literals, which some providers emit (e.g. literal
+// newlines in Instagram captions) and which encoding/json rejects per RFC 8259.
+// Control characters outside of strings (structural whitespace) are left as-is,
+// so well-formed JSON passes through unchanged.
+func sanitizeJSONControlChars(b []byte) []byte {
+	const hex = "0123456789abcdef"
+	out := make([]byte, 0, len(b))
+	inStr := false
+	escaped := false
+	for i := 0; i < len(b); i++ {
+		ch := b[i]
+		if !inStr {
+			out = append(out, ch)
+			if ch == '"' {
+				inStr = true
+			}
+			continue
+		}
+		if escaped {
+			out = append(out, ch)
+			escaped = false
+			continue
+		}
+		switch {
+		case ch == '\\':
+			out = append(out, ch)
+			escaped = true
+		case ch == '"':
+			out = append(out, ch)
+			inStr = false
+		case ch < 0x20:
+			switch ch {
+			case '\n':
+				out = append(out, '\\', 'n')
+			case '\r':
+				out = append(out, '\\', 'r')
+			case '\t':
+				out = append(out, '\\', 't')
+			default:
+				out = append(out, '\\', 'u', '0', '0', hex[ch>>4], hex[ch&0xf])
+			}
+		default:
+			out = append(out, ch)
+		}
+	}
+	return out
 }
