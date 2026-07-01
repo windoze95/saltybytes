@@ -320,32 +320,7 @@ func (p *OpenAICompatProvider) CookingQA(ctx context.Context, question string, r
 	})
 }
 
-// --- Unsupported on the light tier ---
-//
-// These TextProvider methods are only ever called on the main (Sonnet)
-// provider. They are stubbed to satisfy the interface and fail loudly if the
-// light tier is ever wired to a path that needs them.
-
-func (p *OpenAICompatProvider) GenerateRecipe(ctx context.Context, req RecipeRequest) (*RecipeResult, error) {
-	return nil, fmt.Errorf("OpenAICompatProvider: %s not supported by the light tier", "GenerateRecipe")
-}
-
-func (p *OpenAICompatProvider) RegenerateRecipe(ctx context.Context, req RegenerateRequest) (*RecipeResult, error) {
-	return nil, fmt.Errorf("OpenAICompatProvider: %s not supported by the light tier", "RegenerateRecipe")
-}
-
-func (p *OpenAICompatProvider) ForkRecipe(ctx context.Context, req ForkRequest) (*RecipeResult, error) {
-	return nil, fmt.Errorf("OpenAICompatProvider: %s not supported by the light tier", "ForkRecipe")
-}
-
-func (p *OpenAICompatProvider) AnalyzeAllergens(ctx context.Context, req AllergenRequest) (*AllergenResult, error) {
-	return nil, fmt.Errorf("OpenAICompatProvider: %s not supported by the light tier", "AnalyzeAllergens")
-}
-
-func (p *OpenAICompatProvider) ClassifyVoiceIntent(ctx context.Context, transcript string) (*VoiceIntent, error) {
-	return nil, fmt.Errorf("OpenAICompatProvider: %s not supported by the light tier", "ClassifyVoiceIntent")
-}
-
-func (p *OpenAICompatProvider) DietaryInterview(ctx context.Context, messages []Message, memberName string) (*DietaryInterviewResult, error) {
-	return nil, fmt.Errorf("OpenAICompatProvider: %s not supported by the light tier", "DietaryInterview")
-}
+// The remaining TextProvider methods (GenerateRecipe, RegenerateRecipe,
+// ForkRecipe, AnalyzeAllergens, ClassifyVoiceIntent, DietaryInterview) are
+// implemented in openai_maintier.go, so this provider can serve the full main
+// tier (e.g. Gemini 2.5 Pro) as well as the light tier.

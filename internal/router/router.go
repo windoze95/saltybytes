@@ -32,6 +32,33 @@ func lightKeysFromConfig(cfg *config.Config) ai.LightKeys {
 	}
 }
 
+// buildMainTextProvider selects the flagship reasoning provider. Defaults to the
+// Anthropic Sonnet provider; MAIN_PROVIDER=gemini/openai/deepseek swaps in a
+// cheaper frontier model (an OpenAI-compatible provider that implements the full
+// TextProvider). gemini defaults to gemini-2.5-pro. Falls back to Sonnet if the
+// alternative can't be built (e.g. a missing key), so the app always boots.
+func buildMainTextProvider(cfg *config.Config, sonnet ai.TextProvider, mw ai.AIMiddleware) ai.TextProvider {
+	switch cfg.EnvVars.MainProvider {
+	case "", "anthropic":
+		return sonnet
+	default:
+		model := cfg.EnvVars.MainModel
+		if model == "" && cfg.EnvVars.MainProvider == "gemini" {
+			model = "gemini-2.5-pro"
+		}
+		spec := ai.LightProviderSpec{Provider: cfg.EnvVars.MainProvider, Model: model, BaseURL: cfg.EnvVars.MainBaseURL}
+		p, err := ai.BuildLightProvider(spec, lightKeysFromConfig(cfg), cfg.Prompts, mw)
+		if err != nil {
+			logger.Get().Warn("main provider unbuildable, using anthropic sonnet",
+				zap.String("provider", cfg.EnvVars.MainProvider), zap.Error(err))
+			return sonnet
+		}
+		logger.Get().Info("main tier provider active",
+			zap.String("provider", cfg.EnvVars.MainProvider), zap.String("model", model))
+		return p
+	}
+}
+
 // SetupRouter sets up the Gin router.
 func SetupRouter(cfg *config.Config, database *gorm.DB) *gin.Engine {
 	// Create default Gin router
@@ -107,11 +134,17 @@ func SetupRouter(cfg *config.Config, database *gorm.DB) *gin.Engine {
 	aiMW := ai.NewMiddlewareChain(&ai.LoggingMiddleware{}, costMW)
 	textProvider.WithMiddleware(aiMW)
 
+	// Main (flagship reasoning) tier: Sonnet by default; a cheaper frontier model
+	// (e.g. gemini-2.5-pro) when MAIN_PROVIDER is set, driving recipe
+	// generation/regen/fork, allergens and dietary. Streaming generation falls
+	// back to non-streaming for non-Anthropic providers (no StreamingTextProvider).
+	mainTextProvider := buildMainTextProvider(cfg, textProvider, aiMW)
+
 	// Recipe-related routes setup
 	recipeRepo := repository.NewRecipeRepository(database)
 	vectorRepo := repository.NewVectorRepository(database)
 	embedProvider := ai.NewEmbeddingProvider(cfg.EnvVars.OpenAIAPIKey)
-	recipeService := service.NewRecipeService(cfg, recipeRepo, textProvider, imageProvider)
+	recipeService := service.NewRecipeService(cfg, recipeRepo, mainTextProvider, imageProvider)
 	recipeService.EmbedProvider = embedProvider
 	recipeService.VectorRepo = vectorRepo
 	recipeHandler := handlers.NewRecipeHandler(recipeService)
@@ -145,7 +178,7 @@ func SetupRouter(cfg *config.Config, database *gorm.DB) *gin.Engine {
 
 	// Import-related routes setup
 	canonicalRepo := repository.NewCanonicalRecipeRepository(database)
-	importService := service.NewImportService(cfg, recipeRepo, recipeService, textProvider, visionProvider, previewProvider)
+	importService := service.NewImportService(cfg, recipeRepo, recipeService, mainTextProvider, visionProvider, previewProvider)
 	importService.CanonicalRepo = canonicalRepo
 	// Portion estimation for imports that lack a serving count (cheap Haiku task)
 	importService.Normalize = service.NewNormalizeService(cfg, previewProvider)
@@ -271,7 +304,7 @@ func SetupRouter(cfg *config.Config, database *gorm.DB) *gin.Engine {
 
 	// Family-related routes setup
 	familyRepo := repository.NewFamilyRepository(database)
-	familyService := service.NewFamilyService(cfg, familyRepo, textProvider)
+	familyService := service.NewFamilyService(cfg, familyRepo, mainTextProvider)
 	familyHandler := handlers.NewFamilyHandler(familyService)
 
 	apiProtected.POST("/family", middleware.AttachUserToContext(userService), familyHandler.CreateFamily)
@@ -284,7 +317,7 @@ func SetupRouter(cfg *config.Config, database *gorm.DB) *gin.Engine {
 
 	// Allergen analysis routes setup
 	allergenRepo := repository.NewAllergenRepository(database)
-	allergenService := service.NewAllergenService(cfg, allergenRepo, familyRepo, recipeRepo, textProvider, subService)
+	allergenService := service.NewAllergenService(cfg, allergenRepo, familyRepo, recipeRepo, mainTextProvider, subService)
 	allergenHandler := handlers.NewAllergenHandler(allergenService)
 
 	apiProtected.POST("/recipes/:recipe_id/allergens/analyze", middleware.AttachUserToContext(userService), allergenHandler.AnalyzeRecipe)
@@ -343,7 +376,9 @@ func SetupRouter(cfg *config.Config, database *gorm.DB) *gin.Engine {
 	go hub.Run()
 	speechProvider := ai.NewWhisperProvider(cfg.EnvVars.OpenAIAPIKey)
 	importService.SpeechProvider = speechProvider
-	voiceService := service.NewVoiceService(cfg, textProvider, speechProvider)
+	// Voice cooking assistant (intent classification + cooking Q&A) runs on the
+	// cheap/fast light tier, not the flagship model.
+	voiceService := service.NewVoiceService(cfg, previewProvider, speechProvider)
 	cookingHandler := ws.NewCookingHandler(hub, cfg.EnvVars.JwtSecretKey, voiceService, recipeRepo)
 	r.GET("/v1/ws/cook/:recipe_id", cookingHandler.HandleCookingSession)
 

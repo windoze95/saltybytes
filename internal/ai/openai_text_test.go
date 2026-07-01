@@ -175,27 +175,6 @@ func TestOpenAICompatProvider_EstimatePortions(t *testing.T) {
 	}
 }
 
-func TestOpenAICompatProvider_StubsReturnError(t *testing.T) {
-	p := NewOpenAICompatProvider("test-key", "", "gpt-4o-mini", "openai", testPrompts())
-	ctx := context.Background()
-
-	if _, err := p.GenerateRecipe(ctx, RecipeRequest{}); err == nil {
-		t.Error("GenerateRecipe: expected error, got nil")
-	} else if !strings.Contains(err.Error(), "not supported by the light tier") {
-		t.Errorf("GenerateRecipe error = %q, want it to mention 'not supported by the light tier'", err.Error())
-	}
-
-	if _, err := p.AnalyzeAllergens(ctx, AllergenRequest{}); err == nil {
-		t.Error("AnalyzeAllergens: expected error, got nil")
-	}
-	if _, err := p.DietaryInterview(ctx, nil, "Alex"); err == nil {
-		t.Error("DietaryInterview: expected error, got nil")
-	}
-	if _, err := p.ClassifyVoiceIntent(ctx, "scroll down"); err == nil {
-		t.Error("ClassifyVoiceIntent: expected error, got nil")
-	}
-}
-
 func TestOpenAICompatProvider_NoToolCallIsError(t *testing.T) {
 	// A response with no tool call must surface a clear error rather than panic.
 	canned := openai.ChatCompletionResponse{
