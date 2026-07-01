@@ -35,9 +35,18 @@ type EnvVars struct {
 	// high-volume preview/extraction tasks. LightModel/LightBaseURL override the
 	// model ID and endpoint; empty LightBaseURL uses the provider's default.
 	// This is the startup default — the dashboard live-switch overrides it via DB.
-	LightProvider  string `env:"LIGHT_PROVIDER" envDefault:"anthropic" optional:"true"`
-	LightModel     string `env:"LIGHT_MODEL" optional:"true"`
-	LightBaseURL   string `env:"LIGHT_BASE_URL" optional:"true"`
+	LightProvider string `env:"LIGHT_PROVIDER" envDefault:"anthropic" optional:"true"`
+	LightModel    string `env:"LIGHT_MODEL" optional:"true"`
+	LightBaseURL  string `env:"LIGHT_BASE_URL" optional:"true"`
+	// Main-tier provider selection: the flagship reasoning tier (recipe
+	// generation/regen/fork, allergens, dietary). Defaults to "anthropic" (Sonnet);
+	// set to "gemini"/"openai"/"deepseek" to A/B a cheaper frontier model
+	// (e.g. gemini-2.5-pro). MainModel/MainBaseURL override the model + endpoint.
+	// Streaming generation gracefully falls back to non-streaming for non-Anthropic
+	// providers. Behavior-preserving while unset.
+	MainProvider   string `env:"MAIN_PROVIDER" envDefault:"anthropic" optional:"true"`
+	MainModel      string `env:"MAIN_MODEL" optional:"true"`
+	MainBaseURL    string `env:"MAIN_BASE_URL" optional:"true"`
 	GeminiAPIKey   string `env:"GEMINI_API_KEY" optional:"true"`
 	DeepSeekAPIKey string `env:"DEEPSEEK_API_KEY" optional:"true"`
 	// AdminToken guards the admin API (the dashboard's live model-switch +
