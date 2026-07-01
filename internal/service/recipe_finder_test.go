@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -305,5 +306,78 @@ func TestFindRecipes_EmptyNeverInvents(t *testing.T) {
 		if len(ev.Items) != 0 {
 			t.Errorf("event %s carried %d fabricated items on the empty path", ev.Type, len(ev.Items))
 		}
+	}
+}
+
+func TestFindRecipes_Offset(t *testing.T) {
+	makeCandidates := func(n int) []ai.SearchResult {
+		out := make([]ai.SearchResult, n)
+		for i := range out {
+			out[i] = ai.SearchResult{
+				Title:       fmt.Sprintf("Recipe %d", i),
+				URL:         fmt.Sprintf("https://example.com/r%d", i),
+				Source:      "example.com",
+				Description: "desc",
+			}
+		}
+		return out
+	}
+
+	// Rank only the first two candidates, so the shortlist is deliberately
+	// shorter than the search page — HasMore must still reflect the search page,
+	// never len(items).
+	ranker := &testutil.MockTextProvider{
+		ExpandAndRankRecipesFunc: func(ctx context.Context, req ai.FinderRankRequest) (*ai.FinderRankResult, error) {
+			return &ai.FinderRankResult{
+				Ranked: []ai.FinderRanking{{Index: 0, Reason: "a"}, {Index: 1, Reason: "b"}},
+			}, nil
+		},
+	}
+
+	cases := []struct {
+		name        string
+		reqOffset   int
+		pageSize    int // results the provider returns
+		wantOffset  int
+		wantHasMore bool
+	}{
+		{name: "full page has more", reqOffset: 10, pageSize: finderSearchCount, wantOffset: 10, wantHasMore: true},
+		{name: "short page no more", reqOffset: 20, pageSize: 3, wantOffset: 20, wantHasMore: false},
+		{name: "negative offset clamped to zero", reqOffset: -5, pageSize: 3, wantOffset: 0, wantHasMore: false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var gotOffset int
+			searchProvider := &testutil.MockSearchProvider{
+				SearchRecipesFunc: func(ctx context.Context, query string, count, offset int) ([]ai.SearchResult, error) {
+					gotOffset = offset
+					return makeCandidates(tc.pageSize), nil
+				},
+			}
+			svc := newFinderService(searchProvider, ranker, &testutil.MockFamilyRepo{})
+			events := runFinder(svc, testutil.TestUser(), FinderRequest{
+				Facets: FinderFacets{Protein: "chicken"},
+				Offset: tc.reqOffset,
+			})
+
+			// The requested offset (clamped) reaches the search provider.
+			if gotOffset != tc.wantOffset {
+				t.Errorf("search offset = %d, want %d", gotOffset, tc.wantOffset)
+			}
+
+			// HasMore rides the shortlist event and reflects the search page.
+			shortlist, ok := firstEventOfType(events, FinderEventShortlist)
+			if !ok {
+				t.Fatalf("no shortlist event (order: %v)", eventTypes(events))
+			}
+			if shortlist.HasMore != tc.wantHasMore {
+				t.Errorf("shortlist.HasMore = %v, want %v", shortlist.HasMore, tc.wantHasMore)
+			}
+			// The shortlist stays shorter than the page (proves HasMore is not len(items)).
+			if len(shortlist.Items) != 2 {
+				t.Errorf("shortlist has %d items, want 2 (ranker returned 2)", len(shortlist.Items))
+			}
+		})
 	}
 }
