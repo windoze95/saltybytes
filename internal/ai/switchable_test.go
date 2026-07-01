@@ -36,6 +36,9 @@ func (s switchStub) CookingQA(context.Context, string, string) (string, error) {
 func (s switchStub) DietaryInterview(context.Context, []Message, string) (*DietaryInterviewResult, error) {
 	return &DietaryInterviewResult{}, nil
 }
+func (s switchStub) ExpandAndRankRecipes(context.Context, FinderRankRequest) (*FinderRankResult, error) {
+	return &FinderRankResult{}, nil
+}
 
 func TestSwitchableTextProvider_Delegates(t *testing.T) {
 	sw := NewSwitchableTextProvider(switchStub{name: "first"})

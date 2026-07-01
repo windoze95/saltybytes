@@ -456,6 +456,63 @@ func (p *OpenAICompatProvider) ClassifyVoiceIntent(ctx context.Context, transcri
 	})
 }
 
+// ExpandAndRankRecipes runs the recipe finder's ranking call via a forced
+// rank_recipes function call. Mirrors AnthropicProvider.ExpandAndRankRecipes —
+// same inline system prompt, wire payload and tool schema — so the light Gemini
+// tier that backs the finder produces a faithful request/result.
+func (p *OpenAICompatProvider) ExpandAndRankRecipes(ctx context.Context, req FinderRankRequest) (*FinderRankResult, error) {
+	op := AIOperation{
+		Name:      "ExpandAndRankRecipes",
+		Provider:  p.providerName,
+		Model:     p.model,
+		StartTime: time.Now(),
+	}
+
+	return runWithMiddleware(ctx, p.middleware, op, func(ctx context.Context) (*FinderRankResult, error) {
+		payload, err := json.Marshal(buildFinderRankPayload(req))
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal finder rank payload: %w", err)
+		}
+
+		chatReq := openai.ChatCompletionRequest{
+			Model:     p.model,
+			MaxTokens: 512,
+			Messages: []openai.ChatCompletionMessage{
+				{Role: openai.ChatMessageRoleSystem, Content: finderRankSystemPrompt},
+				{Role: openai.ChatMessageRoleUser, Content: string(payload)},
+			},
+			Tools: []openai.Tool{{
+				Type: openai.ToolTypeFunction,
+				Function: &openai.FunctionDefinition{
+					Name:        "rank_recipes",
+					Description: "Return the best-matching candidates by index, with rationales, per-member dietary safety, and broadened query suggestions.",
+					Parameters:  schemaObject(rankRecipesProperties()),
+				},
+			}},
+			ToolChoice: openai.ToolChoice{
+				Type:     openai.ToolTypeFunction,
+				Function: openai.ToolFunction{Name: "rank_recipes"},
+			},
+		}
+
+		resp, err := p.createChatCompletion(ctx, chatReq)
+		if err != nil {
+			return nil, err
+		}
+
+		args, err := firstToolCallArguments(resp, "rank_recipes")
+		if err != nil {
+			return nil, err
+		}
+
+		var tr finderRankToolResult
+		if err := json.Unmarshal([]byte(args), &tr); err != nil {
+			return nil, NewAIError(FailureContentParse, fmt.Errorf("failed to unmarshal rank_recipes result: %w", err), "failed to parse rank_recipes tool result")
+		}
+		return toolResultToFinderRankResult(&tr), nil
+	})
+}
+
 // DietaryInterview conducts a multi-turn dietary interview. The model is offered
 // the save_dietary_profile tool with tool choice left on "auto": it keeps asking
 // questions (plain-text turns → Complete=false) until it has gathered enough

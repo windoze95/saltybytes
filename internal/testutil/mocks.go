@@ -25,6 +25,7 @@ type MockTextProvider struct {
 	ExtractRecipeFromTextFunc func(ctx context.Context, text string, unitSystem string) (*ai.RecipeResult, error)
 	CookingQAFunc             func(ctx context.Context, question string, recipeContext string) (string, error)
 	DietaryInterviewFunc      func(ctx context.Context, messages []ai.Message, memberName string) (*ai.DietaryInterviewResult, error)
+	ExpandAndRankRecipesFunc  func(ctx context.Context, req ai.FinderRankRequest) (*ai.FinderRankResult, error)
 }
 
 func (m *MockTextProvider) GenerateRecipe(ctx context.Context, req ai.RecipeRequest) (*ai.RecipeResult, error) {
@@ -88,6 +89,13 @@ func (m *MockTextProvider) DietaryInterview(ctx context.Context, messages []ai.M
 		return m.DietaryInterviewFunc(ctx, messages, memberName)
 	}
 	return nil, fmt.Errorf("DietaryInterview not configured")
+}
+
+func (m *MockTextProvider) ExpandAndRankRecipes(ctx context.Context, req ai.FinderRankRequest) (*ai.FinderRankResult, error) {
+	if m.ExpandAndRankRecipesFunc != nil {
+		return m.ExpandAndRankRecipesFunc(ctx, req)
+	}
+	return nil, fmt.Errorf("ExpandAndRankRecipes not configured")
 }
 
 // --- MockVisionProvider ---

@@ -76,3 +76,7 @@ func (s *SwitchableTextProvider) CookingQA(ctx context.Context, question string,
 func (s *SwitchableTextProvider) DietaryInterview(ctx context.Context, messages []Message, memberName string) (*DietaryInterviewResult, error) {
 	return s.get().DietaryInterview(ctx, messages, memberName)
 }
+
+func (s *SwitchableTextProvider) ExpandAndRankRecipes(ctx context.Context, req FinderRankRequest) (*FinderRankResult, error) {
+	return s.get().ExpandAndRankRecipes(ctx, req)
+}

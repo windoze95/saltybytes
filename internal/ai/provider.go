@@ -18,6 +18,14 @@ type TextProvider interface {
 	ExtractRecipeFromText(ctx context.Context, text string, unitSystem string) (*RecipeResult, error)
 	CookingQA(ctx context.Context, question string, recipeContext string) (string, error)
 	DietaryInterview(ctx context.Context, messages []Message, memberName string) (*DietaryInterviewResult, error)
+	// ExpandAndRankRecipes is the recipe finder's single model call: given the
+	// user's request and a list of REAL search-result candidates, it returns the
+	// candidates (referenced only by their index in the request) in match-ranked
+	// order with one-line rationales and best-effort per-family-member dietary
+	// safety, plus a few broadened query suggestions. Because the output is only
+	// indices into the caller's candidate list, it structurally cannot invent a
+	// recipe.
+	ExpandAndRankRecipes(ctx context.Context, req FinderRankRequest) (*FinderRankResult, error)
 }
 
 // MediaKind identifies whether a MediaInput is a raster image or a PDF document.
@@ -212,4 +220,55 @@ type SearchResult struct {
 type Message struct {
 	Role    string // "user", "assistant", "system"
 	Content string
+}
+
+// FinderCandidate is one real recipe search result offered to the finder's
+// ranker, identified by its Index in the candidate list. The ranker may only
+// refer back to candidates by Index — it is never given a way to emit a recipe
+// that is not in this list.
+type FinderCandidate struct {
+	Index       int
+	Title       string
+	Source      string
+	Description string
+}
+
+// FinderRankRequest is the input to ExpandAndRankRecipes. All of the steering
+// fields are composed server-side (never client-trusted); Candidates are the
+// real search results to rank.
+type FinderRankRequest struct {
+	Facets         string // deterministic summary of the tapped facet chips
+	FreeText       string // optional typed/spoken free text
+	UnitSystem     string
+	CookingContext string
+	Requirements   string
+	DietSummary    string // compacted family dietary needs (allergies, restrictions, preferences)
+	Candidates     []FinderCandidate
+}
+
+// MemberSafety is the model's best-effort dietary assessment of a candidate for
+// a single family member, inferred only from the candidate's title and
+// description. It is advisory (the authoritative per-ingredient allergen check
+// stays on the post-import path), and lights up the existing result-card safety
+// badges.
+type MemberSafety struct {
+	MemberName string `json:"member_name"`
+	Status     string `json:"status"` // "safe" | "caution" | "avoid"
+	Note       string `json:"note"`
+}
+
+// FinderRanking is one ranked candidate: Index into the FinderRankRequest's
+// candidate list, a one-line rationale and per-member safety badges.
+type FinderRanking struct {
+	Index  int
+	Reason string
+	Safety []MemberSafety
+}
+
+// FinderRankResult is the output of ExpandAndRankRecipes: candidates in
+// match-ranked order (by Index into the request's candidate list) plus a few
+// broadened query suggestions the user can fall back to.
+type FinderRankResult struct {
+	Ranked         []FinderRanking
+	BroadenQueries []string
 }
