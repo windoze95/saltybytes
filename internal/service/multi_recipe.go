@@ -908,19 +908,38 @@ func (r *MultiRecipeResolver) extractSingleCard(entry *MultiRecipeEntry, idx int
 		return
 	}
 
-	// AI fallback: strip HTML to text and truncate — raw HTML wastes tokens on
-	// tags/CSS/JS. (Only reached when the page has no matching JSON-LD block.)
-	pageText := stripHTMLToText(pageHTML)
+	// AI fallback (only when the page has no matching JSON-LD block): strip HTML
+	// to text and WINDOW it around the target title, so recipe #15+ of a long
+	// listicle is in-frame instead of being cut off by a naive head truncation.
 	const maxExtractBytes = 30_000
-	if len(pageText) > maxExtractBytes {
-		pageText = pageText[:maxExtractBytes]
-	}
+	pageText := windowAroundTitle(stripHTMLToText(pageHTML), title, maxExtractBytes)
 
-	// Pass the stripped text with a constraint to extract only this recipe by title
-	extractionInput := fmt.Sprintf("Extract ONLY the recipe titled %q from the following page. Ignore all other recipes.\n\n%s", title, pageText)
-	result, err := provider.ExtractRecipeFromText(ctx, extractionInput, ai.UnitSystemPreserveSource)
+	extractionInput := fmt.Sprintf(
+		"The text below is from a web page that lists several recipes. Extract ONLY the single recipe whose title is %q — "+
+			"include ALL of its ingredients (with quantities) and every instruction step, and ignore every other recipe on the page. "+
+			"If that exact title is not present, extract the recipe whose title is closest.\n\n%s",
+		title, pageText)
+
+	// Per-card retry: a single transient fetch/AI blip should not permanently
+	// fail a card.
+	var (
+		result *ai.RecipeResult
+		err    error
+	)
+	for attempt := 1; attempt <= cardExtractAttempts; attempt++ {
+		if result, err = provider.ExtractRecipeFromText(ctx, extractionInput, ai.UnitSystemPreserveSource); err == nil {
+			break
+		}
+		log.Warn("recipe extraction attempt failed", zap.Int("attempt", attempt), zap.Error(err))
+		if attempt < cardExtractAttempts {
+			select {
+			case <-ctx.Done():
+			case <-time.After(time.Duration(attempt) * 400 * time.Millisecond):
+			}
+		}
+	}
 	if err != nil {
-		log.Error("failed to extract individual recipe", zap.Error(err))
+		log.Error("failed to extract individual recipe after retries", zap.Error(err))
 		entry.mu.Lock()
 		entry.Cards[idx].ExtractionStatus = "failed"
 		entry.mu.Unlock()
@@ -933,4 +952,52 @@ func (r *MultiRecipeResolver) extractSingleCard(entry *MultiRecipeEntry, idx int
 	r.finishInlineCard(entry, idx, title, sourceURL, def, result.Hashtags, models.ExtractionHaiku, log)
 
 	log.Info("individual recipe extracted from page text via AI")
+}
+
+// cardExtractAttempts is how many times a card's AI extraction is tried before
+// the card is marked failed (a single transient blip should not be terminal).
+const cardExtractAttempts = 2
+
+// windowAroundTitle returns at most `window` bytes of text centered on the first
+// occurrence of the title (or its longest significant token), so a target recipe
+// deep in a long listicle stays in-frame instead of being cut by a head truncation.
+func windowAroundTitle(text, title string, window int) string {
+	if len(text) <= window {
+		return text
+	}
+	idx := indexOfTitle(text, title)
+	if idx < 0 {
+		return text[:window]
+	}
+	start := idx - window/3 // bias slightly before the heading
+	if start < 0 {
+		start = 0
+	}
+	end := start + window
+	if end > len(text) {
+		end = len(text)
+		if start = end - window; start < 0 {
+			start = 0
+		}
+	}
+	return text[start:end]
+}
+
+// indexOfTitle finds a case-insensitive byte offset of the title in text, falling
+// back to the title's longest significant token. Returns -1 if not found.
+func indexOfTitle(text, title string) int {
+	lt := strings.ToLower(text)
+	if i := strings.Index(lt, strings.ToLower(strings.TrimSpace(title))); i >= 0 {
+		return i
+	}
+	var longest string
+	for _, tok := range slugTokens(title) {
+		if len(tok) > len(longest) {
+			longest = tok
+		}
+	}
+	if longest == "" {
+		return -1
+	}
+	return strings.Index(lt, longest)
 }

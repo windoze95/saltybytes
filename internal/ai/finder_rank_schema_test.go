@@ -46,3 +46,35 @@ func TestBuildFinderRankPayload_IncludesURL(t *testing.T) {
 		t.Errorf("rank payload missing candidate url:\n%s", raw)
 	}
 }
+
+// TestParseFinderRankToolArgs_SalvagesTruncated locks in the truncation-tolerant
+// parse: a rank_recipes tool-args JSON cut off mid-array (output-token overflow)
+// still yields the complete ranked items instead of erroring into fallback.
+func TestParseFinderRankToolArgs_SalvagesTruncated(t *testing.T) {
+	truncated := `{"ranked":[` +
+		`{"index":0,"reason":"a","expand":false,"safety":[]},` +
+		`{"index":1,"reason":"b","expand":true,"expand_priority":7,"safety":[{"member_name":"Kid","status":"avoid","note":"peanuts"}]},` +
+		`{"index":2,"reason":"c partially wr`
+
+	tr, err := parseFinderRankToolArgs(truncated)
+	if err != nil {
+		t.Fatalf("expected salvage, got err: %v", err)
+	}
+	if len(tr.Ranked) != 2 {
+		t.Fatalf("salvaged %d complete items, want 2", len(tr.Ranked))
+	}
+	if tr.Ranked[1].Index != 1 || !tr.Ranked[1].Expand || tr.Ranked[1].ExpandPriority != 7 {
+		t.Errorf("second item = %+v, want index=1 expand=true prio=7", tr.Ranked[1])
+	}
+	if len(tr.Ranked[1].Safety) != 1 || tr.Ranked[1].Safety[0].Status != "avoid" {
+		t.Errorf("second item safety not preserved: %+v", tr.Ranked[1].Safety)
+	}
+}
+
+func TestParseFinderRankToolArgs_StrictWhenValid(t *testing.T) {
+	valid := `{"ranked":[{"index":0,"reason":"x","expand":true,"expand_priority":3,"safety":[]}],"broaden_queries":["more chicken"]}`
+	tr, err := parseFinderRankToolArgs(valid)
+	if err != nil || len(tr.Ranked) != 1 || len(tr.BroadenQueries) != 1 {
+		t.Fatalf("strict parse failed: tr=%+v err=%v", tr, err)
+	}
+}

@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -91,7 +93,7 @@ func TestResolveFromURLWithReason_Reasons(t *testing.T) {
 		}
 	})
 
-	t.Run("bot-blocked + firecrawl fails -> site_blocked", func(t *testing.T) {
+	t.Run("bot-blocked (403) + firecrawl fails -> site_blocked", func(t *testing.T) {
 		resolver := newResolverForTest(singleDetect, nil)
 		resolver.ImportService.HTTPFetchOverride = func(ctx context.Context, url string) ([]byte, int, error) {
 			return []byte("blocked"), http.StatusForbidden, nil
@@ -104,6 +106,92 @@ func TestResolveFromURLWithReason_Reasons(t *testing.T) {
 			t.Errorf("blocked: entry?=%v reason=%q, want nil + site_blocked", entry != nil, reason)
 		}
 	})
+
+	t.Run("rate-limited (429) + firecrawl fails -> site_blocked", func(t *testing.T) {
+		resolver := newResolverForTest(singleDetect, nil)
+		resolver.ImportService.HTTPFetchOverride = func(ctx context.Context, url string) ([]byte, int, error) {
+			return []byte("rate limited"), http.StatusTooManyRequests, nil
+		}
+		resolver.ImportService.FirecrawlFetchOverride = func(ctx context.Context, url string) (string, int, error) {
+			return "", 0, errors.New("firecrawl exhausted")
+		}
+		entry, reason := resolver.ResolveFromURLWithReason(context.Background(), "https://example.com/rl")
+		if entry != nil || reason != "site_blocked" {
+			t.Errorf("429: entry?=%v reason=%q, want nil + site_blocked", entry != nil, reason)
+		}
+	})
+}
+
+// --- Outcome-based escalation + windowing + per-card retry helpers ---
+
+func TestLooksJSRendered(t *testing.T) {
+	jsShell := []byte(`<html><head><title>App</title></head><body><div id="root"></div><script src="/app.js"></script></body></html>`)
+	if !looksJSRendered(jsShell) {
+		t.Errorf("thin JS shell should look JS-rendered")
+	}
+	withJSONLD := []byte(`<html><head><script type="application/ld+json">{"@type":"Recipe"}</script></head><body><div id="root"></div></body></html>`)
+	if looksJSRendered(withJSONLD) {
+		t.Errorf("page with JSON-LD should not be treated as JS-rendered")
+	}
+	thickProse := []byte("<html><body>" + strings.Repeat("This recipe is delicious and easy to make. ", 40) + "</body></html>")
+	if looksJSRendered(thickProse) {
+		t.Errorf("page with substantial prose should not be treated as JS-rendered")
+	}
+}
+
+func TestWindowAroundTitle(t *testing.T) {
+	// Target sits well past a naive 30 KB head truncation.
+	head := strings.Repeat("filler alpha beta gamma ", 3000) // ~72 KB
+	text := head + " TARGET RECIPE TITLE with 2 cups flour and 3 eggs " + strings.Repeat(" tail", 200)
+
+	win := windowAroundTitle(text, "Target Recipe Title", 30_000)
+	if len(win) > 30_000 {
+		t.Errorf("window len = %d, want <= 30000", len(win))
+	}
+	if !strings.Contains(win, "TARGET RECIPE TITLE") {
+		t.Errorf("window did not include the target title (naive head-truncation would have missed it)")
+	}
+
+	short := "just a little text"
+	if windowAroundTitle(short, "anything", 30_000) != short {
+		t.Errorf("short text should be returned unchanged")
+	}
+}
+
+func TestExtractSingleCard_RetriesTransientAIError(t *testing.T) {
+	var attempts sync.Map // title -> *int32
+	preview := &testutil.MockTextProvider{
+		CookingQAFunc: func(ctx context.Context, q, rc string) (string, error) { return "SINGLE", nil },
+		ExtractRecipeFromTextFunc: func(ctx context.Context, text, unitSystem string) (*ai.RecipeResult, error) {
+			var key string
+			for _, tt := range []string{"Recipe A", "Recipe B"} {
+				if strings.Contains(text, tt) {
+					key = tt
+				}
+			}
+			n, _ := attempts.LoadOrStore(key, new(int32))
+			// Fail the first attempt for each card; succeed on the retry.
+			if atomic.AddInt32(n.(*int32), 1) == 1 {
+				return nil, errors.New("transient blip")
+			}
+			return testutil.TestRecipeResult(), nil
+		},
+	}
+	resolver := newResolverForTest(preview, nil)
+
+	// multiRecipeHTML JSON-LD has no ingredients, so extraction falls to the AI
+	// path — exactly where the per-card retry lives.
+	entry := resolver.ResolveFromHTML(context.Background(), "https://example.com/roundup", multiRecipeHTML("Recipe A", "Recipe B"))
+	if entry == nil {
+		t.Fatal("expected a multi-recipe entry")
+	}
+	waitResolved(t, entry)
+
+	for _, c := range entry.GetCards() {
+		if c.ExtractionStatus != "done" {
+			t.Errorf("card %q status = %q, want done (retry should recover a transient error)", c.Title, c.ExtractionStatus)
+		}
+	}
 }
 
 // --- LIVE (gated): real roundup extraction ---

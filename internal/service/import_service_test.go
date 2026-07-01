@@ -812,7 +812,7 @@ func TestIsBotBlockStatus(t *testing.T) {
 		{402, true},
 		{403, true},
 		{404, false},
-		{429, false},
+		{429, true}, // 429 rate-limit now escalates to Firecrawl (different infra/IP)
 		{500, false},
 		{502, false},
 		{503, true},

@@ -394,6 +394,7 @@ For EVERY candidate you return you MUST set:
     * Title signals: a leading count or superlative, e.g. "40 Easy Weeknight Dinner Recipes", "23 Best ...", "Our Favorite ... Recipes", "... Ideas".
     * URL-path signals: segments like /gallery/, /roundup/, /collection/, /category/, or a slug like /40-easy-weeknight-dinners or /best-...-recipes.
   A single dish's page (e.g. /recipe/lemon-garlic-chicken) is expand=false. When expand=true, also set expand_priority (higher = a richer, more on-topic collection to mine).
+  Examples: {"title":"40 Easy Weeknight Dinner Recipes","url":".../gallery/40-easy-weeknight-dinners"} -> expand=true; {"title":"Our 25 Best Chicken Dinners","url":".../roundup/best-chicken-dinners"} -> expand=true; {"title":"Creamy Tomato Basil Soup","url":".../recipe/creamy-tomato-basil-soup"} -> expand=false.
 
 For each candidate you return also:
 - Give one short sentence (reason) explaining why it fits — for a collection, say what it collects.
@@ -643,20 +644,75 @@ func buildFinderRankPayload(req FinderRankRequest) finderRankPayload {
 	}
 }
 
+// finderRankItem is one ranked candidate in the rank_recipes tool result.
+type finderRankItem struct {
+	Index  int    `json:"index"`
+	Reason string `json:"reason"`
+	Safety []struct {
+		MemberName string `json:"member_name"`
+		Status     string `json:"status"`
+		Note       string `json:"note"`
+	} `json:"safety"`
+	Expand         bool `json:"expand"`
+	ExpandPriority int  `json:"expand_priority"`
+}
+
 // finderRankToolResult is the JSON structure returned by the rank_recipes tool call.
 type finderRankToolResult struct {
-	Ranked []struct {
-		Index  int    `json:"index"`
-		Reason string `json:"reason"`
-		Safety []struct {
-			MemberName string `json:"member_name"`
-			Status     string `json:"status"`
-			Note       string `json:"note"`
-		} `json:"safety"`
-		Expand         bool `json:"expand"`
-		ExpandPriority int  `json:"expand_priority"`
-	} `json:"ranked"`
-	BroadenQueries []string `json:"broaden_queries"`
+	Ranked         []finderRankItem `json:"ranked"`
+	BroadenQueries []string         `json:"broaden_queries"`
+}
+
+// parseFinderRankToolArgs parses the rank_recipes tool arguments, tolerating a
+// truncated JSON body (output-token overflow). It first tries a strict parse; on
+// failure it salvages the complete ranked items (and any broaden queries) from
+// the partial JSON, so a marginal overflow degrades to fewer ranked results
+// rather than erroring the whole call into an unranked, flag-less fallback.
+func parseFinderRankToolArgs(args string) (*finderRankToolResult, error) {
+	var tr finderRankToolResult
+	if err := json.Unmarshal([]byte(args), &tr); err == nil {
+		return &tr, nil
+	}
+	salvaged := salvageFinderRankArgs(args)
+	if len(salvaged.Ranked) == 0 {
+		return nil, NewAIError(FailureContentParse, errors.New("rank_recipes tool args unparseable and unsalvageable"), "failed to parse rank_recipes tool result")
+	}
+	return salvaged, nil
+}
+
+// salvageFinderRankArgs recovers as many complete ranked items (and broaden
+// queries) as possible from a truncated rank_recipes tool-args JSON string.
+func salvageFinderRankArgs(args string) *finderRankToolResult {
+	out := &finderRankToolResult{Ranked: decodeJSONArrayPrefix[finderRankItem](args, `"ranked"`)}
+	out.BroadenQueries = decodeJSONArrayPrefix[string](args, `"broaden_queries"`)
+	return out
+}
+
+// decodeJSONArrayPrefix finds the JSON array introduced by key in a (possibly
+// truncated) JSON string and decodes as many complete elements as possible,
+// stopping at the first incomplete element.
+func decodeJSONArrayPrefix[T any](s, key string) []T {
+	ki := strings.Index(s, key)
+	if ki < 0 {
+		return nil
+	}
+	br := strings.IndexByte(s[ki:], '[')
+	if br < 0 {
+		return nil
+	}
+	dec := json.NewDecoder(strings.NewReader(s[ki+br:]))
+	if _, err := dec.Token(); err != nil { // consume '['
+		return nil
+	}
+	var out []T
+	for dec.More() {
+		var item T
+		if err := dec.Decode(&item); err != nil {
+			break // incomplete final element — keep what completed
+		}
+		out = append(out, item)
+	}
+	return out
 }
 
 func toolResultToFinderRankResult(tr *finderRankToolResult) *FinderRankResult {
@@ -930,11 +986,11 @@ func extractFinderRankFromToolUse(msg *anthropic.Message) (*FinderRankResult, er
 			if err != nil {
 				return nil, fmt.Errorf("failed to marshal tool input: %w", err)
 			}
-			var tr finderRankToolResult
-			if err := json.Unmarshal(raw, &tr); err != nil {
-				return nil, fmt.Errorf("failed to parse rank_recipes tool result: %w", err)
+			tr, err := parseFinderRankToolArgs(string(raw))
+			if err != nil {
+				return nil, err
 			}
-			return toolResultToFinderRankResult(&tr), nil
+			return toolResultToFinderRankResult(tr), nil
 		}
 	}
 	return nil, errors.New("no tool_use block found in Claude response")
@@ -1511,10 +1567,13 @@ func (p *AnthropicProvider) ExpandAndRankRecipes(ctx context.Context, req Finder
 
 		params := anthropic.MessageNewParams{
 			Model: p.model,
-			// 1024 (not 512): the rank_recipes tool JSON for ~10 candidates with
-			// per-item index/expand/reason/safety can exceed 512 output tokens and
-			// truncate, which fails the parse and drops the collection flags.
-			MaxTokens: 1024,
+			// 2048 (not 512): the rank_recipes tool JSON for ~10 candidates with
+			// per-item reason + per-member safety[] + expand/expand_priority +
+			// broaden_queries runs ~1000-1500 output tokens with any family
+			// profile. 512 truncated it → parse error → unranked, flag-less,
+			// reason-less fallback (the "feels like plain search" bug). The parse
+			// is also truncation-tolerant now as a backstop.
+			MaxTokens: 2048,
 			System:    buildCachedSystemPrompt(finderRankSystemPrompt, ""),
 			Messages: []anthropic.MessageParam{
 				newUserMessage(anthropic.NewTextBlock(string(payload))),
