@@ -25,6 +25,8 @@ var DefaultPricing = PricingTable{
 	"gpt-4.1-nano":          {InputPerM: 0.10, OutputPerM: 0.40, CacheInputPerM: 0.025},
 	"gemini-2.0-flash":      {InputPerM: 0.10, OutputPerM: 0.40, CacheInputPerM: 0.025},
 	"gemini-2.0-flash-lite": {InputPerM: 0.075, OutputPerM: 0.30, CacheInputPerM: 0.0},
+	"gemini-2.5-flash":      {InputPerM: 0.30, OutputPerM: 2.50, CacheInputPerM: 0.075},
+	"gemini-3.5-flash":      {InputPerM: 1.50, OutputPerM: 9.00, CacheInputPerM: 0.375},
 	"deepseek-chat":         {InputPerM: 0.27, OutputPerM: 1.10, CacheInputPerM: 0.07},
 }
 
