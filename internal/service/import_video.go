@@ -26,6 +26,11 @@ type VideoFetcher interface {
 type VideoFrameSampler interface {
 	Sample(ctx context.Context, mediaURL string, durationMS int) ([][]byte, error)
 	ExtractAudio(ctx context.Context, mediaURL string) ([]byte, error)
+	// DownloadVideo fetches the media into memory (native path), rejecting clips
+	// larger than maxBytes. ThumbnailFromVideo cuts a single hero frame from those
+	// bytes since the native path samples no frames.
+	DownloadVideo(ctx context.Context, mediaURL string, maxBytes int64) ([]byte, error)
+	ThumbnailFromVideo(ctx context.Context, videoData []byte) ([]byte, error)
 }
 
 const (
@@ -40,6 +45,9 @@ const (
 	whisperCostPerMin = 0.006
 	// videoProcessTimeout bounds the whole async pipeline for one fresh import.
 	videoProcessTimeout = 5 * time.Minute
+	// maxNativeVideoBytes caps clips sent to the native video provider (inlined
+	// into the request); larger clips fall back to frame sampling.
+	maxNativeVideoBytes = 18 << 20 // 18 MiB
 )
 
 // estimateVideoCost approximates the metered spend of a fresh video extraction.
@@ -199,6 +207,7 @@ func (s *ImportService) processVideoImport(jobID uint, rawURL string, user *mode
 
 	var chosen *ai.RecipeResult
 	var frames [][]byte
+	var nativeVideoBytes []byte
 	usedWhisper := false
 
 	if meta.MediaURL != "" {
@@ -208,39 +217,60 @@ func (s *ImportService) processVideoImport(jobID uint, rawURL string, user *mode
 			fail("no_media", "the video could not be downloaded", err)
 			return
 		}
-		// Scene-change frames catch on-screen text and flashy cuts; even
-		// sampling backs it up.
-		sampled, sErr := s.VideoFrameSampler.Sample(ctx, meta.MediaURL, meta.DurationMS)
-		if sErr != nil {
-			fail("sampling_failed", "could not process the video", sErr)
-			return
-		}
-		frames = sampled
 
-		media := make([]ai.MediaInput, 0, len(frames))
-		for _, f := range frames {
-			media = append(media, ai.MediaInput{Data: f, Kind: ai.MediaImage})
+		// Native path: ingest the whole clip (video + audio) in one pass — far
+		// cheaper than frames on the vision model, and it reads the narration so
+		// the Whisper fallback isn't needed. Any failure or an oversized clip
+		// falls through to frame sampling below.
+		if s.VideoProvider != nil {
+			if videoData, dlErr := s.VideoFrameSampler.DownloadVideo(ctx, meta.MediaURL, maxNativeVideoBytes); dlErr != nil {
+				log.Info("native video unavailable for this clip, using frames", zap.Error(dlErr))
+			} else if results, nErr := s.VideoProvider.ExtractRecipesFromVideo(ctx, videoData, "video/mp4", contextText, unitSystem, user.Personalization.Requirements); nErr != nil || len(results) == 0 {
+				log.Info("native video extraction failed, using frames", zap.Error(nErr))
+			} else {
+				chosen = results[0]
+				nativeVideoBytes = videoData
+				log.Info("video import used native gemini video extraction", zap.String("video_key", videoKey))
+			}
 		}
-		results, eErr := s.VisionProvider.ExtractRecipesFromMedia(ctx, media, contextText, unitSystem, user.Personalization.Requirements)
-		if eErr != nil || len(results) == 0 {
-			fail("extraction_failed", "could not find a recipe in this video", eErr)
-			return
-		}
-		chosen = results[0] // a single video yields a single recipe
 
-		// Last-resort Whisper: only when the frames+caption pass yielded a
-		// plausible-but-thin recipe AND the scraper gave no transcript to work
-		// with. The spoken audio is then the only untapped source of detail.
-		// Gated this tightly so Whisper never runs on the common (good) path
-		// nor on videos that likely have no recipe at all.
-		if s.SpeechProvider != nil && meta.Transcript == "" && recipeNeedsMoreContext(chosen) {
-			if audio, aErr := s.VideoFrameSampler.ExtractAudio(ctx, meta.MediaURL); aErr == nil && len(audio) > 0 {
-				if transcript, tErr := s.SpeechProvider.TranscribeAudio(ctx, audio, "m4a"); tErr == nil && strings.TrimSpace(transcript) != "" {
-					meta.Transcript = transcript
-					if results2, e2 := s.VisionProvider.ExtractRecipesFromMedia(ctx, media, buildVideoContext(meta), unitSystem, user.Personalization.Requirements); e2 == nil && len(results2) > 0 {
-						chosen = results2[0]
-						usedWhisper = true
-						log.Info("video import used the whisper fallback for extra context", zap.String("video_key", videoKey))
+		// Frame sampling path — the default, and the fallback when native is off
+		// or unavailable for this clip. Scene-change frames catch on-screen text
+		// and flashy cuts; even sampling backs it up.
+		if chosen == nil {
+			sampled, sErr := s.VideoFrameSampler.Sample(ctx, meta.MediaURL, meta.DurationMS)
+			if sErr != nil {
+				fail("sampling_failed", "could not process the video", sErr)
+				return
+			}
+			frames = sampled
+
+			media := make([]ai.MediaInput, 0, len(frames))
+			for _, f := range frames {
+				media = append(media, ai.MediaInput{Data: f, Kind: ai.MediaImage})
+			}
+			results, eErr := s.VisionProvider.ExtractRecipesFromMedia(ctx, media, contextText, unitSystem, user.Personalization.Requirements)
+			if eErr != nil || len(results) == 0 {
+				fail("extraction_failed", "could not find a recipe in this video", eErr)
+				return
+			}
+			chosen = results[0] // a single video yields a single recipe
+
+			// Last-resort Whisper: only when the frames+caption pass yielded a
+			// plausible-but-thin recipe AND the scraper gave no transcript to work
+			// with. The spoken audio is then the only untapped source of detail.
+			// Gated this tightly so Whisper never runs on the common (good) path
+			// nor on videos that likely have no recipe at all. (The native path
+			// already reads the audio, so it skips this.)
+			if s.SpeechProvider != nil && meta.Transcript == "" && recipeNeedsMoreContext(chosen) {
+				if audio, aErr := s.VideoFrameSampler.ExtractAudio(ctx, meta.MediaURL); aErr == nil && len(audio) > 0 {
+					if transcript, tErr := s.SpeechProvider.TranscribeAudio(ctx, audio, "m4a"); tErr == nil && strings.TrimSpace(transcript) != "" {
+						meta.Transcript = transcript
+						if results2, e2 := s.VisionProvider.ExtractRecipesFromMedia(ctx, media, buildVideoContext(meta), unitSystem, user.Personalization.Requirements); e2 == nil && len(results2) > 0 {
+							chosen = results2[0]
+							usedWhisper = true
+							log.Info("video import used the whisper fallback for extra context", zap.String("video_key", videoKey))
+						}
 					}
 				}
 			}
@@ -266,9 +296,18 @@ func (s *ImportService) processVideoImport(jobID uint, rawURL string, user *mode
 	def.SourceURL = rawURL
 	ensureUnitSystem(&def)
 
-	// Use a representative frame as the recipe thumbnail (best-effort; the text
-	// path has no frames, so this is a no-op there).
-	thumbnailURL := s.uploadVideoThumbnail(ctx, frames, videoKey)
+	// Hero image (best-effort): the middle sampled frame, or — on the native
+	// path, which samples no frames — a single frame cut from the video bytes.
+	// The text path has neither, so this is a no-op there.
+	var thumbFrame []byte
+	if len(frames) > 0 {
+		thumbFrame = frames[len(frames)/2]
+	} else if len(nativeVideoBytes) > 0 {
+		if tf, tErr := s.VideoFrameSampler.ThumbnailFromVideo(ctx, nativeVideoBytes); tErr == nil {
+			thumbFrame = tf
+		}
+	}
+	thumbnailURL := s.uploadVideoThumbnail(ctx, thumbFrame, videoKey)
 
 	_, recipeID, createErr := s.createImportedRecipe(ctx, &def, user, models.RecipeTypeImportVideo, rawURL, thumbnailURL, nil, chosen.Hashtags, chosen.PromptVersion)
 	if createErr != nil {
@@ -303,14 +342,13 @@ func (s *ImportService) processVideoImport(jobID uint, rawURL string, user *mode
 	log.Info("video import complete", zap.Int("frames", len(frames)), zap.Float64("cost_usd", job.CostUSD))
 }
 
-// uploadVideoThumbnail stores a representative frame (the middle one — past any
-// intro, before any outro) as the recipe's hero image and returns its URL.
-// Best-effort: returns "" on any failure so the import still succeeds.
-func (s *ImportService) uploadVideoThumbnail(ctx context.Context, frames [][]byte, videoKey string) string {
-	if len(frames) == 0 {
+// uploadVideoThumbnail stores the given representative frame as the recipe's
+// hero image and returns its URL. Best-effort: returns "" on empty input or any
+// failure so the import still succeeds.
+func (s *ImportService) uploadVideoThumbnail(ctx context.Context, frame []byte, videoKey string) string {
+	if len(frame) == 0 {
 		return ""
 	}
-	frame := frames[len(frames)/2]
 	if s.ThumbnailUploader != nil {
 		url, err := s.ThumbnailUploader(ctx, frame, videoKey)
 		if err != nil {

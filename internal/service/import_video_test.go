@@ -28,12 +28,17 @@ func (f *fakeVideoFetcher) FetchVideo(ctx context.Context, rawURL string) (*vide
 }
 
 type fakeFrameSampler struct {
-	frames     [][]byte
-	err        error
-	calls      int
-	audio      []byte
-	audioErr   error
-	audioCalls int
+	frames        [][]byte
+	err           error
+	calls         int
+	audio         []byte
+	audioErr      error
+	audioCalls    int
+	videoData     []byte
+	downloadErr   error
+	downloadCalls int
+	thumb         []byte
+	thumbErr      error
 }
 
 func (f *fakeFrameSampler) Sample(ctx context.Context, mediaURL string, durationMS int) ([][]byte, error) {
@@ -44,6 +49,116 @@ func (f *fakeFrameSampler) Sample(ctx context.Context, mediaURL string, duration
 func (f *fakeFrameSampler) ExtractAudio(ctx context.Context, mediaURL string) ([]byte, error) {
 	f.audioCalls++
 	return f.audio, f.audioErr
+}
+
+func (f *fakeFrameSampler) DownloadVideo(ctx context.Context, mediaURL string, maxBytes int64) ([]byte, error) {
+	f.downloadCalls++
+	return f.videoData, f.downloadErr
+}
+
+func (f *fakeFrameSampler) ThumbnailFromVideo(ctx context.Context, videoData []byte) ([]byte, error) {
+	return f.thumb, f.thumbErr
+}
+
+type fakeVideoProvider struct {
+	results []*ai.RecipeResult
+	err     error
+	calls   int
+	gotCtx  string
+}
+
+func (f *fakeVideoProvider) ExtractRecipesFromVideo(ctx context.Context, videoData []byte, mimeType, contextText, unitSystem, requirements string) ([]*ai.RecipeResult, error) {
+	f.calls++
+	f.gotCtx = contextText
+	return f.results, f.err
+}
+
+// When a native VideoProvider is configured and succeeds, the whole clip is
+// ingested natively and the frame-sampling + vision path is skipped entirely.
+func TestVideoImport_NativeVideoUsed(t *testing.T) {
+	repo := testutil.NewMockRecipeRepo()
+	vrepo := testutil.NewMockVideoImportRepo()
+	svc := newVideoTestService(repo, vrepo)
+	svc.VideoFetcher = &fakeVideoFetcher{meta: tiktokMeta()}
+	// Frames are available but must NOT be used when native succeeds.
+	sampler := &fakeFrameSampler{frames: [][]byte{{0xFF, 0xD8, 0x01}}, videoData: []byte("FAKE_MP4"), thumb: []byte{0xFF, 0xD8, 0xAA}}
+	svc.VideoFrameSampler = sampler
+	native := &fakeVideoProvider{results: []*ai.RecipeResult{testutil.TestRecipeResult()}}
+	svc.VideoProvider = native
+
+	visionCalls := 0
+	svc.VisionProvider = &testutil.MockVisionProvider{
+		ExtractRecipesFromMediaFunc: func(ctx context.Context, media []ai.MediaInput, contextText, unitSystem, requirements string) ([]*ai.RecipeResult, error) {
+			visionCalls++
+			return []*ai.RecipeResult{testutil.TestRecipeResult()}, nil
+		},
+	}
+
+	job, err := svc.StartVideoImport(context.Background(), "https://www.tiktok.com/@chef/video/7499229683859426602", testutil.TestUser())
+	if err != nil {
+		t.Fatalf("StartVideoImport error: %v", err)
+	}
+	done := waitForVideoJob(t, svc, job.ID)
+	if done.Status != models.VideoImportDone {
+		t.Fatalf("final status = %q (error %q), want done", done.Status, done.Error)
+	}
+	if native.calls != 1 {
+		t.Errorf("native provider calls = %d, want 1", native.calls)
+	}
+	if sampler.downloadCalls != 1 {
+		t.Errorf("DownloadVideo calls = %d, want 1", sampler.downloadCalls)
+	}
+	if sampler.calls != 0 {
+		t.Errorf("frame Sample called %d times, want 0 (native should win)", sampler.calls)
+	}
+	if visionCalls != 0 {
+		t.Errorf("vision called %d times, want 0 (native should win)", visionCalls)
+	}
+	if len(repo.Recipes) != 1 {
+		t.Errorf("expected 1 recipe saved, got %d", len(repo.Recipes))
+	}
+}
+
+// When native extraction errors, the pipeline falls back to frame sampling +
+// the vision provider, so the import still succeeds.
+func TestVideoImport_NativeFallsBackToFrames(t *testing.T) {
+	repo := testutil.NewMockRecipeRepo()
+	vrepo := testutil.NewMockVideoImportRepo()
+	svc := newVideoTestService(repo, vrepo)
+	svc.VideoFetcher = &fakeVideoFetcher{meta: tiktokMeta()}
+	sampler := &fakeFrameSampler{frames: [][]byte{{0xFF, 0xD8, 0x01}, {0xFF, 0xD8, 0x02}}, videoData: []byte("FAKE_MP4")}
+	svc.VideoFrameSampler = sampler
+	native := &fakeVideoProvider{err: errors.New("native extraction unavailable")}
+	svc.VideoProvider = native
+
+	visionCalls := 0
+	svc.VisionProvider = &testutil.MockVisionProvider{
+		ExtractRecipesFromMediaFunc: func(ctx context.Context, media []ai.MediaInput, contextText, unitSystem, requirements string) ([]*ai.RecipeResult, error) {
+			visionCalls++
+			return []*ai.RecipeResult{testutil.TestRecipeResult()}, nil
+		},
+	}
+
+	job, err := svc.StartVideoImport(context.Background(), "https://www.tiktok.com/@chef/video/7499229683859426602", testutil.TestUser())
+	if err != nil {
+		t.Fatalf("StartVideoImport error: %v", err)
+	}
+	done := waitForVideoJob(t, svc, job.ID)
+	if done.Status != models.VideoImportDone {
+		t.Fatalf("final status = %q (error %q), want done", done.Status, done.Error)
+	}
+	if native.calls != 1 {
+		t.Errorf("native provider calls = %d, want 1", native.calls)
+	}
+	if sampler.calls != 1 {
+		t.Errorf("frame Sample calls = %d, want 1 (fallback)", sampler.calls)
+	}
+	if visionCalls != 1 {
+		t.Errorf("vision calls = %d, want 1 (fallback)", visionCalls)
+	}
+	if len(repo.Recipes) != 1 {
+		t.Errorf("expected 1 recipe saved, got %d", len(repo.Recipes))
+	}
 }
 
 func tiktokMeta() *video.VideoMeta {

@@ -172,6 +172,81 @@ func (s *FrameSampler) ExtractAudio(ctx context.Context, mediaURL string) ([]byt
 	return b, nil
 }
 
+// DownloadVideo fetches the media into memory (via the same SSRF-safe client and
+// download seam as Sample), rejecting anything larger than maxBytes so the caller
+// can fall back to frame sampling for oversized clips. Used by the native-video
+// path, which needs the raw bytes to inline into the model request.
+func (s *FrameSampler) DownloadVideo(ctx context.Context, mediaURL string, maxBytes int64) ([]byte, error) {
+	dir, err := os.MkdirTemp("", "vidnative-*")
+	if err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(dir)
+
+	videoPath := filepath.Join(dir, "video.mp4")
+	dl := s.download
+	if dl == nil {
+		dl = s.httpDownload
+	}
+	if err := dl(ctx, mediaURL, videoPath); err != nil {
+		return nil, fmt.Errorf("download video: %w", err)
+	}
+	fi, err := os.Stat(videoPath)
+	if err != nil {
+		return nil, err
+	}
+	if fi.Size() > maxBytes {
+		return nil, fmt.Errorf("video is %d bytes, exceeds native inline limit %d", fi.Size(), maxBytes)
+	}
+	b, err := os.ReadFile(videoPath)
+	if err != nil {
+		return nil, err
+	}
+	if len(b) == 0 {
+		return nil, errors.New("downloaded an empty video")
+	}
+	return b, nil
+}
+
+// ThumbnailFromVideo extracts a single representative JPEG frame (~1s in, past
+// any black intro) from already-downloaded video bytes, for use as the recipe's
+// hero image on the native path where no frame set is produced. Best-effort.
+func (s *FrameSampler) ThumbnailFromVideo(ctx context.Context, videoData []byte) ([]byte, error) {
+	dir, err := os.MkdirTemp("", "vidthumb-*")
+	if err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(dir)
+
+	inPath := filepath.Join(dir, "video.mp4")
+	if err := os.WriteFile(inPath, videoData, 0o600); err != nil {
+		return nil, err
+	}
+	outPath := filepath.Join(dir, "thumb.jpg")
+	run := s.runFFmpeg
+	if run == nil {
+		run = realFFmpeg
+	}
+	if err := run(ctx, thumbnailArgs(inPath, outPath)); err != nil {
+		return nil, fmt.Errorf("ffmpeg thumbnail extraction: %w", err)
+	}
+	b, err := os.ReadFile(outPath)
+	if err != nil {
+		return nil, err
+	}
+	if len(b) == 0 {
+		return nil, errors.New("extracted empty thumbnail")
+	}
+	return b, nil
+}
+
+func thumbnailArgs(inPath, outPath string) []string {
+	return []string{
+		"-hide_banner", "-loglevel", "error", "-ss", "1", "-i", inPath,
+		"-frames:v", "1", "-vf", fmt.Sprintf("scale=%d:-1", frameWidth), "-y", outPath,
+	}
+}
+
 func audioArgs(inPath, outPath string) []string {
 	return []string{
 		"-hide_banner", "-loglevel", "error", "-i", inPath,
