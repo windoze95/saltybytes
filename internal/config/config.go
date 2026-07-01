@@ -50,6 +50,11 @@ type EnvVars struct {
 	// per-video when the clip is too large to inline or native extraction fails.
 	VideoNativeGemini bool   `env:"VIDEO_NATIVE_GEMINI" optional:"true"`
 	GeminiVideoModel  string `env:"GEMINI_VIDEO_MODEL" envDefault:"gemini-2.5-flash" optional:"true"`
+	// VisionNativeGemini routes image/PDF recipe extraction (photo + files import,
+	// and the video frame-sampling fallback) through Gemini instead of Sonnet.
+	// Requires GEMINI_API_KEY. Falls back to the Sonnet vision provider when off.
+	VisionNativeGemini bool   `env:"VISION_NATIVE_GEMINI" optional:"true"`
+	GeminiVisionModel  string `env:"GEMINI_VISION_MODEL" envDefault:"gemini-2.5-flash" optional:"true"`
 	// PromptsPath overrides the location of the prompts YAML file, which is
 	// cwd-relative by default and only resolves from the Docker workdir.
 	PromptsPath     string `env:"PROMPTS_PATH" envDefault:"configs/prompts.yaml" optional:"true"`

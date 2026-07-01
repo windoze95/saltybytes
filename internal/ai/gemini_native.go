@@ -261,16 +261,24 @@ func firstFunctionCallArgs(resp *geminiGenerateContentResponse, name string) (js
 	return nil, false
 }
 
-// generateContent POSTs the request to {baseURL}/models/{model}:generateContent
-// and returns the parsed response. It retries a bounded number of times on HTTP
-// 429 / 5xx (and transport errors) with a short, context-honoring backoff.
+// generateContent delegates to the shared geminiGenerateContent helper using
+// this provider's injected client and endpoint configuration.
 func (p *GeminiVideoProvider) generateContent(ctx context.Context, reqBody geminiGenerateContentRequest) (*geminiGenerateContentResponse, error) {
+	return geminiGenerateContent(ctx, p.httpClient(), p.baseURL, p.apiKey, p.model, reqBody)
+}
+
+// geminiGenerateContent POSTs the request to
+// {baseURL}/models/{model}:generateContent and returns the parsed response. It
+// retries a bounded number of times on HTTP 429 / 5xx (and transport errors)
+// with a short, context-honoring backoff. Shared by the native Gemini video and
+// vision providers.
+func geminiGenerateContent(ctx context.Context, httpClient *http.Client, baseURL, apiKey, model string, reqBody geminiGenerateContentRequest) (*geminiGenerateContentResponse, error) {
 	payload, err := json.Marshal(reqBody)
 	if err != nil {
 		return nil, fmt.Errorf("marshal gemini request: %w", err)
 	}
 
-	endpoint := fmt.Sprintf("%s/models/%s:generateContent", p.baseURL, p.model)
+	endpoint := fmt.Sprintf("%s/models/%s:generateContent", baseURL, model)
 
 	const maxAttempts = 3
 	var lastErr error
@@ -287,9 +295,9 @@ func (p *GeminiVideoProvider) generateContent(ctx context.Context, reqBody gemin
 			return nil, err
 		}
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("x-goog-api-key", p.apiKey)
+		req.Header.Set("x-goog-api-key", apiKey)
 
-		resp, err := p.httpClient().Do(req)
+		resp, err := httpClient.Do(req)
 		if err != nil {
 			lastErr = fmt.Errorf("gemini request failed: %w", err)
 			continue
