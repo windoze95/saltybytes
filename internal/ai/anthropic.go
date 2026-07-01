@@ -391,6 +391,7 @@ Select the candidates that best match the request and return them, best match fi
 For each candidate you return:
 - Give one short sentence (reason) explaining why it fits the request.
 - Give a best-effort dietary safety assessment for each family member mentioned in the dietary needs, judging ONLY from the candidate's title and description: "safe" if nothing conflicts, "caution" if it might conflict or is unclear, "avoid" if it clearly conflicts with an allergy or restriction. Keep the note short. Omit members you cannot assess.
+- If the candidate is a collection/listicle/roundup page indexing MANY recipes (e.g. "23 Best Weeknight Dinners") rather than a single recipe, set expand=true and expand_priority (higher = more worth digging into); otherwise set expand=false.
 
 Also suggest 2-4 broadened search queries (broaden_queries) the user could try to get more options.
 
@@ -422,6 +423,8 @@ func rankRecipesProperties() map[string]interface{} {
 							},
 						},
 					},
+					"expand":          map[string]interface{}{"type": "boolean", "description": "True if this candidate is a collection/listicle/roundup page of MANY recipes (not a single recipe) worth digging into."},
+					"expand_priority": map[string]interface{}{"type": "integer", "description": "When expand is true, how promising this collection is to dig into (higher = more promising). 0 otherwise."},
 				},
 			},
 		},
@@ -634,6 +637,8 @@ type finderRankToolResult struct {
 			Status     string `json:"status"`
 			Note       string `json:"note"`
 		} `json:"safety"`
+		Expand         bool `json:"expand"`
+		ExpandPriority int  `json:"expand_priority"`
 	} `json:"ranked"`
 	BroadenQueries []string `json:"broaden_queries"`
 }
@@ -650,9 +655,11 @@ func toolResultToFinderRankResult(tr *finderRankToolResult) *FinderRankResult {
 			}
 		}
 		ranked[i] = FinderRanking{
-			Index:  r.Index,
-			Reason: r.Reason,
-			Safety: safety,
+			Index:          r.Index,
+			Reason:         r.Reason,
+			Safety:         safety,
+			Expand:         r.Expand,
+			ExpandPriority: r.ExpandPriority,
 		}
 	}
 	return &FinderRankResult{

@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"context"
 	"time"
 
 	"github.com/windoze95/saltybytes-api/internal/models"
@@ -83,6 +84,14 @@ type FamilyRepo interface {
 	GetOrCreateDietaryProfile(memberID uint) (*models.DietaryProfile, error)
 }
 
+// FinderSessionRepo is the interface for saved recipe-finder session operations.
+type FinderSessionRepo interface {
+	Create(ctx context.Context, session *models.FinderSession) error
+	ListByUser(ctx context.Context, userID uint, limit, offset int) ([]models.FinderSession, int64, error)
+	GetByID(ctx context.Context, id uint) (*models.FinderSession, error)
+	Delete(ctx context.Context, id uint) error
+}
+
 // AllergenRepo is the interface for allergen analysis repository operations.
 type AllergenRepo interface {
 	CreateAnalysis(analysis *models.AllergenAnalysis) error
@@ -114,3 +123,4 @@ type UserRepo interface {
 var _ UserRepo = (*UserRepository)(nil)
 var _ FamilyRepo = (*FamilyRepository)(nil)
 var _ AllergenRepo = (*AllergenRepository)(nil)
+var _ FinderSessionRepo = (*FinderSessionRepository)(nil)
