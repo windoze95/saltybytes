@@ -25,18 +25,20 @@ const (
 	// a later tap is an instant cache hit.
 	finderWarmTopN = 4
 
-	// Agentic multi-recipe digging bounds. Digging expands a few collection /
-	// listicle candidates into their individual recipes, but stays bounded so it
-	// never turns into an open-ended crawl.
+	// finderCuratedCap is the max number of INDIVIDUAL recipes the agent shows —
+	// a tight, curated top-picks set (direct picks + recipes mined from
+	// collections). Collection/listicle/roundup pages are never shown.
+	finderCuratedCap = 8
+
+	// Agentic multi-recipe digging bounds. Since collections are hidden from the
+	// results, the agent mines them for real individual recipes — but stays
+	// bounded so it never turns into an open-ended crawl.
 	//
-	// finderDigMinDirect: only dig when the direct shortlist has fewer than this
-	// many items (enough direct hits → no need to dig).
-	finderDigMinDirect = 8
 	// finderDigK: max number of collections to dig into per run.
-	finderDigK = 2
+	finderDigK = 3
 	// finderPerCollectionCardCap: max cards resolved+extracted per collection.
 	finderPerCollectionCardCap = 6
-	// finderDigMaxCards: max recipes folded in across ALL collections in a run.
+	// finderDigMaxCards: max recipes folded in from collections across a run.
 	finderDigMaxCards = 6
 	// finderDigWait: max time to wait for one collection to finish resolving.
 	finderDigWait = 4 * time.Second
@@ -211,31 +213,47 @@ func (s *RecipeFinderService) FindRecipes(ctx context.Context, user *models.User
 	}
 	rank := s.rankCandidates(ctx, user, req, dietSummary, results)
 
-	// 5. Map the model's rankings back to the REAL results, dropping any
-	// out-of-range/duplicate index defensively and any candidate the model
-	// flagged allergen-"avoid".
-	items := buildShortlist(results, rank)
+	// 5. Curate the shown picks: INDIVIDUAL recipes only (collections excluded),
+	// in rank order, capped to a tight top-picks set.
+	shown := buildShortlist(results, rank)
+	if len(shown) > finderCuratedCap {
+		shown = shown[:finderCuratedCap]
+	}
 
-	// 6. Everything filtered out → empty; still never invent.
-	if len(items) == 0 {
+	// 6. Emit the curated shortlist — but only if we have direct individual picks.
+	// If the search was all collections, the first batch mined below seeds the
+	// shortlist instead, so build-89 never sees an empty shortlist.
+	shortlistEmitted := false
+	if len(shown) > 0 {
+		// HasMore is derived from the search page (not len(shown)) so removed
+		// collections / dropped avoids never under-report that more pages exist.
+		if !s.emit(ctx, events, FinderEvent{Type: FinderEventShortlist, Items: shown, HasMore: searchRes.HasMore}) {
+			return
+		}
+		shortlistEmitted = true
+	}
+
+	// 6.5. Dig the flagged collections reliably (they're hidden from the results,
+	// so mining them is how the agent turns a roundup-heavy search into real
+	// individual picks), up to the remaining room in the curated set. Folded
+	// recipes append via expanded, or seed the shortlist when there were no
+	// direct picks. Never shows a collection card.
+	room := finderCuratedCap - len(shown)
+	if room > finderDigMaxCards {
+		room = finderDigMaxCards
+	}
+	folded := s.digCollections(ctx, events, results, rank, room, &shortlistEmitted, searchRes.HasMore)
+
+	// 7. Truly nothing individual to show (search was all collections and none
+	// extracted in time) → broaden suggestions. Never fall back to collection cards.
+	if !shortlistEmitted {
 		s.emit(ctx, events, FinderEvent{Type: FinderEventEmpty, Broaden: broadenList(rank, req)})
 		return
 	}
-	// HasMore is derived from the search page (not len(items)) so dropped
-	// avoid/duplicate candidates never under-report that more pages exist.
-	if !s.emit(ctx, events, FinderEvent{Type: FinderEventShortlist, Items: items, HasMore: searchRes.HasMore}) {
-		return
-	}
 
-	// 6.5. Agentic digging (bounded): when the direct shortlist is thin, expand
-	// a few collection/listicle candidates the ranker flagged into their
-	// individual recipes, folding them into the run. Never invents — every folded
-	// recipe is a real extraction from the collection.
-	folded := s.digCollections(ctx, events, results, rank, len(items))
-
-	// 7. Proactively warm the top results (best-effort) so a later tap is an
-	// instant cache hit.
-	if warmURLs := topURLs(items, finderWarmTopN); len(warmURLs) > 0 {
+	// 8. Proactively warm the top curated picks (best-effort) so a later tap is
+	// an instant cache hit. Mined recipes are already cached by extraction.
+	if warmURLs := topURLs(shown, finderWarmTopN); len(warmURLs) > 0 {
 		if s.Warm != nil {
 			s.Warm.WarmURLs(warmURLs)
 		}
@@ -244,16 +262,16 @@ func (s *RecipeFinderService) FindRecipes(ctx context.Context, user *models.User
 		}
 	}
 
-	// 8. Offer bounded refinement, then finish.
+	// 9. Offer bounded refinement, then finish.
 	if !s.emit(ctx, events, FinderEvent{Type: FinderEventRefineReady, Chips: finderRefineChips, Broaden: broadenList(rank, req)}) {
 		return
 	}
 	s.emit(ctx, events, FinderEvent{Type: FinderEventDone})
 
-	// 9. Auto-save the completed first-page run for history (ungated, best-effort).
-	// assembled = the direct shortlist plus everything dug out of collections.
-	assembled := make([]FinderResultItem, 0, len(items)+len(folded))
-	assembled = append(assembled, items...)
+	// 10. Auto-save the completed first-page run for history (ungated, best-effort).
+	// assembled = the curated direct picks plus everything mined from collections.
+	assembled := make([]FinderResultItem, 0, len(shown)+len(folded))
+	assembled = append(assembled, shown...)
 	assembled = append(assembled, folded...)
 	s.autoSaveSession(user, req, query, len(results), len(folded), assembled)
 }
@@ -269,19 +287,18 @@ func (s *RecipeFinderService) emit(ctx context.Context, events chan<- FinderEven
 	}
 }
 
-// digCollections agentically expands up to finderDigK collection/listicle
-// candidates the ranker flagged, folding their individual recipes into the run
-// as expanded events. It is bounded on every axis (collections dug, cards per
-// collection, total folded cards, and wait per collection) and only runs when
-// the direct shortlist is thin. It never invents — every folded recipe is a real
-// extraction from the collection. Returns the folded items so the caller can
-// include them when saving the session.
-func (s *RecipeFinderService) digCollections(ctx context.Context, events chan<- FinderEvent, results []ai.SearchResult, rank *ai.FinderRankResult, directCount int) []FinderResultItem {
-	if s.MultiResolver == nil || rank == nil {
-		return nil
-	}
-	// Enough direct hits already — don't bother digging.
-	if directCount >= finderDigMinDirect {
+// digCollections agentically mines the collection/listicle candidates the ranker
+// flagged (Expand) into their individual recipes, up to `room` recipes. It digs
+// reliably whenever a collection is flagged — collections are never shown as
+// cards, so mining them is how the agent turns a roundup-heavy search into real
+// picks. Bounded on every axis: at most finderDigK collections, per-collection
+// extraction capped, total folded capped by room (<= finderDigMaxCards), and at
+// most finderDigWait per collection. It never invents — every folded recipe is a
+// real extraction. Folded recipes append via expanded events; when no direct pick
+// was shown (shortlistEmitted false), the first mined batch seeds the shortlist
+// instead so build-89 gets a proper base list. Returns every folded recipe.
+func (s *RecipeFinderService) digCollections(ctx context.Context, events chan<- FinderEvent, results []ai.SearchResult, rank *ai.FinderRankResult, room int, shortlistEmitted *bool, hasMore bool) []FinderResultItem {
+	if s.MultiResolver == nil || rank == nil || room <= 0 {
 		return nil
 	}
 
@@ -312,21 +329,26 @@ func (s *RecipeFinderService) digCollections(ctx context.Context, events chan<- 
 
 	var folded []FinderResultItem
 	for _, c := range collections {
-		if len(folded) >= finderDigMaxCards {
+		if room <= 0 {
 			break
 		}
 		if !s.emit(ctx, events, FinderEvent{Type: FinderEventDigging, CollectionTitle: c.title}) {
 			return folded
 		}
 
-		entry := s.MultiResolver.ResolveFromURLN(ctx, c.url, finderPerCollectionCardCap)
+		// Cap per-collection extraction to what we can still show.
+		maxCards := finderPerCollectionCardCap
+		if room < maxCards {
+			maxCards = room
+		}
+		entry := s.MultiResolver.ResolveFromURLN(ctx, c.url, maxCards)
 		if entry == nil {
 			continue
 		}
 
 		var batch []FinderResultItem
 		for _, card := range s.waitForCollection(ctx, entry) {
-			if len(folded)+len(batch) >= finderDigMaxCards {
+			if len(batch) >= room {
 				break
 			}
 			// Only fold recipes that finished extracting and have a cache key —
@@ -353,7 +375,19 @@ func (s *RecipeFinderService) digCollections(ctx context.Context, events chan<- 
 			continue
 		}
 		folded = append(folded, batch...)
-		if !s.emit(ctx, events, FinderEvent{Type: FinderEventExpanded, Items: batch, CollectionTitle: c.title}) {
+		room -= len(batch)
+
+		// Seed the shortlist from the first mined batch when there were no direct
+		// picks (search was all collections); otherwise append via expanded. Both
+		// carry only individual recipes — never a collection card.
+		var ev FinderEvent
+		if *shortlistEmitted {
+			ev = FinderEvent{Type: FinderEventExpanded, Items: batch, CollectionTitle: c.title}
+		} else {
+			ev = FinderEvent{Type: FinderEventShortlist, Items: batch, HasMore: hasMore}
+			*shortlistEmitted = true
+		}
+		if !s.emit(ctx, events, ev) {
 			return folded
 		}
 	}
@@ -666,9 +700,11 @@ func mergeFacets(base, add FinderFacets) FinderFacets {
 	return out
 }
 
-// buildShortlist maps the model's rankings back to the real results in rank
-// order, dropping out-of-range or duplicate indices defensively and dropping any
-// candidate flagged allergen-"avoid" for any family member.
+// buildShortlist maps the model's rankings back to the real INDIVIDUAL-recipe
+// results in rank order. It drops out-of-range/duplicate indices, any candidate
+// flagged allergen-"avoid", and — crucially — any candidate flagged as a
+// collection/listicle (Expand): those are dig sources only and must never be
+// shown as a recipe pick.
 func buildShortlist(results []ai.SearchResult, rank *ai.FinderRankResult) []FinderResultItem {
 	if rank == nil {
 		return nil
@@ -680,6 +716,10 @@ func buildShortlist(results []ai.SearchResult, rank *ai.FinderRankResult) []Find
 			continue
 		}
 		used[r.Index] = true
+		// Collections/listicles are dig sources only — never shown as a pick.
+		if r.Expand {
+			continue
+		}
 		if hasAvoid(r.Safety) {
 			continue
 		}
