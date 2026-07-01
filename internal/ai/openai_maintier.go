@@ -474,9 +474,15 @@ func (p *OpenAICompatProvider) ExpandAndRankRecipes(ctx context.Context, req Fin
 			return nil, fmt.Errorf("failed to marshal finder rank payload: %w", err)
 		}
 
+		// Require the top-level `ranked` array (nested index/expand are required
+		// inside rankRecipesProperties) so the cheap light tier always emits the
+		// expand flag instead of silently omitting it.
+		rankSchema := schemaObject(rankRecipesProperties())
+		rankSchema["required"] = []string{"ranked"}
+
 		chatReq := openai.ChatCompletionRequest{
 			Model:     p.model,
-			MaxTokens: 512,
+			MaxTokens: 1024,
 			Messages: []openai.ChatCompletionMessage{
 				{Role: openai.ChatMessageRoleSystem, Content: finderRankSystemPrompt},
 				{Role: openai.ChatMessageRoleUser, Content: string(payload)},
@@ -486,7 +492,7 @@ func (p *OpenAICompatProvider) ExpandAndRankRecipes(ctx context.Context, req Fin
 				Function: &openai.FunctionDefinition{
 					Name:        "rank_recipes",
 					Description: "Return the best-matching candidates by index, with rationales, per-member dietary safety, and broadened query suggestions.",
-					Parameters:  schemaObject(rankRecipesProperties()),
+					Parameters:  rankSchema,
 				},
 			}},
 			ToolChoice: openai.ToolChoice{

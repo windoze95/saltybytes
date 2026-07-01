@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"regexp"
@@ -605,20 +606,56 @@ func (r *MultiRecipeResolver) ResolveFromURL(ctx context.Context, sourceURL stri
 // and extracted (maxCards <= 0 means no cap). The finder's bounded digging uses
 // it so a huge listicle never triggers unbounded background extraction.
 func (r *MultiRecipeResolver) ResolveFromURLN(ctx context.Context, sourceURL string, maxCards int) *MultiRecipeEntry {
+	entry, _ := r.resolveFromURLCore(ctx, sourceURL, maxCards)
+	return entry
+}
+
+// ResolveFromURLWithReason is ResolveFromURL that also reports WHY no entry was
+// returned, so callers can distinguish a bot-blocked site from a page that
+// simply has no multiple recipes:
+//   - ""             an entry was returned (multi-recipe, or already tracked)
+//   - "site_blocked" the page could not be fetched (bot-block / Firecrawl exhausted)
+//   - "not_found"    the page returned 404
+//   - "fetch_failed" the fetch failed for another reason
+//   - "no_recipes"   the page fetched fine but holds 0-1 recipes
+func (r *MultiRecipeResolver) ResolveFromURLWithReason(ctx context.Context, sourceURL string) (*MultiRecipeEntry, string) {
+	return r.resolveFromURLCore(ctx, sourceURL, 0)
+}
+
+// resolveFromURLCore fetches a URL and resolves it, returning the entry (or nil)
+// plus a stable reason code when no entry results.
+func (r *MultiRecipeResolver) resolveFromURLCore(ctx context.Context, sourceURL string, maxCards int) (*MultiRecipeEntry, string) {
 	// Check if already tracked
 	if existing := r.Registry.Get(sourceURL); existing != nil {
-		return existing
+		return existing, ""
 	}
 
-	// Fetch only the HTML — skip AI extraction since we only need
-	// the page content for JSON-LD multi-recipe card detection.
+	// Fetch only the HTML (fetchHTML escalates to Firecrawl on bot-block) — we
+	// only need the page content for JSON-LD multi-recipe card detection.
 	html, err := r.ImportService.fetchHTML(ctx, sourceURL)
 	if err != nil || html == "" {
-		return nil
+		return nil, fetchFailureReason(err)
 	}
 
 	// Check for multiple recipes
-	return r.resolveFromHTMLN(ctx, sourceURL, html, maxCards)
+	if entry := r.resolveFromHTMLN(ctx, sourceURL, html, maxCards); entry != nil {
+		return entry, ""
+	}
+	return nil, "no_recipes"
+}
+
+// fetchFailureReason maps a fetchHTML error to a stable, app-facing reason code.
+func fetchFailureReason(err error) string {
+	var ee *ExtractionError
+	if errors.As(err, &ee) {
+		switch ee.Code {
+		case "site_blocked":
+			return "site_blocked"
+		case "not_found":
+			return "not_found"
+		}
+	}
+	return "fetch_failed"
 }
 
 // extractAllRecipes runs full extraction for each card in the entry.
@@ -651,6 +688,151 @@ func (r *MultiRecipeResolver) extractAllRecipes(entry *MultiRecipeEntry) {
 	entry.mu.Unlock()
 
 	log.Info("multi-recipe extraction complete")
+}
+
+// extractJSONLDRecipeByTitle finds the JSON-LD Recipe block on the page whose
+// name matches wantTitle and parses it into a full RecipeDef. This lets an inline
+// (listicle) card be extracted from the SAME page HTML that detected it — free,
+// and immune to the AI-text truncation that silently drops recipes past the size
+// cap. Returns ok=false when no confident JSON-LD match exists.
+func extractJSONLDRecipeByTitle(html, wantTitle string) (*models.RecipeDef, []string, bool) {
+	wantToks := slugTokens(wantTitle)
+	if len(wantToks) == 0 {
+		return nil, nil, false
+	}
+	re := regexp.MustCompile(`(?s)<script[^>]*type=["']application/ld\+json["'][^>]*>(.*?)</script>`)
+	for _, match := range re.FindAllStringSubmatch(html, -1) {
+		if len(match) < 2 {
+			continue
+		}
+		for _, objStr := range collectJSONLDRecipeObjects(strings.TrimSpace(match[1])) {
+			var recipe jsonLDRecipe
+			if err := json.Unmarshal([]byte(objStr), &recipe); err != nil {
+				continue
+			}
+			if !titleTokensMatch(recipe.Name, wantToks) {
+				continue
+			}
+			def, hashtags, _, err := jsonLDToRecipeDef(&recipe)
+			if err != nil || def == nil || len(def.Ingredients) == 0 {
+				continue
+			}
+			return def, hashtags, true
+		}
+	}
+	return nil, nil, false
+}
+
+// collectJSONLDRecipeObjects returns the JSON strings of every Recipe-typed
+// object in a JSON-LD blob, unwrapping @graph containers and arrays.
+func collectJSONLDRecipeObjects(jsonStr string) []string {
+	var obj map[string]interface{}
+	if err := json.Unmarshal([]byte(jsonStr), &obj); err != nil {
+		var arr []json.RawMessage
+		if err := json.Unmarshal([]byte(jsonStr), &arr); err != nil {
+			return nil
+		}
+		var out []string
+		for _, item := range arr {
+			out = append(out, collectJSONLDRecipeObjects(string(item))...)
+		}
+		return out
+	}
+	if graph, ok := obj["@graph"]; ok {
+		graphArr, ok := graph.([]interface{})
+		if !ok {
+			return nil
+		}
+		var out []string
+		for _, item := range graphArr {
+			b, err := json.Marshal(item)
+			if err != nil {
+				continue
+			}
+			out = append(out, collectJSONLDRecipeObjects(string(b))...)
+		}
+		return out
+	}
+	if isRecipeType(obj["@type"]) {
+		return []string{jsonStr}
+	}
+	return nil
+}
+
+// titleTokensMatch reports whether every significant token of the wanted title
+// appears in the recipe name — conservative, so a card never binds to the wrong
+// JSON-LD recipe on the page.
+func titleTokensMatch(name string, wantToks []string) bool {
+	nameToks := slugTokens(name)
+	if len(nameToks) == 0 {
+		return false
+	}
+	have := make(map[string]bool, len(nameToks))
+	for _, t := range nameToks {
+		have[t] = true
+	}
+	for _, t := range wantToks {
+		if !have[t] {
+			return false
+		}
+	}
+	return true
+}
+
+// inlineCardCacheURL builds the per-card distinct canonical-cache URL for an
+// inline (listicle) recipe. NormalizeURL strips fragments, so we append a slug
+// query param; the card index collision-proofs slugs that collapse together.
+func inlineCardCacheURL(sourceURL, title string, idx int) string {
+	slug := strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '-':
+			return r
+		case r >= 'A' && r <= 'Z':
+			return r + 32 // lowercase
+		case r == ' ':
+			return '-'
+		default:
+			return -1 // drop
+		}
+	}, title)
+	slug = fmt.Sprintf("%s-%d", slug, idx)
+	separator := "?"
+	if strings.Contains(sourceURL, "?") {
+		separator = "&"
+	}
+	return sourceURL + separator + "_recipe=" + slug
+}
+
+// finishInlineCard marks an inline (listicle) card done with the given recipe and
+// caches it under a per-card distinct URL, which becomes the card's CachedURL (an
+// instant cache hit on tap). Shared by the JSON-LD-by-title and AI paths.
+func (r *MultiRecipeResolver) finishInlineCard(entry *MultiRecipeEntry, idx int, title, sourceURL string, def models.RecipeDef, hashtags []string, method models.ExtractionMethod, log *zap.Logger) {
+	distinctURL := inlineCardCacheURL(sourceURL, title, idx)
+	entry.mu.Lock()
+	entry.Cards[idx].ExtractionStatus = "done"
+	entry.Cards[idx].RecipeDef = &def
+	entry.Cards[idx].Hashtags = hashtags
+	entry.Cards[idx].CachedURL = distinctURL
+	entry.mu.Unlock()
+
+	if r.ImportService.CanonicalRepo == nil {
+		return
+	}
+	normalizedURL, err := NormalizeURL(distinctURL)
+	if err != nil {
+		return
+	}
+	now := time.Now()
+	if uerr := r.ImportService.CanonicalRepo.Upsert(&models.CanonicalRecipe{
+		NormalizedURL:    normalizedURL,
+		OriginalURL:      distinctURL, // distinct URL so a refresh re-extracts this specific recipe
+		RecipeData:       def,
+		ExtractionMethod: method,
+		FetchedAt:        now,
+		LastAccessedAt:   now,
+	}); uerr != nil {
+		log.Warn("failed to cache extracted recipe", zap.Error(uerr))
+	}
 }
 
 // extractSingleCard extracts a full recipe for one card in the entry.
@@ -703,6 +885,17 @@ func (r *MultiRecipeResolver) extractSingleCard(entry *MultiRecipeEntry, idx int
 		log.Info("individual recipe page unavailable; falling back to collection text")
 	}
 
+	// Inline recipe (no own recipe page): prefer the matching JSON-LD Recipe
+	// block from the SAME page HTML that detected the cards — free, and immune to
+	// the AI-text truncation that silently drops recipes past the size cap.
+	if def, hashtags, ok := extractJSONLDRecipeByTitle(pageHTML, title); ok {
+		def.SourceURL = sourceURL
+		ensureUnitSystem(def)
+		r.finishInlineCard(entry, idx, title, sourceURL, *def, hashtags, models.ExtractionJSONLD, log)
+		log.Info("inline recipe extracted from page JSON-LD", zap.Int("ingredients", len(def.Ingredients)))
+		return
+	}
+
 	provider := r.ImportService.PreviewProvider
 	if provider == nil {
 		provider = r.ImportService.TextProvider
@@ -715,7 +908,8 @@ func (r *MultiRecipeResolver) extractSingleCard(entry *MultiRecipeEntry, idx int
 		return
 	}
 
-	// Strip HTML to text and truncate — raw HTML wastes tokens on tags/CSS/JS
+	// AI fallback: strip HTML to text and truncate — raw HTML wastes tokens on
+	// tags/CSS/JS. (Only reached when the page has no matching JSON-LD block.)
 	pageText := stripHTMLToText(pageHTML)
 	const maxExtractBytes = 30_000
 	if len(pageText) > maxExtractBytes {
@@ -736,59 +930,7 @@ func (r *MultiRecipeResolver) extractSingleCard(entry *MultiRecipeEntry, idx int
 	def := recipeResultToRecipeDef(result)
 	def.SourceURL = sourceURL
 	ensureUnitSystem(&def)
+	r.finishInlineCard(entry, idx, title, sourceURL, def, result.Hashtags, models.ExtractionHaiku, log)
 
-	entry.mu.Lock()
-	entry.Cards[idx].ExtractionStatus = "done"
-	entry.Cards[idx].RecipeDef = &def
-	entry.Cards[idx].Hashtags = result.Hashtags
-	if entry.Cards[idx].ImageURL == "" && result.ImagePrompt != "" {
-		entry.Cards[idx].Description = result.Summary
-	}
-	entry.mu.Unlock()
-
-	// Cache in canonical repo with a distinct key per card.
-	// NormalizeURL strips fragments, so we append a slug query param instead.
-	if r.ImportService.CanonicalRepo != nil {
-		slug := strings.Map(func(r rune) rune {
-			if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '-' {
-				return r
-			}
-			if r >= 'A' && r <= 'Z' {
-				return r + 32 // lowercase
-			}
-			if r == ' ' {
-				return '-'
-			}
-			return -1 // drop
-		}, title)
-		// Append card index for collision-proofing — different titles can
-		// collapse to the same slug (punctuation/spacing variants).
-		// Also handles non-ASCII titles that produce empty slugs.
-		slug = fmt.Sprintf("%s-%d", slug, idx)
-		separator := "?"
-		if strings.Contains(sourceURL, "?") {
-			separator = "&"
-		}
-		distinctURL := sourceURL + separator + "_recipe=" + slug
-		// This inline recipe only exists in our cache under the distinct key.
-		entry.mu.Lock()
-		entry.Cards[idx].CachedURL = distinctURL
-		entry.mu.Unlock()
-		if normalizedURL, err := NormalizeURL(distinctURL); err == nil {
-			now := time.Now()
-			canonical := &models.CanonicalRecipe{
-				NormalizedURL:    normalizedURL,
-				OriginalURL:      distinctURL, // use distinct URL so refresh extracts this specific recipe
-				RecipeData:       def,
-				ExtractionMethod: models.ExtractionHaiku,
-				FetchedAt:        now,
-				LastAccessedAt:   now,
-			}
-			if err := r.ImportService.CanonicalRepo.Upsert(canonical); err != nil {
-				log.Warn("failed to cache extracted recipe", zap.Error(err))
-			}
-		}
-	}
-
-	log.Info("individual recipe extracted successfully")
+	log.Info("individual recipe extracted from page text via AI")
 }

@@ -513,6 +513,7 @@ func (s *RecipeFinderService) rankCandidates(ctx context.Context, user *models.U
 		candidates[i] = ai.FinderCandidate{
 			Index:       i,
 			Title:       r.Title,
+			URL:         r.URL,
 			Source:      r.Source,
 			Description: r.Description,
 		}
