@@ -74,6 +74,10 @@ type FinderEvent struct {
 	Chips     []string           `json:"chips,omitempty"`
 	Broaden   []string           `json:"broaden,omitempty"`
 	Error     string             `json:"error,omitempty"`
+	// HasMore reports whether more pages of underlying search results are
+	// available (derived from the search result, not the shortlist length —
+	// the finder drops avoid/duplicate candidates). Carried on the shortlist event.
+	HasMore bool `json:"has_more,omitempty"`
 }
 
 // FinderFacets are the tappable facet-chip selections that steer a find. They
@@ -98,6 +102,9 @@ type FinderRequest struct {
 	Facets   FinderFacets  `json:"facets"`
 	FreeText string        `json:"free_text,omitempty"`
 	Refine   *FinderRefine `json:"refine,omitempty"`
+	// Offset pages through the underlying search results (0-based). Negative
+	// values are clamped to 0.
+	Offset int `json:"offset,omitempty"`
 }
 
 // RecipeFinderService drives the guided "recipe finder": one bounded trajectory
@@ -143,7 +150,12 @@ func (s *RecipeFinderService) FindRecipes(ctx context.Context, user *models.User
 	}
 
 	// 2. Search real recipes (reuses the exact + semantic/embedding cache).
-	searchRes, err := s.Search.SearchRecipes(ctx, query, finderSearchCount, 0)
+	// Page through results with the requested offset (negatives clamped to 0).
+	offset := req.Offset
+	if offset < 0 {
+		offset = 0
+	}
+	searchRes, err := s.Search.SearchRecipes(ctx, query, finderSearchCount, offset)
 	if err != nil {
 		logger.Get().Error("recipe finder search failed", zap.String("query", query), zap.Error(err))
 		s.emit(ctx, events, FinderEvent{Type: FinderEventError, Error: "search failed"})
@@ -176,7 +188,9 @@ func (s *RecipeFinderService) FindRecipes(ctx context.Context, user *models.User
 		s.emit(ctx, events, FinderEvent{Type: FinderEventEmpty, Broaden: broadenList(rank, req)})
 		return
 	}
-	if !s.emit(ctx, events, FinderEvent{Type: FinderEventShortlist, Items: items}) {
+	// HasMore is derived from the search page (not len(items)) so dropped
+	// avoid/duplicate candidates never under-report that more pages exist.
+	if !s.emit(ctx, events, FinderEvent{Type: FinderEventShortlist, Items: items, HasMore: searchRes.HasMore}) {
 		return
 	}
 
