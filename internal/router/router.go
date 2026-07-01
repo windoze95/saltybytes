@@ -132,9 +132,20 @@ func SetupRouter(cfg *config.Config, database *gorm.DB) *gin.Engine {
 	modelManager.StartRefresh(context.Background(), 30*time.Second)
 	previewProvider := modelManager.Provider()
 
+	// Vision provider: Sonnet by default; native Gemini when VISION_NATIVE_GEMINI
+	// is set — routes image/PDF import (photo + files) and the video frame
+	// fallback through Gemini instead of Sonnet.
+	var visionProvider ai.VisionProvider = textProvider
+	if cfg.EnvVars.VisionNativeGemini && cfg.EnvVars.GeminiAPIKey != "" {
+		gv := ai.NewGeminiVisionProvider(cfg.EnvVars.GeminiAPIKey, cfg.EnvVars.GeminiVisionModel, cfg.Prompts)
+		gv.WithMiddleware(aiMW)
+		visionProvider = gv
+		logger.Get().Info("native gemini vision enabled", zap.String("model", cfg.EnvVars.GeminiVisionModel))
+	}
+
 	// Import-related routes setup
 	canonicalRepo := repository.NewCanonicalRecipeRepository(database)
-	importService := service.NewImportService(cfg, recipeRepo, recipeService, textProvider, textProvider, previewProvider)
+	importService := service.NewImportService(cfg, recipeRepo, recipeService, textProvider, visionProvider, previewProvider)
 	importService.CanonicalRepo = canonicalRepo
 	// Portion estimation for imports that lack a serving count (cheap Haiku task)
 	importService.Normalize = service.NewNormalizeService(cfg, previewProvider)
