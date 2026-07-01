@@ -46,6 +46,27 @@ func indexOfType(events []FinderEvent, t FinderEventType) int {
 	return -1
 }
 
+// shownItems collects every result item the client would display — the shortlist
+// plus everything appended via expanded.
+func shownItems(events []FinderEvent) []FinderResultItem {
+	var out []FinderResultItem
+	for _, ev := range events {
+		if ev.Type == FinderEventShortlist || ev.Type == FinderEventExpanded {
+			out = append(out, ev.Items...)
+		}
+	}
+	return out
+}
+
+func shownHasURL(events []FinderEvent, url string) bool {
+	for _, it := range shownItems(events) {
+		if it.Result.URL == url {
+			return true
+		}
+	}
+	return false
+}
+
 // digSearchResults builds n distinct real search candidates.
 func digSearchResults(n int) []ai.SearchResult {
 	out := make([]ai.SearchResult, n)
@@ -79,7 +100,7 @@ func rankAllFlagging(results []ai.SearchResult, flags map[int]int) *testutil.Moc
 	}
 }
 
-func TestFindRecipes_DigsFlaggedCollection(t *testing.T) {
+func TestFindRecipes_DigsFlaggedCollectionAndHidesIt(t *testing.T) {
 	results := digSearchResults(3)
 	searchProvider := &testutil.MockSearchProvider{
 		SearchRecipesFunc: func(ctx context.Context, query string, count, offset int) ([]ai.SearchResult, error) {
@@ -103,15 +124,22 @@ func TestFindRecipes_DigsFlaggedCollection(t *testing.T) {
 	events := runFinder(svc, testutil.TestUser(), FinderRequest{Facets: FinderFacets{Protein: "chicken"}})
 
 	// digging then expanded appear, after the shortlist and before done.
-	di := indexOfType(events, FinderEventDigging)
-	ei := indexOfType(events, FinderEventExpanded)
-	si := indexOfType(events, FinderEventShortlist)
-	done := indexOfType(events, FinderEventDone)
+	si, di, ei, done := indexOfType(events, FinderEventShortlist), indexOfType(events, FinderEventDigging), indexOfType(events, FinderEventExpanded), indexOfType(events, FinderEventDone)
 	if si < 0 || di < 0 || ei < 0 || done < 0 {
 		t.Fatalf("missing events (order: %v)", eventTypes(events))
 	}
 	if !(si < di && di < ei && ei < done) {
 		t.Errorf("event order wrong: shortlist=%d digging=%d expanded=%d done=%d (%v)", si, di, ei, done, eventTypes(events))
+	}
+
+	// The collection itself is NEVER shown as a card.
+	if shownHasURL(events, results[1].URL) {
+		t.Errorf("collection %q was shown as a result — collections must be hidden", results[1].URL)
+	}
+	// The shortlist holds the two INDIVIDUAL candidates (0 and 2).
+	shortlist, _ := firstEventOfType(events, FinderEventShortlist)
+	if len(shortlist.Items) != 2 {
+		t.Fatalf("shortlist has %d items, want 2 individual (collection excluded)", len(shortlist.Items))
 	}
 
 	// digging names the collection.
@@ -124,7 +152,7 @@ func TestFindRecipes_DigsFlaggedCollection(t *testing.T) {
 	// "from '<collection>'" reason.
 	exp, _ := firstEventOfType(events, FinderEventExpanded)
 	if len(exp.Items) != 2 {
-		t.Fatalf("expanded has %d items, want 2 (pending card must be dropped)", len(exp.Items))
+		t.Fatalf("expanded has %d items, want 2 (pending card dropped)", len(exp.Items))
 	}
 	wantReason := fmt.Sprintf("from '%s'", results[1].Title)
 	wantURLs := map[string]bool{"https://example.com/child-a?_recipe=child-a-0": true, "https://example.com/child-b": true}
@@ -133,7 +161,7 @@ func TestFindRecipes_DigsFlaggedCollection(t *testing.T) {
 			t.Errorf("folded reason = %q, want %q", it.Reason, wantReason)
 		}
 		if !wantURLs[it.Result.URL] {
-			t.Errorf("folded URL = %q, want one of the cards' CachedURL", it.Result.URL)
+			t.Errorf("folded URL = %q, want a card CachedURL", it.Result.URL)
 		}
 	}
 
@@ -143,33 +171,96 @@ func TestFindRecipes_DigsFlaggedCollection(t *testing.T) {
 	}
 }
 
-func TestFindRecipes_DigCapsAndPrioritizes(t *testing.T) {
-	results := digSearchResults(4)
+func TestFindRecipes_DigsEvenWhenManyDirect(t *testing.T) {
+	// 8 candidates: 3 flagged collections + 5 individual. Under the OLD gate
+	// (dig only when direct < 8) this would NOT dig; now it must, because the 3
+	// collections are hidden and mined for real recipes.
+	results := digSearchResults(8)
 	searchProvider := &testutil.MockSearchProvider{
 		SearchRecipesFunc: func(ctx context.Context, query string, count, offset int) ([]ai.SearchResult, error) {
 			return results, nil
 		},
 	}
-	// Flag three collections with distinct priorities: 2 (low), 1 (high), 3 (mid).
-	ranker := rankAllFlagging(results, map[int]int{2: 1, 1: 9, 3: 5})
+	ranker := rankAllFlagging(results, map[int]int{0: 3, 1: 2, 2: 1})
 
 	entries := map[string]*MultiRecipeEntry{}
-	for _, idx := range []int{1, 2, 3} {
-		entries[results[idx].URL] = resolvedEntry(results[idx].URL, doneCard("Child", "https://example.com/child"+fmt.Sprint(idx)))
+	for _, idx := range []int{0, 1, 2} {
+		entries[results[idx].URL] = resolvedEntry(results[idx].URL, doneCard("Mined "+fmt.Sprint(idx), "https://example.com/mined"+fmt.Sprint(idx)))
 	}
 	fake := &fakeMultiResolver{entries: entries}
 
 	svc := newFinderService(searchProvider, ranker, &testutil.MockFamilyRepo{})
 	svc.MultiResolver = fake
 
-	_ = runFinder(svc, testutil.TestUser(), FinderRequest{Facets: FinderFacets{Protein: "chicken"}})
+	events := runFinder(svc, testutil.TestUser(), FinderRequest{Facets: FinderFacets{Protein: "chicken"}})
 
-	// Only finderDigK collections are dug, highest ExpandPriority first.
-	if len(fake.calls) != finderDigK {
-		t.Fatalf("resolver called %d times, want finderDigK=%d (%v)", len(fake.calls), finderDigK, fake.calls)
+	if countEventsOfType(events, FinderEventDigging) == 0 || len(fake.calls) == 0 {
+		t.Errorf("did not dig despite flagged collections + a full direct list (%v)", eventTypes(events))
 	}
-	if fake.calls[0] != results[1].URL || fake.calls[1] != results[3].URL {
-		t.Errorf("dug %v, want highest-priority [%s %s]", fake.calls, results[1].URL, results[3].URL)
+	for _, idx := range []int{0, 1, 2} {
+		if shownHasURL(events, results[idx].URL) {
+			t.Errorf("collection %q was shown — collections must be hidden", results[idx].URL)
+		}
+	}
+}
+
+func TestFindRecipes_AllCollectionsSeedShortlistFromMined(t *testing.T) {
+	// Every candidate is a collection: the direct shortlist is empty, so the
+	// first mined batch must SEED the shortlist (never an empty shortlist, never
+	// a collection card, never an empty event when recipes were mined).
+	results := digSearchResults(2)
+	searchProvider := &testutil.MockSearchProvider{
+		SearchRecipesFunc: func(ctx context.Context, query string, count, offset int) ([]ai.SearchResult, error) {
+			return results, nil
+		},
+	}
+	ranker := rankAllFlagging(results, map[int]int{0: 9, 1: 5})
+
+	fake := &fakeMultiResolver{entries: map[string]*MultiRecipeEntry{
+		results[0].URL: resolvedEntry(results[0].URL, doneCard("Mined A", "https://example.com/mined-a")),
+		results[1].URL: resolvedEntry(results[1].URL, doneCard("Mined B", "https://example.com/mined-b")),
+	}}
+
+	svc := newFinderService(searchProvider, ranker, &testutil.MockFamilyRepo{})
+	svc.MultiResolver = fake
+
+	events := runFinder(svc, testutil.TestUser(), FinderRequest{Facets: FinderFacets{Protein: "chicken"}})
+
+	if countEventsOfType(events, FinderEventEmpty) != 0 {
+		t.Errorf("emitted empty despite mining real recipes from collections (%v)", eventTypes(events))
+	}
+	shortlist, ok := firstEventOfType(events, FinderEventShortlist)
+	if !ok || len(shortlist.Items) == 0 {
+		t.Fatalf("shortlist not seeded from mined recipes (order: %v)", eventTypes(events))
+	}
+	// Shown recipes are the mined individuals, not the collection pages.
+	for _, idx := range []int{0, 1} {
+		if shownHasURL(events, results[idx].URL) {
+			t.Errorf("collection %q was shown", results[idx].URL)
+		}
+	}
+	for _, it := range shownItems(events) {
+		if it.Reason == "" {
+			t.Errorf("mined pick %q has no reason", it.Result.Title)
+		}
+	}
+}
+
+func TestFindRecipes_CuratesToCap(t *testing.T) {
+	// Far more individual candidates than the cap → the shown set is trimmed.
+	results := digSearchResults(finderCuratedCap + 5)
+	searchProvider := &testutil.MockSearchProvider{
+		SearchRecipesFunc: func(ctx context.Context, query string, count, offset int) ([]ai.SearchResult, error) {
+			return results, nil
+		},
+	}
+	ranker := rankAllFlagging(results, nil) // all individual, none flagged
+
+	svc := newFinderService(searchProvider, ranker, &testutil.MockFamilyRepo{})
+	events := runFinder(svc, testutil.TestUser(), FinderRequest{Facets: FinderFacets{Protein: "chicken"}})
+
+	if got := len(shownItems(events)); got != finderCuratedCap {
+		t.Errorf("shown %d recipes, want the curated cap %d", got, finderCuratedCap)
 	}
 }
 
@@ -182,7 +273,7 @@ func TestFindRecipes_DigCapsTotalFolded(t *testing.T) {
 	}
 	ranker := rankAllFlagging(results, map[int]int{1: 5})
 
-	// A single collection with more DONE cards than finderDigMaxCards.
+	// A single collection with more DONE cards than we can show.
 	var cards []MultiRecipeCard
 	for i := 0; i < finderDigMaxCards+4; i++ {
 		cards = append(cards, doneCard(fmt.Sprintf("Child %d", i), fmt.Sprintf("https://example.com/child-%d", i)))
@@ -196,14 +287,18 @@ func TestFindRecipes_DigCapsTotalFolded(t *testing.T) {
 
 	events := runFinder(svc, testutil.TestUser(), FinderRequest{Facets: FinderFacets{Protein: "chicken"}})
 
-	totalFolded := 0
+	// Total shown never exceeds the curated cap; folded never exceeds its cap.
+	if got := len(shownItems(events)); got > finderCuratedCap {
+		t.Errorf("shown %d recipes, want <= curated cap %d", got, finderCuratedCap)
+	}
+	folded := 0
 	for _, ev := range events {
 		if ev.Type == FinderEventExpanded {
-			totalFolded += len(ev.Items)
+			folded += len(ev.Items)
 		}
 	}
-	if totalFolded > finderDigMaxCards {
-		t.Errorf("folded %d recipes, want <= finderDigMaxCards=%d", totalFolded, finderDigMaxCards)
+	if folded > finderDigMaxCards {
+		t.Errorf("folded %d recipes, want <= finderDigMaxCards=%d", folded, finderDigMaxCards)
 	}
 }
 
@@ -227,32 +322,5 @@ func TestFindRecipes_NoDigWhenNothingFlagged(t *testing.T) {
 	}
 	if len(fake.calls) != 0 {
 		t.Errorf("resolver called %v with nothing flagged, want none", fake.calls)
-	}
-}
-
-func TestFindRecipes_NoDigWhenShortlistFull(t *testing.T) {
-	// A full direct shortlist (>= finderDigMinDirect) means no need to dig, even
-	// though a collection is flagged.
-	results := digSearchResults(finderDigMinDirect)
-	searchProvider := &testutil.MockSearchProvider{
-		SearchRecipesFunc: func(ctx context.Context, query string, count, offset int) ([]ai.SearchResult, error) {
-			return results, nil
-		},
-	}
-	ranker := rankAllFlagging(results, map[int]int{0: 5})
-
-	fake := &fakeMultiResolver{entries: map[string]*MultiRecipeEntry{
-		results[0].URL: resolvedEntry(results[0].URL, doneCard("Child", "https://example.com/child")),
-	}}
-	svc := newFinderService(searchProvider, ranker, &testutil.MockFamilyRepo{})
-	svc.MultiResolver = fake
-
-	events := runFinder(svc, testutil.TestUser(), FinderRequest{Facets: FinderFacets{Protein: "chicken"}})
-
-	if n := countEventsOfType(events, FinderEventDigging); n != 0 {
-		t.Errorf("dug despite a full shortlist (%d direct), want no digging", len(results))
-	}
-	if len(fake.calls) != 0 {
-		t.Errorf("resolver called %v despite a full shortlist, want none", fake.calls)
 	}
 }
