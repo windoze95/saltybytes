@@ -229,6 +229,7 @@ type Message struct {
 type FinderCandidate struct {
 	Index       int
 	Title       string
+	URL         string
 	Source      string
 	Description string
 }

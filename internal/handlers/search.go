@@ -195,10 +195,12 @@ func (h *SearchHandler) CheckMultiRecipe(c *gin.Context) {
 		return
 	}
 
-	// Try to resolve — this fetches the page and checks for multiple recipes
-	entry := h.MultiResolver.ResolveFromURL(c.Request.Context(), url)
+	// Try to resolve — this fetches the page and checks for multiple recipes.
+	// The reason distinguishes a bot-blocked site from a page with no multiple
+	// recipes, so the app can message it (additive field; is_multi stays false).
+	entry, reason := h.MultiResolver.ResolveFromURLWithReason(c.Request.Context(), url)
 	if entry == nil {
-		c.JSON(http.StatusOK, gin.H{"is_multi": false})
+		c.JSON(http.StatusOK, gin.H{"is_multi": false, "reason": reason})
 		return
 	}
 

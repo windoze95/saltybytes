@@ -384,14 +384,21 @@ func estimatePortionsTool() anthropic.ToolUnionParam {
 // an inline prompt (like EstimatePortions') rather than a config template, so
 // the finder is self-contained. The hard rule — reference candidates only by
 // index, never invent — is enforced structurally by the tool schema too.
-const finderRankSystemPrompt = `You are a recipe-finding assistant. You are given a list of REAL recipe search results (candidates), each with an index, and a description of what the user wants (facets, free text, and their family's dietary needs).
+const finderRankSystemPrompt = `You are a recipe-finding assistant. You are given a list of REAL recipe search results (candidates), each with an index, a URL, a title, a source and a description, plus a description of what the user wants (facets, free text, and their family's dietary needs).
 
 Select the candidates that best match the request and return them, best match first, using ONLY their given index. Never invent a recipe and never return an index that is not in the candidate list. It is fine to return fewer candidates than you were given; drop ones that clearly do not fit.
 
-For each candidate you return:
-- Give one short sentence (reason) explaining why it fits the request.
+For EVERY candidate you return you MUST set:
+- index: the candidate's given index.
+- expand: whether this candidate is a COLLECTION page. Set expand=true when the page indexes MANY separate recipes — a roundup, listicle, gallery, "best of", or category/index page — rather than being ONE recipe. Use the URL path and the title as the strongest signals:
+    * Title signals: a leading count or superlative, e.g. "40 Easy Weeknight Dinner Recipes", "23 Best ...", "Our Favorite ... Recipes", "... Ideas".
+    * URL-path signals: segments like /gallery/, /roundup/, /collection/, /category/, or a slug like /40-easy-weeknight-dinners or /best-...-recipes.
+  A single dish's page (e.g. /recipe/lemon-garlic-chicken) is expand=false. When expand=true, also set expand_priority (higher = a richer, more on-topic collection to mine).
+  Examples: {"title":"40 Easy Weeknight Dinner Recipes","url":".../gallery/40-easy-weeknight-dinners"} -> expand=true; {"title":"Our 25 Best Chicken Dinners","url":".../roundup/best-chicken-dinners"} -> expand=true; {"title":"Creamy Tomato Basil Soup","url":".../recipe/creamy-tomato-basil-soup"} -> expand=false.
+
+For each candidate you return also:
+- Give one short sentence (reason) explaining why it fits — for a collection, say what it collects.
 - Give a best-effort dietary safety assessment for each family member mentioned in the dietary needs, judging ONLY from the candidate's title and description: "safe" if nothing conflicts, "caution" if it might conflict or is unclear, "avoid" if it clearly conflicts with an allergy or restriction. Keep the note short. Omit members you cannot assess.
-- If the candidate is a collection/listicle/roundup page indexing MANY recipes (e.g. "23 Best Weeknight Dinners") rather than a single recipe, set expand=true and expand_priority (higher = more worth digging into); otherwise set expand=false.
 
 Also suggest 2-4 broadened search queries (broaden_queries) the user could try to get more options.
 
@@ -408,6 +415,9 @@ func rankRecipesProperties() map[string]interface{} {
 			"description": "Chosen candidates, best match first. Each references a candidate by its index.",
 			"items": map[string]interface{}{
 				"type": "object",
+				// index and expand are REQUIRED so the (cheap) light tier always
+				// emits the collection flag instead of silently omitting it.
+				"required": []string{"index", "expand"},
 				"properties": map[string]interface{}{
 					"index":  map[string]interface{}{"type": "integer", "description": "Index of the candidate from the provided list. Must be one of the given indices."},
 					"reason": map[string]interface{}{"type": "string", "description": "One short sentence on why this candidate fits the request."},
@@ -423,8 +433,8 @@ func rankRecipesProperties() map[string]interface{} {
 							},
 						},
 					},
-					"expand":          map[string]interface{}{"type": "boolean", "description": "True if this candidate is a collection/listicle/roundup page of MANY recipes (not a single recipe) worth digging into."},
-					"expand_priority": map[string]interface{}{"type": "integer", "description": "When expand is true, how promising this collection is to dig into (higher = more promising). 0 otherwise."},
+					"expand":          map[string]interface{}{"type": "boolean", "description": "True when this candidate is a COLLECTION page indexing MANY separate recipes (roundup / listicle / gallery / 'best of' / category) rather than one recipe. Judge from the URL path (e.g. /gallery/, /roundup/, /collection/, /NN-...-recipes, /best-...) and the title (e.g. '40 Easy Weeknight Dinners', '23 Best ...'). A single dish's page is false."},
+					"expand_priority": map[string]interface{}{"type": "integer", "description": "When expand is true, how promising this collection is to mine (higher = richer, more on-topic). 0 otherwise."},
 				},
 			},
 		},
@@ -446,6 +456,11 @@ func rankRecipesTool() anthropic.ToolUnionParam {
 			InputSchema: anthropic.ToolInputSchemaParam{
 				Type:       "object",
 				Properties: rankRecipesProperties(),
+				// Require the top-level ranked array (nested index/expand are
+				// required per item) so the model always returns the flags.
+				ExtraFields: map[string]interface{}{
+					"required": []string{"ranked"},
+				},
 			},
 		},
 	}
@@ -590,6 +605,7 @@ func toolResultToPortionEstimate(tr *portionToolResult) *PortionEstimate {
 type finderRankPayloadCandidate struct {
 	Index       int    `json:"index"`
 	Title       string `json:"title"`
+	URL         string `json:"url,omitempty"`
 	Source      string `json:"source,omitempty"`
 	Description string `json:"description,omitempty"`
 }
@@ -612,6 +628,7 @@ func buildFinderRankPayload(req FinderRankRequest) finderRankPayload {
 		candidates[i] = finderRankPayloadCandidate{
 			Index:       c.Index,
 			Title:       c.Title,
+			URL:         c.URL,
 			Source:      c.Source,
 			Description: c.Description,
 		}
@@ -627,20 +644,75 @@ func buildFinderRankPayload(req FinderRankRequest) finderRankPayload {
 	}
 }
 
+// finderRankItem is one ranked candidate in the rank_recipes tool result.
+type finderRankItem struct {
+	Index  int    `json:"index"`
+	Reason string `json:"reason"`
+	Safety []struct {
+		MemberName string `json:"member_name"`
+		Status     string `json:"status"`
+		Note       string `json:"note"`
+	} `json:"safety"`
+	Expand         bool `json:"expand"`
+	ExpandPriority int  `json:"expand_priority"`
+}
+
 // finderRankToolResult is the JSON structure returned by the rank_recipes tool call.
 type finderRankToolResult struct {
-	Ranked []struct {
-		Index  int    `json:"index"`
-		Reason string `json:"reason"`
-		Safety []struct {
-			MemberName string `json:"member_name"`
-			Status     string `json:"status"`
-			Note       string `json:"note"`
-		} `json:"safety"`
-		Expand         bool `json:"expand"`
-		ExpandPriority int  `json:"expand_priority"`
-	} `json:"ranked"`
-	BroadenQueries []string `json:"broaden_queries"`
+	Ranked         []finderRankItem `json:"ranked"`
+	BroadenQueries []string         `json:"broaden_queries"`
+}
+
+// parseFinderRankToolArgs parses the rank_recipes tool arguments, tolerating a
+// truncated JSON body (output-token overflow). It first tries a strict parse; on
+// failure it salvages the complete ranked items (and any broaden queries) from
+// the partial JSON, so a marginal overflow degrades to fewer ranked results
+// rather than erroring the whole call into an unranked, flag-less fallback.
+func parseFinderRankToolArgs(args string) (*finderRankToolResult, error) {
+	var tr finderRankToolResult
+	if err := json.Unmarshal([]byte(args), &tr); err == nil {
+		return &tr, nil
+	}
+	salvaged := salvageFinderRankArgs(args)
+	if len(salvaged.Ranked) == 0 {
+		return nil, NewAIError(FailureContentParse, errors.New("rank_recipes tool args unparseable and unsalvageable"), "failed to parse rank_recipes tool result")
+	}
+	return salvaged, nil
+}
+
+// salvageFinderRankArgs recovers as many complete ranked items (and broaden
+// queries) as possible from a truncated rank_recipes tool-args JSON string.
+func salvageFinderRankArgs(args string) *finderRankToolResult {
+	out := &finderRankToolResult{Ranked: decodeJSONArrayPrefix[finderRankItem](args, `"ranked"`)}
+	out.BroadenQueries = decodeJSONArrayPrefix[string](args, `"broaden_queries"`)
+	return out
+}
+
+// decodeJSONArrayPrefix finds the JSON array introduced by key in a (possibly
+// truncated) JSON string and decodes as many complete elements as possible,
+// stopping at the first incomplete element.
+func decodeJSONArrayPrefix[T any](s, key string) []T {
+	ki := strings.Index(s, key)
+	if ki < 0 {
+		return nil
+	}
+	br := strings.IndexByte(s[ki:], '[')
+	if br < 0 {
+		return nil
+	}
+	dec := json.NewDecoder(strings.NewReader(s[ki+br:]))
+	if _, err := dec.Token(); err != nil { // consume '['
+		return nil
+	}
+	var out []T
+	for dec.More() {
+		var item T
+		if err := dec.Decode(&item); err != nil {
+			break // incomplete final element — keep what completed
+		}
+		out = append(out, item)
+	}
+	return out
 }
 
 func toolResultToFinderRankResult(tr *finderRankToolResult) *FinderRankResult {
@@ -914,11 +986,11 @@ func extractFinderRankFromToolUse(msg *anthropic.Message) (*FinderRankResult, er
 			if err != nil {
 				return nil, fmt.Errorf("failed to marshal tool input: %w", err)
 			}
-			var tr finderRankToolResult
-			if err := json.Unmarshal(raw, &tr); err != nil {
-				return nil, fmt.Errorf("failed to parse rank_recipes tool result: %w", err)
+			tr, err := parseFinderRankToolArgs(string(raw))
+			if err != nil {
+				return nil, err
 			}
-			return toolResultToFinderRankResult(&tr), nil
+			return toolResultToFinderRankResult(tr), nil
 		}
 	}
 	return nil, errors.New("no tool_use block found in Claude response")
@@ -1494,8 +1566,14 @@ func (p *AnthropicProvider) ExpandAndRankRecipes(ctx context.Context, req Finder
 		tool := rankRecipesTool()
 
 		params := anthropic.MessageNewParams{
-			Model:     p.model,
-			MaxTokens: 512,
+			Model: p.model,
+			// 2048 (not 512): the rank_recipes tool JSON for ~10 candidates with
+			// per-item reason + per-member safety[] + expand/expand_priority +
+			// broaden_queries runs ~1000-1500 output tokens with any family
+			// profile. 512 truncated it → parse error → unranked, flag-less,
+			// reason-less fallback (the "feels like plain search" bug). The parse
+			// is also truncation-tolerant now as a backstop.
+			MaxTokens: 2048,
 			System:    buildCachedSystemPrompt(finderRankSystemPrompt, ""),
 			Messages: []anthropic.MessageParam{
 				newUserMessage(anthropic.NewTextBlock(string(payload))),

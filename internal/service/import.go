@@ -232,7 +232,44 @@ func (s *ImportService) ImportFromCanonical(ctx context.Context, canonicalID uin
 func isBotBlockStatus(code int) bool {
 	return code == http.StatusPaymentRequired || // 402
 		code == http.StatusForbidden || // 403
+		code == http.StatusTooManyRequests || // 429
 		code == http.StatusServiceUnavailable // 503
+}
+
+// looksJSRendered reports whether a 200 body is almost certainly a client-rendered
+// shell that needs a headless render (Firecrawl): it carries no JSON-LD structured
+// data AND has very little visible text. A page with JSON-LD, or with substantial
+// prose, is left alone.
+func looksJSRendered(body []byte) bool {
+	s := string(body)
+	if strings.Contains(s, "application/ld+json") {
+		return false
+	}
+	return len(stripHTMLToText(s)) < 600
+}
+
+// firecrawlAvailable reports whether a Firecrawl escalation can actually run.
+func (s *ImportService) firecrawlAvailable() bool {
+	return s.FirecrawlFetchOverride != nil || (s.Cfg != nil && s.Cfg.EnvVars.FirecrawlAPIKey != "")
+}
+
+// maybeFirecrawlThinBody escalates a 200 body that looks like an un-rendered JS
+// shell to Firecrawl, which renders the page. It only fires when Firecrawl is
+// configured (so a missing key leaves behaviour unchanged), and on Firecrawl
+// failure it keeps the original body rather than erroring — a thin 200 is still
+// better than a hard failure.
+func (s *ImportService) maybeFirecrawlThinBody(ctx context.Context, rawURL string, body []byte) string {
+	if !s.firecrawlAvailable() || !looksJSRendered(body) {
+		return string(body)
+	}
+	if s.Policy != nil {
+		s.Policy.RecordDirectFetchBlocked(rawURL)
+	}
+	html, _, err := s.fetchViaFirecrawl(ctx, rawURL)
+	if err != nil || html == "" {
+		return string(body)
+	}
+	return html
 }
 
 // isCloudflareChallenge checks if HTML content is a Cloudflare challenge page.
@@ -533,7 +570,7 @@ func (s *ImportService) fetchHTML(ctx context.Context, rawURL string) (string, e
 		if statusCode != http.StatusOK {
 			return "", &ExtractionError{Code: "fetch_failed", Message: fmt.Sprintf("URL returned status %d", statusCode)}
 		}
-		return string(body), nil
+		return s.maybeFirecrawlThinBody(ctx, rawURL, body), nil
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
@@ -572,7 +609,9 @@ func (s *ImportService) fetchHTML(ctx context.Context, rawURL string) (string, e
 		return "", &ExtractionError{Code: "fetch_failed", Message: fmt.Sprintf("URL returned status %d", resp.StatusCode)}
 	}
 
-	return string(body), nil
+	// 200, but a JS-shell body (no structured data + thin text) escalates to
+	// Firecrawl, which renders the page. Real content is returned as-is.
+	return s.maybeFirecrawlThinBody(ctx, rawURL, body), nil
 }
 
 // FileInput is a single uploaded file (image or PDF) for multi-source import.
