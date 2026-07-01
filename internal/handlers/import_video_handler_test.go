@@ -38,6 +38,14 @@ func (f *fakeFrameSampler) ExtractAudio(ctx context.Context, mediaURL string) ([
 	return nil, nil
 }
 
+func (f *fakeFrameSampler) DownloadVideo(ctx context.Context, mediaURL string, maxBytes int64) ([]byte, error) {
+	return nil, nil
+}
+
+func (f *fakeFrameSampler) ThumbnailFromVideo(ctx context.Context, videoData []byte) ([]byte, error) {
+	return nil, nil
+}
+
 // videoEnabledHandler builds an ImportHandler whose service has the video
 // dependencies wired with fakes, plus a SubscriptionService for gating.
 func videoEnabledHandler(repo *testutil.MockRecipeRepo, vrepo *testutil.MockVideoImportRepo, userRepo *testutil.MockUserRepo) *ImportHandler {

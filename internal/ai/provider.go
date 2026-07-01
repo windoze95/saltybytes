@@ -45,6 +45,15 @@ type VisionProvider interface {
 	ExtractRecipesFromMedia(ctx context.Context, media []MediaInput, contextText string, unitSystem string, requirements string) ([]*RecipeResult, error)
 }
 
+// VideoProvider extracts recipes from a whole video ingested natively (video +
+// audio in one pass), rather than from sampled frames. Satisfied by
+// *GeminiVideoProvider. contextText carries the caption/transcript. Returns
+// ErrVideoTooLarge when the video exceeds the inline size limit so the caller
+// can fall back to frame sampling.
+type VideoProvider interface {
+	ExtractRecipesFromVideo(ctx context.Context, videoData []byte, mimeType, contextText, unitSystem, requirements string) ([]*RecipeResult, error)
+}
+
 // ImageProvider handles image generation (DALL-E 3).
 type ImageProvider interface {
 	GenerateImage(ctx context.Context, prompt string) ([]byte, error)

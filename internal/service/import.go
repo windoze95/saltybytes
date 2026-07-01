@@ -53,6 +53,11 @@ type ImportService struct {
 	VideoRepo         repository.VideoImportRepo
 	VideoFetcher      VideoFetcher
 	VideoFrameSampler VideoFrameSampler
+	// VideoProvider, when set (VIDEO_NATIVE_GEMINI enabled), extracts recipes by
+	// ingesting the whole video natively (video+audio) instead of sampling frames
+	// onto the vision provider. Falls back to VideoFrameSampler per-video on any
+	// error or an oversized clip. Optional; nil keeps the frames path.
+	VideoProvider ai.VideoProvider
 	// SubService refunds the per-user video quota when an accepted import later
 	// fails on our side. Optional; nil disables refunds (e.g. in tests).
 	SubService *SubscriptionService

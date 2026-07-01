@@ -44,6 +44,12 @@ type EnvVars struct {
 	// registry endpoints). When empty the admin API is disabled entirely, so a
 	// deploy without the secret can never expose those endpoints.
 	AdminToken string `env:"ADMIN_TOKEN" optional:"true"`
+	// VideoNativeGemini routes video import through native Gemini video+audio
+	// extraction (far cheaper than sampling frames onto Sonnet, and it reads the
+	// narration natively). Requires GEMINI_API_KEY. Falls back to frame sampling
+	// per-video when the clip is too large to inline or native extraction fails.
+	VideoNativeGemini bool   `env:"VIDEO_NATIVE_GEMINI" optional:"true"`
+	GeminiVideoModel  string `env:"GEMINI_VIDEO_MODEL" envDefault:"gemini-2.5-flash" optional:"true"`
 	// PromptsPath overrides the location of the prompts YAML file, which is
 	// cwd-relative by default and only resolves from the Docker workdir.
 	PromptsPath     string `env:"PROMPTS_PATH" envDefault:"configs/prompts.yaml" optional:"true"`

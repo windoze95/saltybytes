@@ -154,6 +154,17 @@ func SetupRouter(cfg *config.Config, database *gorm.DB) *gin.Engine {
 		logger.Get().Info("video-link import disabled (no ScrapeCreators API key configured)")
 	}
 
+	// Native Gemini video extraction (opt-in): when enabled, video import ingests
+	// the whole clip (video + audio) through Gemini instead of sampling frames
+	// onto Sonnet — far cheaper, and it reads the narration natively. Falls back
+	// to frame sampling per-video. Requires a Gemini key.
+	if cfg.EnvVars.VideoNativeGemini && cfg.EnvVars.GeminiAPIKey != "" {
+		gvp := ai.NewGeminiVideoProvider(cfg.EnvVars.GeminiAPIKey, cfg.EnvVars.GeminiVideoModel, cfg.Prompts)
+		gvp.WithMiddleware(aiMW)
+		importService.VideoProvider = gvp
+		logger.Get().Info("native gemini video extraction enabled", zap.String("model", cfg.EnvVars.GeminiVideoModel))
+	}
+
 	// Admin API: light-tier model registry + live switch, used by the operator
 	// dashboard. Guarded by the shared ID header AND a dedicated admin token; the
 	// whole group is disabled (503) when ADMIN_TOKEN is unset, so it is never
