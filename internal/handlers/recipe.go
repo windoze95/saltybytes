@@ -1,16 +1,11 @@
 package handlers
 
 import (
-	"context"
-	"encoding/json"
-	"io"
 	"net/http"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/windoze95/saltybytes-api/internal/ai"
 	"github.com/windoze95/saltybytes-api/internal/logger"
 	"github.com/windoze95/saltybytes-api/internal/repository"
 	"github.com/windoze95/saltybytes-api/internal/service"
@@ -133,54 +128,6 @@ func (h *RecipeHandler) GetRecipe(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"recipe": recipeResponse})
 }
 
-// GenerateRecipe generates a new recipe with chat.
-func (h *RecipeHandler) GenerateRecipe(c *gin.Context) {
-	// Retrieve the user from the context
-	user, err := util.GetUserFromContext(c)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		c.Abort()
-		return
-	}
-
-	var request struct {
-		UserPrompt string `json:"user_prompt"`
-		GenImage   *bool  `json:"gen_image"`
-	}
-
-	// Parse the request body
-	if err := c.BindJSON(&request); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request: " + err.Error()})
-		return
-	}
-
-	// Check if GenImage was provided, if not, default to true
-	var genImage bool
-	if request.GenImage == nil {
-		genImage = true
-	} else {
-		genImage = *request.GenImage
-	}
-
-	if !h.checkAIGenerationLimit(c, user.ID) {
-		return
-	}
-
-	prompt := strings.TrimSpace(request.UserPrompt)
-	recipeResponse, err := h.Service.InitGenerateRecipe(user, prompt, genImage)
-	if err != nil {
-		logger.Get().Error("failed to initialize recipe generation", zap.Error(err))
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "An unexpected error occurred while initializing generation"})
-		return
-	}
-
-	h.incrementAIGenerationUsage(user.ID)
-
-	// go h.Service.FinishGenerateRecipe(recipe, user, request.UserPrompt)
-
-	c.JSON(http.StatusOK, gin.H{"recipe": recipeResponse, "message": "Generating recipe"})
-}
-
 // RegenerateRecipe regenerates a recipe with chat.
 func (h *RecipeHandler) RegenerateRecipe(c *gin.Context) {
 	// Retrieve the user from the context
@@ -288,79 +235,6 @@ func (h *RecipeHandler) GenerateRecipeWithFork(c *gin.Context) {
 	h.incrementAIGenerationUsage(user.ID)
 
 	c.JSON(http.StatusOK, gin.H{"recipe": recipeResponse, "message": "Regenerating recipe"})
-}
-
-// StreamGenerateRecipe generates a recipe with streaming SSE progress events.
-func (h *RecipeHandler) StreamGenerateRecipe(c *gin.Context) {
-	user, err := util.GetUserFromContext(c)
-	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
-		return
-	}
-
-	var request struct {
-		UserPrompt string `json:"user_prompt"`
-		GenImage   *bool  `json:"gen_image"`
-	}
-	if err := c.BindJSON(&request); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request: " + err.Error()})
-		return
-	}
-
-	genImage := true
-	if request.GenImage != nil {
-		genImage = *request.GenImage
-	}
-
-	prompt := strings.TrimSpace(request.UserPrompt)
-	if prompt == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "user_prompt is required"})
-		return
-	}
-
-	if !h.checkAIGenerationLimit(c, user.ID) {
-		return
-	}
-
-	// Set SSE headers
-	c.Header("Content-Type", "text/event-stream")
-	c.Header("Cache-Control", "no-cache")
-	c.Header("Connection", "keep-alive")
-	c.Header("X-Accel-Buffering", "no") // disable nginx buffering
-
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Minute)
-	defer cancel()
-
-	events := make(chan ai.StreamEvent, 32)
-
-	go func() {
-		defer close(events)
-		defer util.RecoverPanic("stream generate recipe")
-		h.Service.StreamGenerateRecipe(ctx, user, prompt, genImage, events)
-	}()
-
-	c.Stream(func(w io.Writer) bool {
-		select {
-		case event, ok := <-events:
-			if !ok {
-				return false
-			}
-			// Usage is counted only when generation actually completes, so
-			// failed generations (provider errors, content-quality
-			// rejections) don't burn the user's monthly quota — matching
-			// the non-streaming endpoints, which increment after a
-			// successful init.
-			if event.Type == ai.StreamEventComplete {
-				h.incrementAIGenerationUsage(user.ID)
-			}
-			data, _ := json.Marshal(event)
-			c.SSEvent(string(event.Type), string(data))
-			c.Writer.Flush()
-			return event.Type != ai.StreamEventComplete && event.Type != ai.StreamEventError
-		case <-ctx.Done():
-			return false
-		}
-	})
 }
 
 // DeleteRecipe deletes a recipe by its ID.

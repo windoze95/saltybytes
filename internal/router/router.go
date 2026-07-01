@@ -268,11 +268,7 @@ func SetupRouter(cfg *config.Config, database *gorm.DB) *gin.Engine {
 		apiProtected.GET("/recipes/:recipe_id", middleware.AttachUserToContext(userService), recipeHandler.GetRecipe)
 		// List the authenticated user's recipes
 		apiProtected.GET("/recipes", middleware.AttachUserToContext(userService), recipeHandler.ListRecipes)
-		// Generate a new recipe with chat
-		apiProtected.POST("/recipes/chat", middleware.AttachUserToContext(userService), recipeHandler.GenerateRecipe)
-		// Generate a new recipe with streaming SSE progress events
-		apiProtected.POST("/recipes/chat/stream", middleware.AttachUserToContext(userService), recipeHandler.StreamGenerateRecipe)
-		// Generate a new recipe based on a previous recipe and the user's chat
+		// Regenerate a recipe in place based on a previous recipe and the user's chat
 		apiProtected.PUT("/recipes/:recipe_id/chat", middleware.AttachUserToContext(userService), recipeHandler.RegenerateRecipe)
 
 		apiProtected.POST("/recipes/:recipe_id/fork", middleware.AttachUserToContext(userService), recipeHandler.GenerateRecipeWithFork)
