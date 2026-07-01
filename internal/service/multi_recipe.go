@@ -25,6 +25,11 @@ type MultiRecipeCard struct {
 	ExtractionStatus string            `json:"extraction_status"` // "pending", "extracting", "done", "failed"
 	RecipeDef        *models.RecipeDef `json:"recipe,omitempty"`  // populated when done
 	Hashtags         []string          `json:"hashtags,omitempty"`
+	// CachedURL is the canonical-cache key under which this card's extracted
+	// recipe was stored (its own-page URL for listicles, or the distinct
+	// ?_recipe=slug URL for inline recipes). Set once ExtractionStatus is "done";
+	// a later preview/import of this URL is an instant cache hit.
+	CachedURL string `json:"cached_url,omitempty"`
 }
 
 // MultiRecipeEntry tracks the resolution state of a multi-recipe URL.
@@ -540,13 +545,34 @@ func (r *MultiRecipeResolver) DetectMultiFromHTML(ctx context.Context, sourceURL
 	return len(r.detectCards(ctx, sourceURL, html)) > 1
 }
 
+// MultiResolver is the finder's seam over the multi-recipe resolver. Digging
+// depends only on this interface so the finder's tests can inject a fake and
+// stay fully offline.
+type MultiResolver interface {
+	ResolveFromURLN(ctx context.Context, sourceURL string, maxCards int) *MultiRecipeEntry
+}
+
+var _ MultiResolver = (*MultiRecipeResolver)(nil)
+
 // ResolveFromHTML detects and begins resolving a multi-recipe page from fetched HTML.
 // Uses JSON-LD detection first, then falls back to AI-based detection.
 // Returns the entry if multi-recipe, or nil if single-recipe.
 func (r *MultiRecipeResolver) ResolveFromHTML(ctx context.Context, sourceURL string, html string) *MultiRecipeEntry {
+	return r.resolveFromHTMLN(ctx, sourceURL, html, 0)
+}
+
+// resolveFromHTMLN is ResolveFromHTML with an optional cap on the number of
+// cards resolved+extracted. maxCards <= 0 means no cap. Cards are truncated
+// before URL assignment, registration and extraction, so a capped resolve never
+// kicks off extraction for the dropped cards.
+func (r *MultiRecipeResolver) resolveFromHTMLN(ctx context.Context, sourceURL string, html string, maxCards int) *MultiRecipeEntry {
 	cards := r.detectCards(ctx, sourceURL, html)
 	if len(cards) <= 1 {
 		return nil
+	}
+
+	if maxCards > 0 && len(cards) > maxCards {
+		cards = cards[:maxCards]
 	}
 
 	// Point cards at their own recipe pages when this is a collection/listicle
@@ -572,6 +598,13 @@ func (r *MultiRecipeResolver) ResolveFromHTML(ctx context.Context, sourceURL str
 // ResolveFromURL fetches a URL and resolves if it's multi-recipe.
 // Used for late detection when a search result is clicked.
 func (r *MultiRecipeResolver) ResolveFromURL(ctx context.Context, sourceURL string) *MultiRecipeEntry {
+	return r.ResolveFromURLN(ctx, sourceURL, 0)
+}
+
+// ResolveFromURLN is ResolveFromURL with a cap on how many cards are resolved
+// and extracted (maxCards <= 0 means no cap). The finder's bounded digging uses
+// it so a huge listicle never triggers unbounded background extraction.
+func (r *MultiRecipeResolver) ResolveFromURLN(ctx context.Context, sourceURL string, maxCards int) *MultiRecipeEntry {
 	// Check if already tracked
 	if existing := r.Registry.Get(sourceURL); existing != nil {
 		return existing
@@ -585,7 +618,7 @@ func (r *MultiRecipeResolver) ResolveFromURL(ctx context.Context, sourceURL stri
 	}
 
 	// Check for multiple recipes
-	return r.ResolveFromHTML(ctx, sourceURL, html)
+	return r.resolveFromHTMLN(ctx, sourceURL, html, maxCards)
 }
 
 // extractAllRecipes runs full extraction for each card in the entry.
@@ -646,6 +679,8 @@ func (r *MultiRecipeResolver) extractSingleCard(entry *MultiRecipeEntry, idx int
 			entry.Cards[idx].ExtractionStatus = "done"
 			entry.Cards[idx].RecipeDef = def
 			entry.Cards[idx].Hashtags = hashtags
+			// The recipe lives at its own page, so that URL is its cache key.
+			entry.Cards[idx].CachedURL = sourceURL
 			entry.mu.Unlock()
 			if r.ImportService.CanonicalRepo != nil {
 				if normalizedURL, nerr := NormalizeURL(sourceURL); nerr == nil {
@@ -735,6 +770,10 @@ func (r *MultiRecipeResolver) extractSingleCard(entry *MultiRecipeEntry, idx int
 			separator = "&"
 		}
 		distinctURL := sourceURL + separator + "_recipe=" + slug
+		// This inline recipe only exists in our cache under the distinct key.
+		entry.mu.Lock()
+		entry.Cards[idx].CachedURL = distinctURL
+		entry.mu.Unlock()
 		if normalizedURL, err := NormalizeURL(distinctURL); err == nil {
 			now := time.Now()
 			canonical := &models.CanonicalRecipe{

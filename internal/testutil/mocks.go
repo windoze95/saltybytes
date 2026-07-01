@@ -3,6 +3,7 @@ package testutil
 import (
 	"context"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -990,6 +991,90 @@ func (m *MockFamilyRepo) GetOrCreateDietaryProfile(memberID uint) (*models.Dieta
 	return &models.DietaryProfile{MemberID: memberID}, nil
 }
 
+// --- MockFinderSessionRepo ---
+
+// MockFinderSessionRepo is an in-memory mock of repository.FinderSessionRepo.
+// Created sessions are recorded (survive deletion) so tests can assert on
+// auto-save behaviour; ListByUser returns a user's sessions newest-first.
+type MockFinderSessionRepo struct {
+	mu       sync.Mutex
+	sessions map[uint]*models.FinderSession
+	created  []*models.FinderSession
+	nextID   uint
+
+	CreateErr error
+}
+
+// NewMockFinderSessionRepo creates an empty in-memory finder-session repo.
+func NewMockFinderSessionRepo() *MockFinderSessionRepo {
+	return &MockFinderSessionRepo{sessions: make(map[uint]*models.FinderSession)}
+}
+
+func (m *MockFinderSessionRepo) Create(ctx context.Context, session *models.FinderSession) error {
+	if m.CreateErr != nil {
+		return m.CreateErr
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.nextID++
+	session.ID = m.nextID
+	cp := *session
+	m.sessions[session.ID] = &cp
+	created := *session
+	m.created = append(m.created, &created)
+	return nil
+}
+
+func (m *MockFinderSessionRepo) ListByUser(ctx context.Context, userID uint, limit, offset int) ([]models.FinderSession, int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var all []models.FinderSession
+	for _, s := range m.sessions {
+		if s.UserID == userID {
+			all = append(all, *s)
+		}
+	}
+	sort.Slice(all, func(i, j int) bool { return all[i].ID > all[j].ID }) // newest first
+	total := int64(len(all))
+	if offset >= len(all) {
+		return []models.FinderSession{}, total, nil
+	}
+	end := offset + limit
+	if end > len(all) {
+		end = len(all)
+	}
+	return all[offset:end], total, nil
+}
+
+func (m *MockFinderSessionRepo) GetByID(ctx context.Context, id uint) (*models.FinderSession, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	s, ok := m.sessions[id]
+	if !ok {
+		return nil, gorm.ErrRecordNotFound
+	}
+	cp := *s
+	return &cp, nil
+}
+
+func (m *MockFinderSessionRepo) Delete(ctx context.Context, id uint) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.sessions, id)
+	return nil
+}
+
+// Created returns a race-safe snapshot of every created session.
+func (m *MockFinderSessionRepo) Created() []models.FinderSession {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]models.FinderSession, len(m.created))
+	for i, s := range m.created {
+		out[i] = *s
+	}
+	return out
+}
+
 // --- MockCanonicalRecipeRepo ---
 
 // MockCanonicalRecipeRepo mocks repository.CanonicalRecipeRepo for testing.
@@ -1145,4 +1230,5 @@ var _ repository.UserRepo = (*MockUserRepo)(nil)
 var _ repository.SearchCacheRepo = (*MockSearchCacheRepo)(nil)
 var _ repository.CanonicalRecipeRepo = (*MockCanonicalRecipeRepo)(nil)
 var _ repository.FamilyRepo = (*MockFamilyRepo)(nil)
+var _ repository.FinderSessionRepo = (*MockFinderSessionRepo)(nil)
 var _ repository.VideoImportRepo = (*MockVideoImportRepo)(nil)

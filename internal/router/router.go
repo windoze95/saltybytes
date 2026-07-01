@@ -357,9 +357,21 @@ func SetupRouter(cfg *config.Config, database *gorm.DB) *gin.Engine {
 	// Recipe finder — a guided agent that finds REAL recipes by driving search +
 	// a single cheap ranking call (light tier), streamed over SSE. Gated by the
 	// same "search" limit as the search endpoint. Ships dark (no caller yet).
+	// Saved finder-run history (ungated) — also the finder's server-side auto-save sink.
+	finderSessionRepo := repository.NewFinderSessionRepository(database)
+	finderSessionService := service.NewFinderSessionService(finderSessionRepo)
+	finderSessionHandler := handlers.NewFinderSessionHandler(finderSessionService)
+
 	finderService := service.NewRecipeFinderService(cfg, searchService, familyRepo, warmService, previewProvider)
+	// Agentic digging expands ranker-flagged collections via the multi-recipe
+	// resolver; auto-save records each completed first-page run for history.
+	finderService.MultiResolver = multiResolver
+	finderService.Sessions = finderSessionService
 	finderHandler := &handlers.FinderHandler{Service: finderService, SubService: subService}
 	apiProtected.POST("/recipes/find", middleware.AttachUserToContext(userService), finderHandler.FindRecipes)
+	apiProtected.GET("/recipes/finder/sessions", middleware.AttachUserToContext(userService), finderSessionHandler.ListSessions)
+	apiProtected.GET("/recipes/finder/sessions/:session_id", middleware.AttachUserToContext(userService), finderSessionHandler.GetSession)
+	apiProtected.DELETE("/recipes/finder/sessions/:session_id", middleware.AttachUserToContext(userService), finderSessionHandler.DeleteSession)
 
 	// Vector similarity routes
 	similarityHandler := handlers.NewSimilarityHandler(vectorRepo, embedProvider, recipeService)

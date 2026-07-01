@@ -263,6 +263,12 @@ type FinderRanking struct {
 	Index  int
 	Reason string
 	Safety []MemberSafety
+	// Expand marks a candidate that is a collection/listicle/roundup page (many
+	// recipes) rather than a single recipe, worth digging into for its
+	// individual recipes. ExpandPriority (higher = more promising) orders which
+	// collections to dig first when several are flagged.
+	Expand         bool
+	ExpandPriority int
 }
 
 // FinderRankResult is the output of ExpandAndRankRecipes: candidates in

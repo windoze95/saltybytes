@@ -3,7 +3,10 @@ package service
 import (
 	"context"
 	"fmt"
+	"net/url"
+	"sort"
 	"strings"
+	"time"
 
 	"github.com/windoze95/saltybytes-api/internal/ai"
 	"github.com/windoze95/saltybytes-api/internal/config"
@@ -21,6 +24,22 @@ const (
 	// finderWarmTopN is how many top shortlisted results to proactively warm so
 	// a later tap is an instant cache hit.
 	finderWarmTopN = 4
+
+	// Agentic multi-recipe digging bounds. Digging expands a few collection /
+	// listicle candidates into their individual recipes, but stays bounded so it
+	// never turns into an open-ended crawl.
+	//
+	// finderDigMinDirect: only dig when the direct shortlist has fewer than this
+	// many items (enough direct hits → no need to dig).
+	finderDigMinDirect = 8
+	// finderDigK: max number of collections to dig into per run.
+	finderDigK = 2
+	// finderPerCollectionCardCap: max cards resolved+extracted per collection.
+	finderPerCollectionCardCap = 6
+	// finderDigMaxCards: max recipes folded in across ALL collections in a run.
+	finderDigMaxCards = 6
+	// finderDigWait: max time to wait for one collection to finish resolving.
+	finderDigWait = 4 * time.Second
 )
 
 // finderRefineChips are the bounded, tap-first refinement options offered after
@@ -41,6 +60,11 @@ const (
 	FinderEventFiltering FinderEventType = "filtering"
 	// FinderEventShortlist carries the ranked real results with rationales+safety.
 	FinderEventShortlist FinderEventType = "shortlist"
+	// FinderEventDigging announces that the finder is expanding a collection /
+	// listicle candidate into its individual recipes.
+	FinderEventDigging FinderEventType = "digging"
+	// FinderEventExpanded carries the individual recipes dug out of a collection.
+	FinderEventExpanded FinderEventType = "expanded"
 	// FinderEventWarming lists the top URLs being proactively cache-warmed.
 	FinderEventWarming FinderEventType = "warming"
 	// FinderEventRefineReady offers tap-to-refine chips + broaden suggestions.
@@ -78,6 +102,9 @@ type FinderEvent struct {
 	// available (derived from the search result, not the shortlist length —
 	// the finder drops avoid/duplicate candidates). Carried on the shortlist event.
 	HasMore bool `json:"has_more,omitempty"`
+	// CollectionTitle is the title of the collection/listicle being expanded,
+	// carried on the digging and expanded events.
+	CollectionTitle string `json:"collection_title,omitempty"`
 }
 
 // FinderFacets are the tappable facet-chip selections that steer a find. They
@@ -120,6 +147,12 @@ type RecipeFinderService struct {
 	// RankProvider is the light tier (Gemini Flash) that performs the single
 	// query-expansion + ranking call.
 	RankProvider ai.TextProvider
+	// MultiResolver (nil-safe) expands collection/listicle candidates the ranker
+	// flags into their individual recipes. When nil, digging is skipped.
+	MultiResolver MultiResolver
+	// Sessions (nil-safe) persists each completed first-page run for history.
+	// When nil, auto-save is skipped.
+	Sessions *FinderSessionService
 }
 
 // NewRecipeFinderService wires the finder over the existing search, family and
@@ -194,6 +227,12 @@ func (s *RecipeFinderService) FindRecipes(ctx context.Context, user *models.User
 		return
 	}
 
+	// 6.5. Agentic digging (bounded): when the direct shortlist is thin, expand
+	// a few collection/listicle candidates the ranker flagged into their
+	// individual recipes, folding them into the run. Never invents — every folded
+	// recipe is a real extraction from the collection.
+	folded := s.digCollections(ctx, events, results, rank, len(items))
+
 	// 7. Proactively warm the top results (best-effort) so a later tap is an
 	// instant cache hit.
 	if warmURLs := topURLs(items, finderWarmTopN); len(warmURLs) > 0 {
@@ -210,6 +249,13 @@ func (s *RecipeFinderService) FindRecipes(ctx context.Context, user *models.User
 		return
 	}
 	s.emit(ctx, events, FinderEvent{Type: FinderEventDone})
+
+	// 9. Auto-save the completed first-page run for history (ungated, best-effort).
+	// assembled = the direct shortlist plus everything dug out of collections.
+	assembled := make([]FinderResultItem, 0, len(items)+len(folded))
+	assembled = append(assembled, items...)
+	assembled = append(assembled, folded...)
+	s.autoSaveSession(user, req, query, len(results), len(folded), assembled)
 }
 
 // emit sends one event, returning false if the context is cancelled (e.g. the
@@ -221,6 +267,206 @@ func (s *RecipeFinderService) emit(ctx context.Context, events chan<- FinderEven
 	case <-ctx.Done():
 		return false
 	}
+}
+
+// digCollections agentically expands up to finderDigK collection/listicle
+// candidates the ranker flagged, folding their individual recipes into the run
+// as expanded events. It is bounded on every axis (collections dug, cards per
+// collection, total folded cards, and wait per collection) and only runs when
+// the direct shortlist is thin. It never invents — every folded recipe is a real
+// extraction from the collection. Returns the folded items so the caller can
+// include them when saving the session.
+func (s *RecipeFinderService) digCollections(ctx context.Context, events chan<- FinderEvent, results []ai.SearchResult, rank *ai.FinderRankResult, directCount int) []FinderResultItem {
+	if s.MultiResolver == nil || rank == nil {
+		return nil
+	}
+	// Enough direct hits already — don't bother digging.
+	if directCount >= finderDigMinDirect {
+		return nil
+	}
+
+	// Gather the flagged collection candidates, most promising first.
+	type collection struct {
+		url   string
+		title string
+		prio  int
+	}
+	var collections []collection
+	for _, r := range rank.Ranked {
+		if !r.Expand || r.Index < 0 || r.Index >= len(results) {
+			continue
+		}
+		u := strings.TrimSpace(results[r.Index].URL)
+		if u == "" {
+			continue
+		}
+		collections = append(collections, collection{url: u, title: results[r.Index].Title, prio: r.ExpandPriority})
+	}
+	if len(collections) == 0 {
+		return nil
+	}
+	sort.SliceStable(collections, func(i, j int) bool { return collections[i].prio > collections[j].prio })
+	if len(collections) > finderDigK {
+		collections = collections[:finderDigK]
+	}
+
+	var folded []FinderResultItem
+	for _, c := range collections {
+		if len(folded) >= finderDigMaxCards {
+			break
+		}
+		if !s.emit(ctx, events, FinderEvent{Type: FinderEventDigging, CollectionTitle: c.title}) {
+			return folded
+		}
+
+		entry := s.MultiResolver.ResolveFromURLN(ctx, c.url, finderPerCollectionCardCap)
+		if entry == nil {
+			continue
+		}
+
+		var batch []FinderResultItem
+		for _, card := range s.waitForCollection(ctx, entry) {
+			if len(folded)+len(batch) >= finderDigMaxCards {
+				break
+			}
+			// Only fold recipes that finished extracting and have a cache key —
+			// the folded URL must be an instant cache hit on tap.
+			if card.ExtractionStatus != "done" {
+				continue
+			}
+			cached := strings.TrimSpace(card.CachedURL)
+			if cached == "" {
+				continue
+			}
+			batch = append(batch, FinderResultItem{
+				Result: ai.SearchResult{
+					Title:       card.Title,
+					URL:         cached,
+					Source:      hostOf(cached),
+					ImageURL:    card.ImageURL,
+					Description: card.Description,
+				},
+				Reason: fmt.Sprintf("from '%s'", c.title),
+			})
+		}
+		if len(batch) == 0 {
+			continue
+		}
+		folded = append(folded, batch...)
+		if !s.emit(ctx, events, FinderEvent{Type: FinderEventExpanded, Items: batch, CollectionTitle: c.title}) {
+			return folded
+		}
+	}
+	return folded
+}
+
+// waitForCollection polls a resolving collection until it is terminal (resolved
+// or failed) or finderDigWait elapses, returning whatever cards exist then.
+func (s *RecipeFinderService) waitForCollection(ctx context.Context, entry *MultiRecipeEntry) []MultiRecipeCard {
+	deadline := time.After(finderDigWait)
+	ticker := time.NewTicker(300 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if status := entry.GetStatus(); status == "resolved" || status == "failed" {
+			return entry.GetCards()
+		}
+		select {
+		case <-ctx.Done():
+			return entry.GetCards()
+		case <-deadline:
+			return entry.GetCards()
+		case <-ticker.C:
+		}
+	}
+}
+
+// autoSaveSession persists a completed first-page finder run for history. It is
+// ungated and best-effort: only first-page runs with at least one result are
+// saved, on a context detached from the request (so a client disconnect after
+// "done" doesn't cancel the write), and any error is logged, never surfaced.
+func (s *RecipeFinderService) autoSaveSession(user *models.User, req FinderRequest, query string, foundCount, foldedCount int, assembled []FinderResultItem) {
+	if s.Sessions == nil || user == nil || req.Offset != 0 || len(assembled) == 0 {
+		return
+	}
+
+	results := make(models.SearchResultList, 0, len(assembled))
+	for _, it := range assembled {
+		results = append(results, models.SearchResultItem{
+			Title:       it.Result.Title,
+			URL:         it.Result.URL,
+			Source:      it.Result.Source,
+			Rating:      it.Result.Rating,
+			ImageURL:    it.Result.ImageURL,
+			Description: it.Result.Description,
+		})
+	}
+
+	narration := models.StringList{
+		fmt.Sprintf("Searched for %q", query),
+		fmt.Sprintf("Found %d recipes", foundCount),
+	}
+	if foldedCount > 0 {
+		narration = append(narration, fmt.Sprintf("Dug %d more from collections", foldedCount))
+	}
+	narration = append(narration, fmt.Sprintf("Shortlisted %d", len(assembled)))
+
+	session := &models.FinderSession{
+		UserID:    user.ID,
+		Title:     finderSessionTitle(req),
+		Intent:    finderIntent(req),
+		Results:   results,
+		Narration: narration,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := s.Sessions.Save(ctx, session); err != nil {
+		logger.Get().Warn("failed to auto-save finder session", zap.Uint("user_id", user.ID), zap.Error(err))
+	}
+}
+
+// finderIntent maps a finder request to its persisted intent shape.
+func finderIntent(req FinderRequest) models.FinderIntent {
+	f := effectiveFacets(req)
+	return models.FinderIntent{
+		Occasion:     f.Occasion,
+		TimeBudget:   f.TimeBudget,
+		Protein:      f.Protein,
+		Cuisine:      f.Cuisine,
+		UseWhatIHave: f.UseWhatIHave,
+		SurpriseMe:   f.SurpriseMe,
+		FreeText:     strings.TrimSpace(req.FreeText),
+	}
+}
+
+// finderSessionTitle derives a short, human title for a saved run from its facets.
+func finderSessionTitle(req FinderRequest) string {
+	f := effectiveFacets(req)
+	parts := appendNonEmpty(nil, f.Protein, f.Cuisine, f.Occasion, f.TimeBudget)
+	if ft := strings.TrimSpace(req.FreeText); ft != "" {
+		parts = append(parts, ft)
+	}
+	title := strings.TrimSpace(strings.Join(parts, " "))
+	if title == "" {
+		if f.SurpriseMe {
+			return "Surprise me"
+		}
+		return "Recipe finder"
+	}
+	const maxTitle = 80
+	if len(title) > maxTitle {
+		title = strings.TrimSpace(title[:maxTitle])
+	}
+	return title
+}
+
+// hostOf returns the host of a URL, or "" if it cannot be parsed.
+func hostOf(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return ""
+	}
+	return u.Host
 }
 
 // rankCandidates runs the single ranking model call. On any error it degrades
