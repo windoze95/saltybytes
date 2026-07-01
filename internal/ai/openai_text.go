@@ -120,14 +120,20 @@ func (p *OpenAICompatProvider) createChatCompletion(ctx context.Context, req ope
 // firstToolCallArguments returns the JSON argument string of the first tool
 // call in the response, guarding against zero choices / zero tool calls. fnName
 // is used only for diagnostics; tool choice is forced so the first call is the
-// requested function.
+// requested function. The empty-tool-call error carries finish_reason + token
+// usage: Gemini 2.5 models spend completion budget on thinking, so
+// finish_reason=length with a large completion count means the budget was
+// consumed before the tool call was emitted (raise MaxTokens).
 func firstToolCallArguments(resp *openai.ChatCompletionResponse, fnName string) (string, error) {
 	if resp == nil || len(resp.Choices) == 0 {
 		return "", NewAIError(FailureContentEmpty, errors.New("no choices in chat completion response"), "no choices in response")
 	}
 	calls := resp.Choices[0].Message.ToolCalls
 	if len(calls) == 0 {
-		return "", NewAIError(FailureContentEmpty, fmt.Errorf("no %s tool call in chat completion response", fnName), "no tool call in response")
+		return "", NewAIError(FailureContentEmpty,
+			fmt.Errorf("no %s tool call in chat completion response (finish_reason=%s, completion_tokens=%d)",
+				fnName, resp.Choices[0].FinishReason, resp.Usage.CompletionTokens),
+			"no tool call in response")
 	}
 	return calls[0].Function.Arguments, nil
 }

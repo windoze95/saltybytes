@@ -384,7 +384,7 @@ func estimatePortionsTool() anthropic.ToolUnionParam {
 // an inline prompt (like EstimatePortions') rather than a config template, so
 // the finder is self-contained. The hard rule — reference candidates only by
 // index, never invent — is enforced structurally by the tool schema too.
-const finderRankSystemPrompt = `You are a recipe-finding assistant. You are given a list of REAL recipe search results (candidates), each with an index, a URL, a title, a source and a description, plus a description of what the user wants (facets, free text, and their family's dietary needs).
+const finderRankSystemPromptCore = `You are a recipe-finding assistant. You are given a list of REAL recipe search results (candidates), each with an index, a URL, a title, a source and a description, plus a description of what the user wants (facets, free text, and their family's dietary needs).
 
 Select the candidates that best match the request and return them, best match first, using ONLY their given index. Never invent a recipe and never return an index that is not in the candidate list. It is fine to return fewer candidates than you were given; drop ones that clearly do not fit.
 
@@ -400,7 +400,14 @@ For each candidate you return also:
 - Give one short sentence (reason) explaining why it fits — for a collection, say what it collects.
 - Give a best-effort dietary safety assessment for each family member mentioned in the dietary needs, judging ONLY from the candidate's title and description: "safe" if nothing conflicts, "caution" if it might conflict or is unclear, "avoid" if it clearly conflicts with an allergy or restriction. Keep the note short. Omit members you cannot assess.
 
-Also suggest 2-4 broadened search queries (broaden_queries) the user could try to get more options.
+Also suggest 2-4 broadened search queries (broaden_queries) the user could try to get more options.`
+
+// finderRankSystemPrompt is the tool-calling variant used by the Anthropic
+// implementation. The OpenAI-compatible light tier appends a JSON-output
+// instruction instead (see openai_maintier.go): Gemini's function-call parser
+// intermittently rejects large rank_recipes calls outright
+// (MALFORMED_FUNCTION_CALL), so that path uses schema-constrained JSON.
+const finderRankSystemPrompt = finderRankSystemPromptCore + `
 
 Return everything via the rank_recipes tool.`
 
@@ -1567,13 +1574,14 @@ func (p *AnthropicProvider) ExpandAndRankRecipes(ctx context.Context, req Finder
 
 		params := anthropic.MessageNewParams{
 			Model: p.model,
-			// 2048 (not 512): the rank_recipes tool JSON for ~10 candidates with
-			// per-item reason + per-member safety[] + expand/expand_priority +
-			// broaden_queries runs ~1000-1500 output tokens with any family
+			// Generous (not 512): the rank_recipes tool JSON for ~10 candidates
+			// with per-item reason + per-member safety[] + expand/expand_priority
+			// + broaden_queries runs ~1000-1500 output tokens with any family
 			// profile. 512 truncated it → parse error → unranked, flag-less,
-			// reason-less fallback (the "feels like plain search" bug). The parse
-			// is also truncation-tolerant now as a backstop.
-			MaxTokens: 2048,
+			// reason-less fallback (the "feels like plain search" bug). Billed by
+			// actual tokens, so headroom is free; the parse is also
+			// truncation-tolerant as a backstop.
+			MaxTokens: 4096,
 			System:    buildCachedSystemPrompt(finderRankSystemPrompt, ""),
 			Messages: []anthropic.MessageParam{
 				newUserMessage(anthropic.NewTextBlock(string(payload))),

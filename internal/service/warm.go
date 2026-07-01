@@ -56,6 +56,22 @@ func NewWarmService(imp *ImportService, resolver *MultiRecipeResolver, concurren
 	}
 }
 
+// IsKnownMulti reports whether the canonical cache already knows this URL is a
+// multi-recipe collection/listicle page (ground truth from a prior extraction).
+// Read-only: unlike WarmURLs it never kicks background extraction. Best-effort:
+// missing wiring, a bad URL or a cache miss simply report false.
+func (w *WarmService) IsKnownMulti(rawURL string) bool {
+	if w == nil || w.Import == nil || w.Import.CanonicalRepo == nil {
+		return false
+	}
+	normalizedURL, err := NormalizeURL(rawURL)
+	if err != nil {
+		return false
+	}
+	canonical, err := w.Import.CanonicalRepo.GetByNormalizedURL(normalizedURL)
+	return err == nil && canonical != nil && canonical.IsMultiPage
+}
+
 // WarmURLs returns the current warm status of each URL, kicking off background
 // extraction for any that are uncached and not already in flight. It is
 // idempotent — calling it repeatedly with the same URLs is cheap (cached and

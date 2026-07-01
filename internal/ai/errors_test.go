@@ -193,6 +193,15 @@ func TestClassifyOpenAIError(t *testing.T) {
 		{"401 does not retry", &openai.APIError{HTTPStatusCode: 401}, false, 0},
 		{"plain error does not retry", errors.New("dial tcp: timeout"), false, 0},
 		{"wrapped API error still classified", fmt.Errorf("outer: %w", &openai.APIError{HTTPStatusCode: 429}), true, 2 * time.Second},
+		// Gemini's OpenAI-compat endpoint wraps error bodies in a JSON ARRAY,
+		// which go-openai can't unmarshal into ErrorResponse — those surface as
+		// *openai.RequestError, not *openai.APIError. They must retry by HTTP
+		// status too (a prod Gemini 429 on 2026-07-01 was returned terminal
+		// because only APIError was recognized).
+		{"RequestError 429 (Gemini array body) retries", &openai.RequestError{HTTPStatusCode: 429, Err: errors.New("json: cannot unmarshal array into Go value of type openai.ErrorResponse")}, true, 2 * time.Second},
+		{"RequestError 500 retries", &openai.RequestError{HTTPStatusCode: 500, Err: errors.New("boom")}, true, 2 * time.Second},
+		{"RequestError 401 does not retry", &openai.RequestError{HTTPStatusCode: 401, Err: errors.New("bad key")}, false, 0},
+		{"wrapped RequestError 429 still classified", fmt.Errorf("gemini chat completion error: %w", &openai.RequestError{HTTPStatusCode: 429, Err: errors.New("quota")}), true, 2 * time.Second},
 	}
 
 	for _, tc := range tests {
