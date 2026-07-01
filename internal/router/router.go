@@ -358,6 +358,13 @@ func SetupRouter(cfg *config.Config, database *gorm.DB) *gin.Engine {
 	apiProtected.POST("/recipes/search/check-multi", middleware.AttachUserToContext(userService), searchHandler.CheckMultiRecipe)
 	apiProtected.POST("/recipes/search/warm", middleware.AttachUserToContext(userService), searchHandler.WarmRecipes)
 
+	// Recipe finder — a guided agent that finds REAL recipes by driving search +
+	// a single cheap ranking call (light tier), streamed over SSE. Gated by the
+	// same "search" limit as the search endpoint. Ships dark (no caller yet).
+	finderService := service.NewRecipeFinderService(cfg, searchService, familyRepo, warmService, previewProvider)
+	finderHandler := &handlers.FinderHandler{Service: finderService, SubService: subService}
+	apiProtected.POST("/recipes/find", middleware.AttachUserToContext(userService), finderHandler.FindRecipes)
+
 	// Vector similarity routes
 	similarityHandler := handlers.NewSimilarityHandler(vectorRepo, embedProvider, recipeService)
 	apiProtected.GET("/recipes/similar/:recipe_id", middleware.AttachUserToContext(userService), similarityHandler.FindSimilar)

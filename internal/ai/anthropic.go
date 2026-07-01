@@ -380,6 +380,74 @@ func estimatePortionsTool() anthropic.ToolUnionParam {
 	}
 }
 
+// finderRankSystemPrompt steers the recipe finder's single ranking call. It is
+// an inline prompt (like EstimatePortions') rather than a config template, so
+// the finder is self-contained. The hard rule — reference candidates only by
+// index, never invent — is enforced structurally by the tool schema too.
+const finderRankSystemPrompt = `You are a recipe-finding assistant. You are given a list of REAL recipe search results (candidates), each with an index, and a description of what the user wants (facets, free text, and their family's dietary needs).
+
+Select the candidates that best match the request and return them, best match first, using ONLY their given index. Never invent a recipe and never return an index that is not in the candidate list. It is fine to return fewer candidates than you were given; drop ones that clearly do not fit.
+
+For each candidate you return:
+- Give one short sentence (reason) explaining why it fits the request.
+- Give a best-effort dietary safety assessment for each family member mentioned in the dietary needs, judging ONLY from the candidate's title and description: "safe" if nothing conflicts, "caution" if it might conflict or is unclear, "avoid" if it clearly conflicts with an allergy or restriction. Keep the note short. Omit members you cannot assess.
+
+Also suggest 2-4 broadened search queries (broaden_queries) the user could try to get more options.
+
+Return everything via the rank_recipes tool.`
+
+// rankRecipesProperties is the JSON-schema property set for the rank_recipes
+// tool. It is shared by the Anthropic tool definition and the OpenAI-compatible
+// main/light provider (openai_maintier.go) so both tiers request the identical
+// schema.
+func rankRecipesProperties() map[string]interface{} {
+	return map[string]interface{}{
+		"ranked": map[string]interface{}{
+			"type":        "array",
+			"description": "Chosen candidates, best match first. Each references a candidate by its index.",
+			"items": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"index":  map[string]interface{}{"type": "integer", "description": "Index of the candidate from the provided list. Must be one of the given indices."},
+					"reason": map[string]interface{}{"type": "string", "description": "One short sentence on why this candidate fits the request."},
+					"safety": map[string]interface{}{
+						"type":        "array",
+						"description": "Best-effort per-family-member dietary assessment from the title/description. Empty if no dietary needs were given.",
+						"items": map[string]interface{}{
+							"type": "object",
+							"properties": map[string]interface{}{
+								"member_name": map[string]interface{}{"type": "string", "description": "Family member's name"},
+								"status":      map[string]interface{}{"type": "string", "description": "Dietary safety for this member", "enum": []string{"safe", "caution", "avoid"}},
+								"note":        map[string]interface{}{"type": "string", "description": "Short note explaining the status"},
+							},
+						},
+					},
+				},
+			},
+		},
+		"broaden_queries": map[string]interface{}{
+			"type":        "array",
+			"description": "2-4 broadened search queries the user could try for more options.",
+			"items":       map[string]interface{}{"type": "string"},
+		},
+	}
+}
+
+// rankRecipesTool builds the Claude tool definition for the recipe finder's
+// query-expansion + ranking call.
+func rankRecipesTool() anthropic.ToolUnionParam {
+	return anthropic.ToolUnionParam{
+		OfTool: &anthropic.ToolParam{
+			Name:        "rank_recipes",
+			Description: anthropic.String("Return the best-matching candidates by index, with rationales, per-member dietary safety, and broadened query suggestions."),
+			InputSchema: anthropic.ToolInputSchemaParam{
+				Type:       "object",
+				Properties: rankRecipesProperties(),
+			},
+		},
+	}
+}
+
 // saveDietaryProfileTool builds the Claude tool definition for saving a
 // completed dietary profile at the end of a dietary interview. The input
 // schema mirrors models.DietaryProfile's snake_case JSON shape.
@@ -510,6 +578,86 @@ func toolResultToPortionEstimate(tr *portionToolResult) *PortionEstimate {
 		Portions:    tr.Portions,
 		PortionSize: tr.PortionSize,
 		Confidence:  tr.Confidence,
+	}
+}
+
+// finderRankPayloadCandidate / finderRankPayload are the JSON body sent to the
+// ranker as the user turn. Keeping them in a shared builder means the Anthropic
+// and OpenAI-compatible providers send byte-identical requests.
+type finderRankPayloadCandidate struct {
+	Index       int    `json:"index"`
+	Title       string `json:"title"`
+	Source      string `json:"source,omitempty"`
+	Description string `json:"description,omitempty"`
+}
+
+type finderRankPayload struct {
+	Facets         string                       `json:"facets,omitempty"`
+	FreeText       string                       `json:"free_text,omitempty"`
+	UnitSystem     string                       `json:"unit_system,omitempty"`
+	CookingContext string                       `json:"cooking_context,omitempty"`
+	Requirements   string                       `json:"requirements,omitempty"`
+	DietSummary    string                       `json:"diet_summary,omitempty"`
+	Candidates     []finderRankPayloadCandidate `json:"candidates"`
+}
+
+// buildFinderRankPayload converts a FinderRankRequest into the wire payload sent
+// to the ranker. Shared by both providers so their requests are identical.
+func buildFinderRankPayload(req FinderRankRequest) finderRankPayload {
+	candidates := make([]finderRankPayloadCandidate, len(req.Candidates))
+	for i, c := range req.Candidates {
+		candidates[i] = finderRankPayloadCandidate{
+			Index:       c.Index,
+			Title:       c.Title,
+			Source:      c.Source,
+			Description: c.Description,
+		}
+	}
+	return finderRankPayload{
+		Facets:         req.Facets,
+		FreeText:       req.FreeText,
+		UnitSystem:     req.UnitSystem,
+		CookingContext: req.CookingContext,
+		Requirements:   req.Requirements,
+		DietSummary:    req.DietSummary,
+		Candidates:     candidates,
+	}
+}
+
+// finderRankToolResult is the JSON structure returned by the rank_recipes tool call.
+type finderRankToolResult struct {
+	Ranked []struct {
+		Index  int    `json:"index"`
+		Reason string `json:"reason"`
+		Safety []struct {
+			MemberName string `json:"member_name"`
+			Status     string `json:"status"`
+			Note       string `json:"note"`
+		} `json:"safety"`
+	} `json:"ranked"`
+	BroadenQueries []string `json:"broaden_queries"`
+}
+
+func toolResultToFinderRankResult(tr *finderRankToolResult) *FinderRankResult {
+	ranked := make([]FinderRanking, len(tr.Ranked))
+	for i, r := range tr.Ranked {
+		safety := make([]MemberSafety, len(r.Safety))
+		for j, s := range r.Safety {
+			safety[j] = MemberSafety{
+				MemberName: s.MemberName,
+				Status:     s.Status,
+				Note:       s.Note,
+			}
+		}
+		ranked[i] = FinderRanking{
+			Index:  r.Index,
+			Reason: r.Reason,
+			Safety: safety,
+		}
+	}
+	return &FinderRankResult{
+		Ranked:         ranked,
+		BroadenQueries: tr.BroadenQueries,
 	}
 }
 
@@ -746,6 +894,24 @@ func extractPortionFromToolUse(msg *anthropic.Message) (*PortionEstimate, error)
 				return nil, fmt.Errorf("failed to parse portion tool result: %w", err)
 			}
 			return toolResultToPortionEstimate(&tr), nil
+		}
+	}
+	return nil, errors.New("no tool_use block found in Claude response")
+}
+
+// extractFinderRankFromToolUse parses the tool-use content block for the recipe finder ranking.
+func extractFinderRankFromToolUse(msg *anthropic.Message) (*FinderRankResult, error) {
+	for _, block := range msg.Content {
+		if block.Type == "tool_use" {
+			raw, err := json.Marshal(block.Input)
+			if err != nil {
+				return nil, fmt.Errorf("failed to marshal tool input: %w", err)
+			}
+			var tr finderRankToolResult
+			if err := json.Unmarshal(raw, &tr); err != nil {
+				return nil, fmt.Errorf("failed to parse rank_recipes tool result: %w", err)
+			}
+			return toolResultToFinderRankResult(&tr), nil
 		}
 	}
 	return nil, errors.New("no tool_use block found in Claude response")
@@ -1297,6 +1463,50 @@ func (p *AnthropicProvider) EstimatePortions(ctx context.Context, recipeDef inte
 		}
 
 		return extractPortionFromToolUse(resp)
+	})
+}
+
+// ExpandAndRankRecipes performs the recipe finder's single ranking call via a
+// forced rank_recipes tool call. Mirrors the light-tier structured-call pattern
+// of EstimatePortions / ClassifyVoiceIntent: an inline system prompt, a modest
+// token budget, and metering through runWithMiddleware.
+func (p *AnthropicProvider) ExpandAndRankRecipes(ctx context.Context, req FinderRankRequest) (*FinderRankResult, error) {
+	op := AIOperation{
+		Name:      "ExpandAndRankRecipes",
+		Provider:  "anthropic",
+		Model:     string(p.model),
+		StartTime: time.Now(),
+	}
+
+	return runWithMiddleware(ctx, p.middleware, op, func(ctx context.Context) (*FinderRankResult, error) {
+		payload, err := json.Marshal(buildFinderRankPayload(req))
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal finder rank payload: %w", err)
+		}
+
+		tool := rankRecipesTool()
+
+		params := anthropic.MessageNewParams{
+			Model:     p.model,
+			MaxTokens: 512,
+			System:    buildCachedSystemPrompt(finderRankSystemPrompt, ""),
+			Messages: []anthropic.MessageParam{
+				newUserMessage(anthropic.NewTextBlock(string(payload))),
+			},
+			Tools: []anthropic.ToolUnionParam{tool},
+			ToolChoice: anthropic.ToolChoiceUnionParam{
+				OfToolChoiceTool: &anthropic.ToolChoiceToolParam{
+					Name: "rank_recipes",
+				},
+			},
+		}
+
+		resp, err := p.createMessageWithRetry(ctx, params)
+		if err != nil {
+			return nil, err
+		}
+
+		return extractFinderRankFromToolUse(resp)
 	})
 }
 
