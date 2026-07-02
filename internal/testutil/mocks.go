@@ -1232,3 +1232,75 @@ var _ repository.CanonicalRecipeRepo = (*MockCanonicalRecipeRepo)(nil)
 var _ repository.FamilyRepo = (*MockFamilyRepo)(nil)
 var _ repository.FinderSessionRepo = (*MockFinderSessionRepo)(nil)
 var _ repository.VideoImportRepo = (*MockVideoImportRepo)(nil)
+
+// --- MockFinderRunRepo ---
+
+// MockFinderRunRepo is an in-memory mock of repository.FinderRunRepo. Runs are
+// recorded thread-safely so tests can assert on the telemetry a finder run
+// writes.
+type MockFinderRunRepo struct {
+	mu   sync.Mutex
+	runs []*models.FinderRun
+
+	CreateErr error
+}
+
+// NewMockFinderRunRepo creates an empty in-memory finder-run repo.
+func NewMockFinderRunRepo() *MockFinderRunRepo {
+	return &MockFinderRunRepo{}
+}
+
+func (m *MockFinderRunRepo) Create(run *models.FinderRun) error {
+	if m.CreateErr != nil {
+		return m.CreateErr
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cp := *run
+	m.runs = append(m.runs, &cp)
+	return nil
+}
+
+// Runs returns a snapshot of every recorded run.
+func (m *MockFinderRunRepo) Runs() []*models.FinderRun {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]*models.FinderRun, len(m.runs))
+	copy(out, m.runs)
+	return out
+}
+
+// --- MockExtractionEventRepo ---
+
+// MockExtractionEventRepo is an in-memory mock of repository.ExtractionEventRepo.
+type MockExtractionEventRepo struct {
+	mu     sync.Mutex
+	events []*models.ExtractionEvent
+
+	CreateErr error
+}
+
+// NewMockExtractionEventRepo creates an empty in-memory extraction-event repo.
+func NewMockExtractionEventRepo() *MockExtractionEventRepo {
+	return &MockExtractionEventRepo{}
+}
+
+func (m *MockExtractionEventRepo) Create(event *models.ExtractionEvent) error {
+	if m.CreateErr != nil {
+		return m.CreateErr
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cp := *event
+	m.events = append(m.events, &cp)
+	return nil
+}
+
+// Events returns a snapshot of every recorded event.
+func (m *MockExtractionEventRepo) Events() []*models.ExtractionEvent {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]*models.ExtractionEvent, len(m.events))
+	copy(out, m.events)
+	return out
+}

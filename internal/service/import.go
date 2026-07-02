@@ -47,6 +47,9 @@ type ImportService struct {
 	CanonicalRepo   repository.CanonicalRecipeRepo
 	Policy          *ImportPolicy
 	Normalize       *NormalizeService // optional; estimates portions when imports lack them
+	// Events (nil-safe) persists terminal extraction outcomes for the
+	// dashboard's completeness panel + failure drill-downs.
+	Events repository.ExtractionEventRepo
 
 	// Video-link import (premium). All three are nil until a ScrapeCreators key
 	// is configured at startup, which keeps the feature dark by default.
@@ -156,6 +159,7 @@ func (s *ImportService) canonicalEmbedding(ctx context.Context, recipeDef *model
 // When a CanonicalRepo is configured, it checks the canonical cache first and
 // saves extractions for future deduplication.
 func (s *ImportService) ImportFromURL(ctx context.Context, rawURL string, user *models.User) (*RecipeResponse, error) {
+	ctx = WithExtractionOrigin(ctx, ExtractionOriginImport)
 	log := logger.Get().With(zap.Uint("user_id", user.ID), zap.String("source_url", rawURL))
 
 	if err := ValidateExternalURL(rawURL); err != nil {
@@ -346,8 +350,34 @@ func (s *ImportService) fetchViaFirecrawl(ctx context.Context, rawURL string) (s
 // extractFromURL fetches a URL and extracts recipe data via JSON-LD or AI fallback.
 // Returns the recipe definition, raw hashtag strings, the page's recipe image
 // URL (when available), the extraction method used, and the prompt version.
-// Shared by PreviewFromURL, ImportFromURL, and background refresh.
+// Shared by PreviewFromURL, ImportFromURL, and background refresh. It wraps
+// the pipeline with telemetry: exactly one ExtractionEvent per attempt,
+// success or failure, with the terminal method, error class and duration.
 func (s *ImportService) extractFromURL(ctx context.Context, rawURL string) (*models.RecipeDef, []string, string, models.ExtractionMethod, string, error) {
+	start := time.Now()
+	def, hashtags, imageURL, method, promptVersion, err := s.extractFromURLInner(ctx, rawURL)
+
+	usedFirecrawl := method == models.ExtractionFirecrawlJSONLD || method == models.ExtractionFirecrawlHaiku
+	errCode := extractionErrCode(err)
+	// site_blocked means the direct fetch was blocked AND the Firecrawl
+	// escalation failed too — firecrawl was in play even though no method
+	// survived to say so.
+	if errCode == "site_blocked" {
+		usedFirecrawl = true
+	}
+	s.recordExtraction(ctx, models.ExtractionEvent{
+		URL:           rawURL,
+		Method:        string(method),
+		Success:       err == nil,
+		ErrorCode:     errCode,
+		Error:         truncateErr(err),
+		UsedFirecrawl: usedFirecrawl,
+		DurationMS:    time.Since(start).Milliseconds(),
+	})
+	return def, hashtags, imageURL, method, promptVersion, err
+}
+
+func (s *ImportService) extractFromURLInner(ctx context.Context, rawURL string) (*models.RecipeDef, []string, string, models.ExtractionMethod, string, error) {
 	log := logger.Get().With(zap.String("url", rawURL))
 
 	// Check if this domain is known to block direct fetches
@@ -817,6 +847,7 @@ type PreviewResult struct {
 // When a CanonicalRepo is configured, it checks the cache first and saves
 // extractions for future deduplication. Returns the recipe data and optional canonical ID.
 func (s *ImportService) PreviewFromURL(ctx context.Context, rawURL string) (*models.RecipeDef, *uint, error) {
+	ctx = WithExtractionOrigin(ctx, ExtractionOriginPreview)
 	log := logger.Get().With(zap.String("source_url", rawURL))
 
 	if err := ValidateExternalURL(rawURL); err != nil {
@@ -880,6 +911,7 @@ func (s *ImportService) PreviewFromURL(ctx context.Context, rawURL string) (*mod
 // structured data. The caller is expected to have already skipped cached and
 // in-flight URLs.
 func (s *ImportService) WarmURL(ctx context.Context, resolver *MultiRecipeResolver, rawURL string) error {
+	ctx = WithExtractionOrigin(ctx, ExtractionOriginWarm)
 	if err := ValidateExternalURL(rawURL); err != nil {
 		return err
 	}
@@ -892,13 +924,27 @@ func (s *ImportService) WarmURL(ctx context.Context, resolver *MultiRecipeResolv
 		return nil
 	}
 
+	start := time.Now()
 	html, err := s.fetchHTML(ctx, rawURL)
 	if err != nil {
+		s.recordExtraction(ctx, models.ExtractionEvent{
+			URL:        rawURL,
+			Success:    false,
+			ErrorCode:  extractionErrCode(err),
+			Error:      truncateErr(err),
+			DurationMS: time.Since(start).Milliseconds(),
+		})
 		return err
 	}
 
 	now := time.Now()
 	markMulti := func() error {
+		s.recordExtraction(ctx, models.ExtractionEvent{
+			URL:        rawURL,
+			Method:     "multi_marked",
+			Success:    true,
+			DurationMS: time.Since(start).Milliseconds(),
+		})
 		return s.CanonicalRepo.Upsert(&models.CanonicalRecipe{
 			NormalizedURL:    normalizedURL,
 			OriginalURL:      rawURL,
@@ -930,10 +976,26 @@ func (s *ImportService) WarmURL(ctx context.Context, resolver *MultiRecipeResolv
 			provider = s.TextProvider
 		}
 		if provider == nil {
+			s.recordExtraction(ctx, models.ExtractionEvent{
+				URL:        rawURL,
+				Success:    false,
+				ErrorCode:  "no_provider",
+				Error:      "no text provider configured for warming",
+				DurationMS: time.Since(start).Milliseconds(),
+			})
 			return fmt.Errorf("no text provider configured for warming")
 		}
 		result, aiErr := provider.ExtractRecipeFromText(ctx, html, ai.UnitSystemPreserveSource)
 		if aiErr != nil {
+			s.recordExtraction(ctx, models.ExtractionEvent{
+				URL:        rawURL,
+				Method:     string(models.ExtractionHaiku),
+				Success:    false,
+				ErrorCode:  extractionErrCode(aiErr),
+				Error:      truncateErr(aiErr),
+				DurationMS: time.Since(start).Milliseconds(),
+				Context:    models.ExtractionContext{"html_len": len(html)},
+			})
 			return aiErr
 		}
 		def := recipeResultToRecipeDef(result)
@@ -943,6 +1005,12 @@ func (s *ImportService) WarmURL(ctx context.Context, resolver *MultiRecipeResolv
 		method = models.ExtractionHaiku
 	}
 
+	s.recordExtraction(ctx, models.ExtractionEvent{
+		URL:        rawURL,
+		Method:     string(method),
+		Success:    true,
+		DurationMS: time.Since(start).Milliseconds(),
+	})
 	return s.CanonicalRepo.Upsert(&models.CanonicalRecipe{
 		NormalizedURL:    normalizedURL,
 		OriginalURL:      rawURL,
@@ -960,6 +1028,8 @@ func (s *ImportService) WarmURL(ctx context.Context, resolver *MultiRecipeResolv
 // extracting only the first recipe. The resolver handles background
 // extraction of each individual recipe.
 func (s *ImportService) PreviewFromURLWithMultiCheck(ctx context.Context, rawURL string, resolver *MultiRecipeResolver) (*PreviewResult, error) {
+	ctx = WithExtractionOrigin(ctx, ExtractionOriginPreview)
+	start := time.Now()
 	log := logger.Get().With(zap.String("source_url", rawURL))
 
 	if err := ValidateExternalURL(rawURL); err != nil {
@@ -1000,6 +1070,13 @@ func (s *ImportService) PreviewFromURLWithMultiCheck(ctx context.Context, rawURL
 	html, err := s.fetchHTML(ctx, rawURL)
 	if err != nil {
 		log.Error("failed to fetch page", zap.Error(err))
+		s.recordExtraction(ctx, models.ExtractionEvent{
+			URL:        rawURL,
+			Success:    false,
+			ErrorCode:  extractionErrCode(err),
+			Error:      truncateErr(err),
+			DurationMS: time.Since(start).Milliseconds(),
+		})
 		return nil, err // pass through ExtractionError (not_found, site_blocked, etc.)
 	}
 
@@ -1026,6 +1103,13 @@ func (s *ImportService) PreviewFromURLWithMultiCheck(ctx context.Context, rawURL
 					}
 				}
 			}
+			s.recordExtraction(ctx, models.ExtractionEvent{
+				URL:        rawURL,
+				Method:     "multi_marked",
+				Success:    true,
+				DurationMS: time.Since(start).Milliseconds(),
+				Context:    models.ExtractionContext{"cards": len(entry.GetCards())},
+			})
 			return &PreviewResult{
 				IsMulti:    true,
 				MultiID:    entry.ID,
@@ -1043,10 +1127,26 @@ func (s *ImportService) PreviewFromURLWithMultiCheck(ctx context.Context, rawURL
 			provider = s.TextProvider
 		}
 		if provider == nil {
+			s.recordExtraction(ctx, models.ExtractionEvent{
+				URL:        rawURL,
+				Success:    false,
+				ErrorCode:  "no_provider",
+				Error:      "no AI text provider configured for fallback extraction",
+				DurationMS: time.Since(start).Milliseconds(),
+			})
 			return nil, fmt.Errorf("no AI text provider configured for fallback extraction")
 		}
 		result, aiErr := provider.ExtractRecipeFromText(ctx, html, ai.UnitSystemPreserveSource)
 		if aiErr != nil {
+			s.recordExtraction(ctx, models.ExtractionEvent{
+				URL:        rawURL,
+				Method:     string(models.ExtractionHaiku),
+				Success:    false,
+				ErrorCode:  extractionErrCode(aiErr),
+				Error:      truncateErr(aiErr),
+				DurationMS: time.Since(start).Milliseconds(),
+				Context:    models.ExtractionContext{"html_len": len(html)},
+			})
 			return nil, fmt.Errorf("failed to extract recipe from URL: %w", aiErr)
 		}
 		def := recipeResultToRecipeDef(result)
@@ -1055,6 +1155,12 @@ func (s *ImportService) PreviewFromURLWithMultiCheck(ctx context.Context, rawURL
 		recipeDef = &def
 		method = models.ExtractionHaiku
 	}
+	s.recordExtraction(ctx, models.ExtractionEvent{
+		URL:        rawURL,
+		Method:     string(method),
+		Success:    true,
+		DurationMS: time.Since(start).Milliseconds(),
+	})
 
 	// Save to canonical cache
 	var canonicalID *uint

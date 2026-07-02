@@ -155,6 +155,9 @@ type RecipeFinderService struct {
 	// Sessions (nil-safe) persists each completed first-page run for history.
 	// When nil, auto-save is skipped.
 	Sessions *FinderSessionService
+	// Runs (nil-safe) persists per-run workflow telemetry (step funnel,
+	// latencies, failure modes) for the dashboard. When nil, nothing is saved.
+	Runs repository.FinderRunRepo
 }
 
 // NewRecipeFinderService wires the finder over the existing search, family and
@@ -173,6 +176,19 @@ func NewRecipeFinderService(cfg *config.Config, search *SearchService, familyRep
 // goes and returning when the run reaches a terminal event (done/empty/error) or
 // the context is cancelled. The caller owns the channel and closes it.
 func (s *RecipeFinderService) FindRecipes(ctx context.Context, user *models.User, req FinderRequest, events chan<- FinderEvent) {
+	// Workflow telemetry: one row per run, whatever way it ends. Terminal
+	// stays "cancelled" unless a real terminal event overwrites it, so client
+	// disconnects are visible too.
+	runStart := time.Now()
+	run := &models.FinderRun{Terminal: "cancelled"}
+	if user != nil {
+		run.UserID = user.ID
+	}
+	defer func() {
+		run.TotalMS = time.Since(runStart).Milliseconds()
+		s.saveRun(run)
+	}()
+
 	// Auto-inject the family's dietary needs (server-side, never client-trusted):
 	// allergies become hard query-excludes; restrictions/preferences steer the
 	// model via the diet summary.
@@ -180,6 +196,7 @@ func (s *RecipeFinderService) FindRecipes(ctx context.Context, user *models.User
 
 	// 1. Compose the search query deterministically — no model call.
 	query := composeFinderQuery(req, allergenExcludes)
+	run.Query = query
 	if !s.emit(ctx, events, FinderEvent{Type: FinderEventSearching, Query: query}) {
 		return
 	}
@@ -190,19 +207,28 @@ func (s *RecipeFinderService) FindRecipes(ctx context.Context, user *models.User
 	if offset < 0 {
 		offset = 0
 	}
+	run.Offset = offset
+	searchStart := time.Now()
 	searchRes, err := s.Search.SearchRecipes(ctx, query, finderSearchCount, offset)
+	run.SearchMS = time.Since(searchStart).Milliseconds()
 	if err != nil {
 		logger.Get().Error("recipe finder search failed", zap.String("query", query), zap.Error(err))
+		run.Terminal = "error"
+		run.ErrorText = truncateErr(err)
 		s.emit(ctx, events, FinderEvent{Type: FinderEventError, Error: "search failed"})
 		return
 	}
 	results := searchRes.Results
+	run.ResultsFound = len(results)
+	run.FromCache = searchRes.FromCache
 	if !s.emit(ctx, events, FinderEvent{Type: FinderEventFound, Count: len(results), FromCache: searchRes.FromCache}) {
 		return
 	}
 
 	// 3. Empty search → broaden suggestions only; never invent a recipe.
 	if len(results) == 0 {
+		run.Terminal = "empty"
+		run.RankOK = true // no rank attempted; don't count as a rank failure
 		s.emit(ctx, events, FinderEvent{Type: FinderEventEmpty, Broaden: broadenFallback(req)})
 		return
 	}
@@ -211,7 +237,11 @@ func (s *RecipeFinderService) FindRecipes(ctx context.Context, user *models.User
 	if !s.emit(ctx, events, FinderEvent{Type: FinderEventFiltering}) {
 		return
 	}
-	rank := s.rankCandidates(ctx, user, req, dietSummary, results)
+	rankStart := time.Now()
+	rank, rankErr := s.rankCandidates(ctx, user, req, dietSummary, results)
+	run.RankMS = time.Since(rankStart).Milliseconds()
+	run.RankOK = rankErr == ""
+	run.RankError = rankErr
 
 	// 4.5. Ground-truth override: force-flag candidates the canonical cache
 	// already KNOWS are multi-recipe collection pages. The model's expand flag
@@ -219,6 +249,7 @@ func (s *RecipeFinderService) FindRecipes(ctx context.Context, user *models.User
 	// (and in the dig queue) even when the ranking call failed entirely and
 	// fallbackRanking returned no flags.
 	s.applyKnownCollections(results, rank)
+	run.CollectionsFlagged = countExpandFlags(rank)
 
 	// 5. Curate the shown picks: INDIVIDUAL recipes only (collections excluded),
 	// in rank order, capped to a tight top-picks set.
@@ -226,6 +257,7 @@ func (s *RecipeFinderService) FindRecipes(ctx context.Context, user *models.User
 	if len(shown) > finderCuratedCap {
 		shown = shown[:finderCuratedCap]
 	}
+	run.ShownDirect = len(shown)
 
 	// 6. Emit the curated shortlist — but only if we have direct individual picks.
 	// If the search was all collections, the first batch mined below seeds the
@@ -249,11 +281,17 @@ func (s *RecipeFinderService) FindRecipes(ctx context.Context, user *models.User
 	if room > finderDigMaxCards {
 		room = finderDigMaxCards
 	}
-	folded := s.digCollections(ctx, events, results, rank, room, &shortlistEmitted, searchRes.HasMore)
+	digStart := time.Now()
+	folded, dug := s.digCollections(ctx, events, results, rank, room, &shortlistEmitted, searchRes.HasMore)
+	run.DigMS = time.Since(digStart).Milliseconds()
+	run.CollectionsDug = dug
+	run.CardsMined = len(folded)
+	run.ShownTotal = len(shown) + len(folded)
 
 	// 7. Truly nothing individual to show (search was all collections and none
 	// extracted in time) → broaden suggestions. Never fall back to collection cards.
 	if !shortlistEmitted {
+		run.Terminal = "empty"
 		s.emit(ctx, events, FinderEvent{Type: FinderEventEmpty, Broaden: broadenList(rank, req)})
 		return
 	}
@@ -273,6 +311,7 @@ func (s *RecipeFinderService) FindRecipes(ctx context.Context, user *models.User
 	if !s.emit(ctx, events, FinderEvent{Type: FinderEventRefineReady, Chips: finderRefineChips, Broaden: broadenList(rank, req)}) {
 		return
 	}
+	run.Terminal = "done"
 	s.emit(ctx, events, FinderEvent{Type: FinderEventDone})
 
 	// 10. Auto-save the completed first-page run for history (ungated, best-effort).
@@ -294,6 +333,31 @@ func (s *RecipeFinderService) emit(ctx context.Context, events chan<- FinderEven
 	}
 }
 
+// saveRun persists one run's workflow telemetry (best-effort; telemetry must
+// never fail a run).
+func (s *RecipeFinderService) saveRun(run *models.FinderRun) {
+	if s.Runs == nil {
+		return
+	}
+	if err := s.Runs.Create(run); err != nil {
+		logger.Get().Warn("failed to save finder run telemetry", zap.Error(err))
+	}
+}
+
+// countExpandFlags counts the ranked candidates flagged as collections.
+func countExpandFlags(rank *ai.FinderRankResult) int {
+	if rank == nil {
+		return 0
+	}
+	n := 0
+	for _, r := range rank.Ranked {
+		if r.Expand {
+			n++
+		}
+	}
+	return n
+}
+
 // digCollections agentically mines the collection/listicle candidates the ranker
 // flagged (Expand) into their individual recipes, up to `room` recipes. It digs
 // reliably whenever a collection is flagged — collections are never shown as
@@ -303,11 +367,14 @@ func (s *RecipeFinderService) emit(ctx context.Context, events chan<- FinderEven
 // most finderDigWait per collection. It never invents — every folded recipe is a
 // real extraction. Folded recipes append via expanded events; when no direct pick
 // was shown (shortlistEmitted false), the first mined batch seeds the shortlist
-// instead so build-89 gets a proper base list. Returns every folded recipe.
-func (s *RecipeFinderService) digCollections(ctx context.Context, events chan<- FinderEvent, results []ai.SearchResult, rank *ai.FinderRankResult, room int, shortlistEmitted *bool, hasMore bool) []FinderResultItem {
+// instead so build-89 gets a proper base list. Returns every folded recipe plus
+// how many collections were actually dug (for run telemetry).
+func (s *RecipeFinderService) digCollections(ctx context.Context, events chan<- FinderEvent, results []ai.SearchResult, rank *ai.FinderRankResult, room int, shortlistEmitted *bool, hasMore bool) ([]FinderResultItem, int) {
 	if s.MultiResolver == nil || rank == nil || room <= 0 {
-		return nil
+		return nil, 0
 	}
+	// Card extractions kicked off below are the finder's own digging.
+	ctx = WithExtractionOrigin(ctx, ExtractionOriginFinderDig)
 
 	// Gather the flagged collection candidates, most promising first.
 	type collection struct {
@@ -327,7 +394,7 @@ func (s *RecipeFinderService) digCollections(ctx context.Context, events chan<- 
 		collections = append(collections, collection{url: u, title: results[r.Index].Title, prio: r.ExpandPriority})
 	}
 	if len(collections) == 0 {
-		return nil
+		return nil, 0
 	}
 	sort.SliceStable(collections, func(i, j int) bool { return collections[i].prio > collections[j].prio })
 	if len(collections) > finderDigK {
@@ -335,13 +402,15 @@ func (s *RecipeFinderService) digCollections(ctx context.Context, events chan<- 
 	}
 
 	var folded []FinderResultItem
+	dug := 0
 	for _, c := range collections {
 		if room <= 0 {
 			break
 		}
 		if !s.emit(ctx, events, FinderEvent{Type: FinderEventDigging, CollectionTitle: c.title}) {
-			return folded
+			return folded, dug
 		}
+		dug++
 
 		// Cap per-collection extraction to what we can still show.
 		maxCards := finderPerCollectionCardCap
@@ -395,10 +464,10 @@ func (s *RecipeFinderService) digCollections(ctx context.Context, events chan<- 
 			*shortlistEmitted = true
 		}
 		if !s.emit(ctx, events, ev) {
-			return folded
+			return folded, dug
 		}
 	}
-	return folded
+	return folded, dug
 }
 
 // waitForCollection polls a resolving collection until it is terminal (resolved
@@ -514,7 +583,10 @@ func hostOf(rawURL string) string {
 // gracefully to the real results in search order (no reasons/safety) rather than
 // dead-ending — search already returned real recipes, so the worst case is an
 // unranked-but-real shortlist, never a fabricated one.
-func (s *RecipeFinderService) rankCandidates(ctx context.Context, user *models.User, req FinderRequest, dietSummary string, results []ai.SearchResult) *ai.FinderRankResult {
+// rankCandidates runs the single ranking call. The second return is the rank
+// failure text ("" on success) — a failure degrades to fallbackRanking, and
+// the caller records it on the run telemetry.
+func (s *RecipeFinderService) rankCandidates(ctx context.Context, user *models.User, req FinderRequest, dietSummary string, results []ai.SearchResult) (*ai.FinderRankResult, string) {
 	candidates := make([]ai.FinderCandidate, len(results))
 	for i, r := range results {
 		candidates[i] = ai.FinderCandidate{
@@ -541,9 +613,9 @@ func (s *RecipeFinderService) rankCandidates(ctx context.Context, user *models.U
 	res, err := s.RankProvider.ExpandAndRankRecipes(ctx, rankReq)
 	if err != nil {
 		logger.Get().Warn("recipe finder ranking failed; showing unranked real results", zap.Error(err))
-		return fallbackRanking(len(results))
+		return fallbackRanking(len(results)), truncateErr(err)
 	}
-	return res
+	return res, ""
 }
 
 // applyKnownCollections force-flags ranked candidates whose URL the canonical
