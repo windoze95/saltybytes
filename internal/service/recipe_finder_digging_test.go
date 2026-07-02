@@ -3,9 +3,11 @@ package service
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/windoze95/saltybytes-api/internal/ai"
+	"github.com/windoze95/saltybytes-api/internal/models"
 	"github.com/windoze95/saltybytes-api/internal/testutil"
 )
 
@@ -322,5 +324,86 @@ func TestFindRecipes_NoDigWhenNothingFlagged(t *testing.T) {
 	}
 	if len(fake.calls) != 0 {
 		t.Errorf("resolver called %v with nothing flagged, want none", fake.calls)
+	}
+}
+
+// TestFindRecipes_KnownMultiExcludedEvenWhenRankingFails locks the fail-closed
+// invariant: when the ranking call fails entirely (fallback ranking, no expand
+// flags), a candidate the canonical cache already knows is a multi-recipe
+// collection page must STILL be excluded from the shown results and dug
+// instead. This is the guard against the 2026-07-01 prod incident where every
+// ranking failure painted "40 Easy ..." roundups as recipe cards.
+func TestFindRecipes_KnownMultiExcludedEvenWhenRankingFails(t *testing.T) {
+	collectionURL := "https://example.com/gallery/40-easy-weeknight-dinners"
+	results := []ai.SearchResult{
+		{Title: "Sheet Pan Chicken Fajitas", URL: "https://example.com/fajitas", Source: "example.com", Description: "Quick weeknight fajitas."},
+		{Title: "40 Easy Weeknight Dinner Recipes", URL: collectionURL, Source: "example.com", Description: "Our favorite quick dinners."},
+		{Title: "One-Pot Chicken and Rice", URL: "https://example.com/one-pot", Source: "example.com", Description: "A comforting one-pot classic."},
+	}
+	searchProvider := &testutil.MockSearchProvider{
+		SearchRecipesFunc: func(ctx context.Context, query string, count, offset int) ([]ai.SearchResult, error) {
+			return results, nil
+		},
+	}
+	ranker := &testutil.MockTextProvider{
+		ExpandAndRankRecipesFunc: func(ctx context.Context, req ai.FinderRankRequest) (*ai.FinderRankResult, error) {
+			return nil, fmt.Errorf("model exploded")
+		},
+	}
+
+	// The canonical cache knows the gallery URL is a multi-recipe page.
+	canon := &testutil.MockCanonicalRecipeRepo{
+		GetByNormalizedURLFunc: func(norm string) (*models.CanonicalRecipe, error) {
+			if strings.Contains(norm, "40-easy-weeknight-dinners") {
+				return &models.CanonicalRecipe{NormalizedURL: norm, IsMultiPage: true}, nil
+			}
+			return nil, fmt.Errorf("miss")
+		},
+	}
+	imp := newTestImportService(testutil.NewMockRecipeRepo(), nil, nil)
+	imp.CanonicalRepo = canon
+
+	fake := &fakeMultiResolver{entries: map[string]*MultiRecipeEntry{
+		collectionURL: resolvedEntry(collectionURL,
+			doneCard("Skillet Chicken Parm", "https://example.com/gallery/40-easy-weeknight-dinners?_recipe=chicken-parm-0"),
+		),
+	}}
+
+	svc := newFinderService(searchProvider, ranker, &testutil.MockFamilyRepo{})
+	svc.Warm = NewWarmService(imp, nil, 2, 0)
+	svc.MultiResolver = fake
+
+	events := runFinder(svc, testutil.TestUser(), FinderRequest{Facets: FinderFacets{Protein: "chicken"}})
+
+	// The known collection must never be shown as a pick...
+	for _, item := range shownItems(events) {
+		if item.Result.URL == collectionURL {
+			t.Fatalf("known multi-page collection shown as a result despite ranking failure: %+v", item)
+		}
+	}
+	// ...the two real singles still are (ranking failure degrades gracefully)...
+	shown := shownItems(events)
+	titles := make([]string, 0, len(shown))
+	for _, it := range shown {
+		titles = append(titles, it.Result.Title)
+	}
+	if len(shown) < 3 { // 2 direct singles + at least 1 mined recipe
+		t.Errorf("shown = %v, want the 2 singles plus mined recipes", titles)
+	}
+	// ...and it is dug instead: digging fired and the mined recipe was folded in.
+	if len(fake.calls) != 1 || fake.calls[0] != collectionURL {
+		t.Errorf("resolver calls = %v, want exactly the known collection", fake.calls)
+	}
+	if countEventsOfType(events, FinderEventDigging) == 0 {
+		t.Errorf("no digging event for the known collection (%v)", eventTypes(events))
+	}
+	foundMined := false
+	for _, it := range shown {
+		if it.Result.Title == "Skillet Chicken Parm" {
+			foundMined = true
+		}
+	}
+	if !foundMined {
+		t.Errorf("mined recipe not folded into results: %v", titles)
 	}
 }

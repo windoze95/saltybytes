@@ -213,6 +213,13 @@ func (s *RecipeFinderService) FindRecipes(ctx context.Context, user *models.User
 	}
 	rank := s.rankCandidates(ctx, user, req, dietSummary, results)
 
+	// 4.5. Ground-truth override: force-flag candidates the canonical cache
+	// already KNOWS are multi-recipe collection pages. The model's expand flag
+	// covers unseen pages; this keeps known collections out of the shortlist
+	// (and in the dig queue) even when the ranking call failed entirely and
+	// fallbackRanking returned no flags.
+	s.applyKnownCollections(results, rank)
+
 	// 5. Curate the shown picks: INDIVIDUAL recipes only (collections excluded),
 	// in rank order, capped to a tight top-picks set.
 	shown := buildShortlist(results, rank)
@@ -537,6 +544,31 @@ func (s *RecipeFinderService) rankCandidates(ctx context.Context, user *models.U
 		return fallbackRanking(len(results))
 	}
 	return res
+}
+
+// applyKnownCollections force-flags ranked candidates whose URL the canonical
+// cache has already marked as a multi-recipe collection page (IsMultiPage —
+// e.g. the user previewed it before). This is a DB fact, not pattern matching:
+// it complements the model's expand detection for unseen pages and, crucially,
+// keeps known collections from rendering as recipe cards when the ranking call
+// failed and the fallback ranking carries no flags at all.
+func (s *RecipeFinderService) applyKnownCollections(results []ai.SearchResult, rank *ai.FinderRankResult) {
+	if rank == nil || s.Warm == nil {
+		return
+	}
+	for i := range rank.Ranked {
+		r := &rank.Ranked[i]
+		if r.Expand || r.Index < 0 || r.Index >= len(results) {
+			continue
+		}
+		if s.Warm.IsKnownMulti(results[r.Index].URL) {
+			r.Expand = true
+			if r.ExpandPriority == 0 {
+				// Certain knowledge outranks a model guess's default priority.
+				r.ExpandPriority = 4
+			}
+		}
+	}
 }
 
 // dietContext compacts the owner's family dietary needs into a model-facing

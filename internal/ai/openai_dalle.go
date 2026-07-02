@@ -87,5 +87,16 @@ func classifyOpenAIError(err error) (shouldRetry bool, waitTime time.Duration) {
 			return false, 0
 		}
 	}
+	// Some OpenAI-compatible endpoints (Gemini) wrap error bodies in a JSON
+	// ARRAY, which go-openai cannot unmarshal into ErrorResponse — those errors
+	// surface as *openai.RequestError instead of *openai.APIError. Classify by
+	// HTTP status so a Gemini 429/5xx still retries.
+	var reqErr *openai.RequestError
+	if errors.As(err, &reqErr) {
+		switch reqErr.HTTPStatusCode {
+		case 429, 500, 502, 503:
+			return true, 2 * time.Second
+		}
+	}
 	return false, 0
 }

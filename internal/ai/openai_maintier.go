@@ -5,10 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	openai "github.com/sashabaranov/go-openai"
 	"github.com/windoze95/saltybytes-api/internal/config"
+	"github.com/windoze95/saltybytes-api/internal/logger"
+	"go.uber.org/zap"
 )
 
 // This file completes *OpenAICompatProvider so it satisfies the full
@@ -456,10 +459,24 @@ func (p *OpenAICompatProvider) ClassifyVoiceIntent(ctx context.Context, transcri
 	})
 }
 
-// ExpandAndRankRecipes runs the recipe finder's ranking call via a forced
-// rank_recipes function call. Mirrors AnthropicProvider.ExpandAndRankRecipes —
-// same inline system prompt, wire payload and tool schema — so the light Gemini
-// tier that backs the finder produces a faithful request/result.
+// jsonSchemaMap adapts a plain schema map to the json.Marshaler that the
+// go-openai response_format json_schema field expects.
+type jsonSchemaMap map[string]interface{}
+
+func (m jsonSchemaMap) MarshalJSON() ([]byte, error) {
+	return json.Marshal(map[string]interface{}(m))
+}
+
+// ExpandAndRankRecipes runs the recipe finder's ranking call. Same core system
+// prompt, wire payload and schema as AnthropicProvider.ExpandAndRankRecipes,
+// but the output channel differs deliberately: Gemini's OpenAI-compat
+// FUNCTION-CALL parser intermittently rejects large rank_recipes calls
+// wholesale (finish_reason=MALFORMED_FUNCTION_CALL, zero tokens back —
+// prod-shaped payloads failed ~100% on 2026-07-01, which silently degraded
+// every finder run to unranked raw results). Schema-constrained JSON output
+// (response_format json_schema) sidesteps that parser entirely; the tolerant
+// parseFinderRankToolArgs consumes the JSON body just like tool args. One
+// resample covers residual model-level flakes.
 func (p *OpenAICompatProvider) ExpandAndRankRecipes(ctx context.Context, req FinderRankRequest) (*FinderRankResult, error) {
 	op := AIOperation{
 		Name:      "ExpandAndRankRecipes",
@@ -482,44 +499,56 @@ func (p *OpenAICompatProvider) ExpandAndRankRecipes(ctx context.Context, req Fin
 
 		chatReq := openai.ChatCompletionRequest{
 			Model: p.model,
-			// 2048: the rank_recipes tool JSON for ~10 candidates with per-item
-			// reason + safety[] + expand + broaden_queries runs ~1000-1500 output
-			// tokens with a family profile; 512 truncated it into an unranked
-			// fallback. Parsing is also truncation-tolerant as a backstop.
-			MaxTokens: 2048,
+			// Generous: Gemini 2.5 models spend completion budget on internal
+			// thinking BEFORE the answer, and a prod-sized rank payload (10
+			// candidates + family profile) thinks well past 2k. Billed by actual
+			// tokens, so headroom is free; parsing stays truncation-tolerant.
+			MaxTokens: 8192,
 			Messages: []openai.ChatCompletionMessage{
-				{Role: openai.ChatMessageRoleSystem, Content: finderRankSystemPrompt},
+				{Role: openai.ChatMessageRoleSystem, Content: finderRankSystemPromptCore +
+					"\n\nRespond with ONLY a JSON object holding `ranked` and `broaden_queries` as specified."},
 				{Role: openai.ChatMessageRoleUser, Content: string(payload)},
 			},
-			Tools: []openai.Tool{{
-				Type: openai.ToolTypeFunction,
-				Function: &openai.FunctionDefinition{
-					Name:        "rank_recipes",
-					Description: "Return the best-matching candidates by index, with rationales, per-member dietary safety, and broadened query suggestions.",
-					Parameters:  rankSchema,
+			ResponseFormat: &openai.ChatCompletionResponseFormat{
+				Type: openai.ChatCompletionResponseFormatTypeJSONSchema,
+				JSONSchema: &openai.ChatCompletionResponseFormatJSONSchema{
+					Name:   "rank_recipes",
+					Schema: jsonSchemaMap(rankSchema),
 				},
-			}},
-			ToolChoice: openai.ToolChoice{
-				Type:     openai.ToolTypeFunction,
-				Function: openai.ToolFunction{Name: "rank_recipes"},
 			},
 		}
 
-		resp, err := p.createChatCompletion(ctx, chatReq)
-		if err != nil {
-			return nil, err
-		}
+		var lastErr error
+		for attempt := 0; attempt < 2; attempt++ {
+			resp, err := p.createChatCompletion(ctx, chatReq)
+			if err != nil {
+				return nil, err // transport errors already retried downstream
+			}
 
-		args, err := firstToolCallArguments(resp, "rank_recipes")
-		if err != nil {
-			return nil, err
-		}
+			content := ""
+			finishReason := ""
+			if len(resp.Choices) > 0 {
+				content = strings.TrimSpace(resp.Choices[0].Message.Content)
+				finishReason = string(resp.Choices[0].FinishReason)
+			}
+			if content == "" {
+				lastErr = NewAIError(FailureContentEmpty,
+					fmt.Errorf("empty rank_recipes JSON response (finish_reason=%s, completion_tokens=%d)",
+						finishReason, resp.Usage.CompletionTokens),
+					"empty response")
+			} else if tr, perr := parseFinderRankToolArgs(content); perr == nil {
+				return toolResultToFinderRankResult(tr), nil
+			} else {
+				lastErr = perr
+			}
 
-		tr, err := parseFinderRankToolArgs(args)
-		if err != nil {
-			return nil, err
+			logger.Get().Warn("light-tier rank response unusable, resampling",
+				zap.String("provider", p.providerName),
+				zap.Int("attempt", attempt+1),
+				zap.Error(lastErr),
+			)
 		}
-		return toolResultToFinderRankResult(tr), nil
+		return nil, lastErr
 	})
 }
 
