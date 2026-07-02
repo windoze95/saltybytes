@@ -85,6 +85,10 @@ type EnvVars struct {
 	// warm extractions (a runaway guard, intentionally high — not a normal cap;
 	// JSON-LD/AI gap-fill runs freely under it). 0 disables the ceiling.
 	RecipeWarmingDailyLimit int `env:"RECIPE_WARMING_DAILY_LIMIT" envDefault:"5000" optional:"true"`
+	// PublicBaseURL is the externally reachable base URL of this API. It is the
+	// OAuth issuer identifier and the base of the MCP resource URL, so it must
+	// match what MCP hosts (Claude/ChatGPT connectors) are configured with.
+	PublicBaseURL string `env:"PUBLIC_BASE_URL" envDefault:"https://api.saltybytes.ai" optional:"true"`
 }
 
 // LoadConfig parses environment variables into the Config struct.

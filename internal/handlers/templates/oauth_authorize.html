@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Connect to SaltyBytes</title>
+<style>
+  :root {
+    --ink: #1f2a2e;
+    --ink-soft: #5c6b70;
+    --cream: #faf6ef;
+    --card: #ffffff;
+    --teal: #0e6b6b;
+    --teal-deep: #0a5252;
+    --salmon: #e8604c;
+    --line: #e7e0d2;
+    --ok: #2e7d5b;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background:
+      radial-gradient(1200px 500px at 80% -10%, #eef4ee 0%, transparent 60%),
+      radial-gradient(900px 420px at -10% 110%, #f6ece2 0%, transparent 55%),
+      var(--cream);
+    color: var(--ink);
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px 16px;
+  }
+  .card {
+    background: var(--card);
+    width: 100%;
+    max-width: 420px;
+    border: 1px solid var(--line);
+    border-radius: 18px;
+    box-shadow: 0 18px 50px rgba(31, 42, 46, 0.10);
+    overflow: hidden;
+  }
+  .card-head {
+    padding: 28px 28px 20px;
+    border-bottom: 1px solid var(--line);
+    background: linear-gradient(180deg, #ffffff 0%, #fdfbf6 100%);
+  }
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 18px;
+  }
+  .brand-mark {
+    width: 34px; height: 34px;
+    border-radius: 9px;
+    background: var(--teal);
+    color: #fff;
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 800; font-size: 17px;
+    letter-spacing: -0.5px;
+  }
+  .brand-name { font-weight: 750; font-size: 17px; letter-spacing: -0.2px; }
+  .connect-line { font-size: 15px; line-height: 1.5; color: var(--ink-soft); }
+  .connect-line b { color: var(--ink); }
+  .card-body { padding: 22px 28px 28px; }
+  .scopes { list-style: none; margin: 0 0 20px; }
+  .scopes li {
+    display: flex; align-items: flex-start; gap: 10px;
+    font-size: 14px; color: var(--ink-soft);
+    padding: 7px 0;
+  }
+  .scopes .tick {
+    color: var(--ok); font-weight: 700; flex: none;
+    margin-top: 1px;
+  }
+  .field { margin-bottom: 14px; }
+  .field label {
+    display: block; font-size: 12.5px; font-weight: 650;
+    color: var(--ink-soft); margin-bottom: 6px;
+    text-transform: uppercase; letter-spacing: 0.06em;
+  }
+  .field input {
+    width: 100%;
+    padding: 11px 13px;
+    font-size: 15px;
+    border: 1.5px solid var(--line);
+    border-radius: 10px;
+    background: #fdfcf9;
+    color: var(--ink);
+    outline: none;
+    transition: border-color 0.15s;
+  }
+  .field input:focus { border-color: var(--teal); background: #fff; }
+  .error {
+    background: #fdeeec;
+    border: 1px solid #f3c4bc;
+    color: #a53325;
+    border-radius: 10px;
+    padding: 10px 13px;
+    font-size: 13.5px;
+    margin-bottom: 16px;
+  }
+  .actions { display: flex; gap: 10px; margin-top: 20px; }
+  .btn {
+    flex: 1;
+    padding: 12px 0;
+    border-radius: 11px;
+    border: none;
+    font-size: 15px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: filter 0.15s;
+  }
+  .btn:hover { filter: brightness(1.06); }
+  .btn-approve { background: var(--teal); color: #fff; }
+  .btn-approve:active { background: var(--teal-deep); }
+  .btn-deny { background: #f1ede3; color: var(--ink-soft); }
+  .foot {
+    margin-top: 18px;
+    font-size: 12px;
+    color: var(--ink-soft);
+    text-align: center;
+    line-height: 1.5;
+  }
+</style>
+</head>
+<body>
+  <main class="card">
+    <div class="card-head">
+      <div class="brand">
+        <div class="brand-mark">Sb</div>
+        <div class="brand-name">SaltyBytes</div>
+      </div>
+      <p class="connect-line"><b>{{.ClientName}}</b> wants to connect to your SaltyBytes account.</p>
+    </div>
+    <div class="card-body">
+      <ul class="scopes">
+        {{range .ScopeDescriptions}}
+        <li><span class="tick">&#10003;</span><span>{{.}}</span></li>
+        {{end}}
+      </ul>
+
+      {{if .Error}}<div class="error">{{.Error}}</div>{{end}}
+
+      <form method="POST" action="{{.FormAction}}" autocomplete="on">
+        <div class="field">
+          <label for="username">Username</label>
+          <input id="username" name="username" type="text" autocomplete="username" autocapitalize="none" required autofocus>
+        </div>
+        <div class="field">
+          <label for="password">Password</label>
+          <input id="password" name="password" type="password" autocomplete="current-password" required>
+        </div>
+
+        <input type="hidden" name="client_id" value="{{.ClientID}}">
+        <input type="hidden" name="redirect_uri" value="{{.RedirectURI}}">
+        <input type="hidden" name="response_type" value="{{.ResponseType}}">
+        <input type="hidden" name="state" value="{{.State}}">
+        <input type="hidden" name="scope" value="{{.Scope}}">
+        <input type="hidden" name="code_challenge" value="{{.CodeChallenge}}">
+        <input type="hidden" name="code_challenge_method" value="{{.CodeChallengeMethod}}">
+        <input type="hidden" name="resource" value="{{.Resource}}">
+
+        <div class="actions">
+          <button class="btn btn-deny" type="submit" name="action" value="deny" formnovalidate>Cancel</button>
+          <button class="btn btn-approve" type="submit" name="action" value="approve">Connect</button>
+        </div>
+      </form>
+
+      <p class="foot">You&rsquo;ll be sent back to {{.ClientName}}. You can disconnect anytime by signing out in the SaltyBytes app.</p>
+    </div>
+  </main>
+</body>
+</html>

@@ -10,6 +10,7 @@ import (
 	"github.com/windoze95/saltybytes-api/internal/config"
 	"github.com/windoze95/saltybytes-api/internal/handlers"
 	"github.com/windoze95/saltybytes-api/internal/logger"
+	"github.com/windoze95/saltybytes-api/internal/mcpserver"
 	"github.com/windoze95/saltybytes-api/internal/middleware"
 	"github.com/windoze95/saltybytes-api/internal/models"
 	"github.com/windoze95/saltybytes-api/internal/repository"
@@ -387,6 +388,44 @@ func SetupRouter(cfg *config.Config, database *gorm.DB) *gin.Engine {
 	// Image upload
 	imageHandler := handlers.NewImageHandler(cfg)
 	apiProtected.POST("/images/upload", middleware.AttachUserToContext(userService), imageHandler.UploadImage)
+
+	// --- MCP connector surface (Claude, ChatGPT, and other MCP hosts) ---
+	// OAuth 2.1 authorization server + the /mcp Streamable HTTP endpoint.
+	// Everything here lives OUTSIDE the /v1 groups on purpose: MCP hosts
+	// cannot send the shared ID header, and discovery paths are fixed by RFC.
+	oauthRepo := repository.NewOAuthRepository(database)
+	oauthService := service.NewOAuthService(cfg, oauthRepo, userService)
+	oauthService.StartCleanup()
+	oauthHandler := handlers.NewOAuthHandler(oauthService, userService)
+
+	// OAuth discovery metadata (RFC 8414 + RFC 9728, incl. the /mcp path
+	// variant hosts derive from the resource URL).
+	r.GET("/.well-known/oauth-authorization-server", oauthHandler.AuthorizationServerMetadata)
+	r.GET("/.well-known/oauth-protected-resource", oauthHandler.ProtectedResourceMetadata)
+	r.GET("/.well-known/oauth-protected-resource/mcp", oauthHandler.ProtectedResourceMetadata)
+
+	// Dynamic client registration + login/consent get the same tight per-IP
+	// limits as the public auth endpoints (credential stuffing / spam guard).
+	r.POST("/oauth/register", middleware.RateLimitByIP(5, 10, 5*time.Minute, 15*time.Minute), oauthHandler.RegisterClient)
+	r.GET("/oauth/authorize", middleware.RateLimitByIP(20, 40, 5*time.Minute, 15*time.Minute), oauthHandler.AuthorizePage)
+	r.POST("/oauth/authorize", middleware.RateLimitByIP(5, 10, 5*time.Minute, 15*time.Minute), oauthHandler.AuthorizeSubmit)
+	// The token endpoint is called from MCP hosts' shared cloud egress IPs
+	// (many users behind few IPs), so its ceiling is much higher.
+	r.POST("/oauth/token", middleware.RateLimitByIP(60, 120, 5*time.Minute, 15*time.Minute), oauthHandler.Token)
+
+	// The MCP endpoint itself: bearer-auth (tokens minted above) wrapping a
+	// stateless Streamable HTTP handler. Tools reuse the same service layer
+	// as the REST API, acting as the token's user.
+	mcpDeps := &mcpserver.Deps{
+		OAuth:         oauthService,
+		Users:         userService,
+		Recipes:       recipeService,
+		Search:        searchService,
+		Import:        importService,
+		MultiResolver: multiResolver,
+		Subs:          subService,
+	}
+	r.Any("/mcp", gin.WrapH(mcpserver.NewHandler(cfg, mcpDeps)))
 
 	// WebSocket routes (authenticated via query param token)
 	hub := ws.NewHub()

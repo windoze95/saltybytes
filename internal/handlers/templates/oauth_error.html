@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>SaltyBytes — Connection error</title>
+<style>
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: #faf6ef; color: #1f2a2e;
+    min-height: 100vh; display: flex; align-items: center; justify-content: center;
+    padding: 24px 16px; margin: 0;
+  }
+  .card {
+    background: #fff; max-width: 420px; width: 100%;
+    border: 1px solid #e7e0d2; border-radius: 18px;
+    box-shadow: 0 18px 50px rgba(31,42,46,0.10);
+    padding: 32px 28px; text-align: center;
+  }
+  h1 { font-size: 18px; margin: 0 0 10px; }
+  p { font-size: 14.5px; color: #5c6b70; line-height: 1.55; margin: 0; }
+  .mark {
+    width: 40px; height: 40px; border-radius: 11px; background: #e8604c; color: #fff;
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 800; font-size: 19px; margin: 0 auto 16px;
+  }
+</style>
+</head>
+<body>
+  <main class="card">
+    <div class="mark">!</div>
+    <h1>Can&rsquo;t complete this connection</h1>
+    <p>{{.Message}}</p>
+  </main>
+</body>
+</html>

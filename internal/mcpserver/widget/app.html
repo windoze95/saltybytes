@@ -1,0 +1,659 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SaltyBytes</title>
+<style>
+  :root {
+    --paper: #faf6ee;
+    --paper-deep: #f3ecdd;
+    --card: #fffdf8;
+    --ink: #22313a;
+    --ink-soft: #66757c;
+    --ink-faint: #98a4a8;
+    --teal: #0e6b6b;
+    --teal-deep: #0a5252;
+    --salmon: #e8604c;
+    --gold: #c9a227;
+    --line: #e5dcc8;
+    --ok: #2e7d5b;
+    --ok-soft: #e3f1ea;
+    --shadow: 0 1px 2px rgba(34,49,58,.06), 0 10px 28px rgba(34,49,58,.09);
+    --shadow-lift: 0 2px 4px rgba(34,49,58,.08), 0 16px 40px rgba(34,49,58,.14);
+    --serif: "Palatino Linotype", Palatino, "Book Antiqua", "URW Palladio L", Georgia, "Times New Roman", serif;
+    --sans: "Avenir Next", Avenir, "Segoe UI", Seravek, Corbel, system-ui, sans-serif;
+  }
+  [data-theme="dark"] {
+    --paper: #131c20;
+    --paper-deep: #0e1518;
+    --card: #1a252b;
+    --ink: #ecf0ee;
+    --ink-soft: #9fb0b0;
+    --ink-faint: #6c7d80;
+    --teal: #3fb0a5;
+    --teal-deep: #2f8a82;
+    --salmon: #f0765f;
+    --gold: #d8b64a;
+    --line: #2a373d;
+    --ok: #5cc496;
+    --ok-soft: #17342a;
+    --shadow: 0 1px 2px rgba(0,0,0,.25), 0 10px 28px rgba(0,0,0,.35);
+    --shadow-lift: 0 2px 4px rgba(0,0,0,.3), 0 16px 40px rgba(0,0,0,.45);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { background: transparent; }
+  body {
+    font-family: var(--sans);
+    color: var(--ink);
+    -webkit-font-smoothing: antialiased;
+  }
+  #root {
+    background:
+      radial-gradient(140% 90% at 100% 0%, var(--paper-deep) 0%, transparent 55%),
+      var(--paper);
+    border-radius: 14px;
+    padding: 16px;
+    min-height: 120px;
+  }
+
+  /* ---------- shared bits ---------- */
+  .brandline {
+    display: flex; align-items: center; gap: 8px;
+    margin-bottom: 12px;
+  }
+  .brand-mark {
+    width: 22px; height: 22px; border-radius: 6px;
+    background: var(--teal); color: #fff;
+    font: 700 11px/22px var(--sans); text-align: center;
+    letter-spacing: -0.3px; flex: none;
+  }
+  .brandline .kicker {
+    font: 600 10.5px var(--sans);
+    letter-spacing: 0.14em; text-transform: uppercase;
+    color: var(--ink-soft);
+  }
+  .brandline .spacer { flex: 1; }
+  .backbtn {
+    border: 1px solid var(--line); background: var(--card);
+    color: var(--ink-soft); border-radius: 999px;
+    font: 600 11.5px var(--sans); padding: 5px 12px; cursor: pointer;
+  }
+  .backbtn:hover { color: var(--teal); border-color: var(--teal); }
+  .pinch { text-align: center; color: var(--ink-faint); font-size: 11px; letter-spacing: 0.5em; margin: 4px 0 10px; }
+
+  /* ---------- card grid ---------- */
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(168px, 1fr));
+    gap: 12px;
+  }
+  .rcard {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    overflow: hidden;
+    cursor: pointer;
+    box-shadow: var(--shadow);
+    transition: transform .18s ease, box-shadow .18s ease;
+    display: flex; flex-direction: column;
+    animation: rise .35s ease both;
+  }
+  .rcard:nth-child(2) { animation-delay: .04s; } .rcard:nth-child(3) { animation-delay: .08s; }
+  .rcard:nth-child(4) { animation-delay: .12s; } .rcard:nth-child(5) { animation-delay: .16s; }
+  .rcard:nth-child(6) { animation-delay: .20s; } .rcard:nth-child(7) { animation-delay: .24s; }
+  @keyframes rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+  .rcard:hover { transform: translateY(-3px); box-shadow: var(--shadow-lift); }
+  .rcard .thumb { position: relative; aspect-ratio: 16/10; overflow: hidden; }
+  .rcard .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .thumb-fallback {
+    width: 100%; height: 100%;
+    display: flex; align-items: center; justify-content: center;
+    color: #fff;
+    font: 700 34px var(--serif);
+    background:
+      radial-gradient(1.5px 1.5px at 20% 30%, rgba(255,255,255,.5) 50%, transparent 51%),
+      radial-gradient(1.5px 1.5px at 70% 60%, rgba(255,255,255,.4) 50%, transparent 51%),
+      radial-gradient(1.5px 1.5px at 45% 80%, rgba(255,255,255,.45) 50%, transparent 51%),
+      radial-gradient(1.5px 1.5px at 85% 25%, rgba(255,255,255,.35) 50%, transparent 51%),
+      linear-gradient(135deg, var(--teal) 0%, var(--teal-deep) 100%);
+  }
+  .rcard .body { padding: 10px 12px 12px; display: flex; flex-direction: column; gap: 5px; flex: 1; }
+  .rcard .src {
+    font: 600 9.5px var(--sans);
+    letter-spacing: 0.12em; text-transform: uppercase;
+    color: var(--salmon);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .rcard h3 {
+    font: 600 14.5px/1.3 var(--serif);
+    letter-spacing: -0.01em;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+  }
+  .rcard .meta { margin-top: auto; display: flex; gap: 8px; align-items: center; font: 500 11px var(--sans); color: var(--ink-soft); }
+  .star { color: var(--gold); }
+
+  /* ---------- recipe detail ---------- */
+  .detail { animation: rise .3s ease both; }
+  .hero { display: flex; gap: 14px; margin-bottom: 12px; }
+  .hero .photo {
+    flex: none; width: 128px; height: 128px;
+    border-radius: 12px; overflow: hidden; box-shadow: var(--shadow);
+  }
+  .hero .photo img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .hero .headings { min-width: 0; display: flex; flex-direction: column; gap: 7px; }
+  .hero h2 { font: 650 21px/1.2 var(--serif); letter-spacing: -0.015em; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip {
+    font: 600 10.5px var(--sans); letter-spacing: 0.04em;
+    color: var(--ink-soft);
+    border: 1px solid var(--line); background: var(--card);
+    padding: 3.5px 9px; border-radius: 999px;
+  }
+  .chip.accent { color: var(--teal); border-color: var(--teal); }
+  .actions { display: flex; gap: 8px; margin-top: 2px; flex-wrap: wrap; }
+  .savebtn {
+    border: none; cursor: pointer;
+    background: var(--teal); color: #fff;
+    font: 700 13px var(--sans);
+    padding: 9px 18px; border-radius: 999px;
+    transition: transform .12s ease, background .2s;
+  }
+  .savebtn:hover { background: var(--teal-deep); }
+  .savebtn:active { transform: scale(.97); }
+  .savebtn[disabled] { opacity: .6; cursor: default; }
+  .savebtn.saved { background: var(--ok); animation: pop .3s ease; }
+  @keyframes pop { 40% { transform: scale(1.07); } }
+  .linkbtn {
+    background: none; border: none; cursor: pointer;
+    color: var(--ink-soft); font: 600 12px var(--sans);
+    text-decoration: underline; text-underline-offset: 3px;
+    padding: 9px 4px;
+  }
+  .linkbtn:hover { color: var(--teal); }
+
+  .cols { display: grid; grid-template-columns: minmax(180px, 5fr) 7fr; gap: 18px; }
+  @media (max-width: 560px) {
+    .cols { grid-template-columns: 1fr; }
+    .hero .photo { width: 92px; height: 92px; }
+  }
+  .sect-label {
+    font: 700 10.5px var(--sans);
+    letter-spacing: 0.16em; text-transform: uppercase;
+    color: var(--salmon);
+    border-bottom: 1px solid var(--line);
+    padding-bottom: 6px; margin-bottom: 9px;
+  }
+  .ing { list-style: none; }
+  .ing li {
+    display: flex; gap: 9px; align-items: baseline;
+    padding: 4.5px 0; font-size: 13px; line-height: 1.45;
+    cursor: pointer;
+  }
+  .ing .box {
+    flex: none; width: 13px; height: 13px;
+    border: 1.5px solid var(--ink-faint);
+    border-radius: 4px 5px 4px 5px;
+    position: relative; top: 1.5px;
+    transition: all .15s;
+  }
+  .ing li.done .box { background: var(--teal); border-color: var(--teal); }
+  .ing li.done .txt { color: var(--ink-faint); text-decoration: line-through; }
+  .ing .qty { color: var(--teal); font-weight: 650; white-space: nowrap; }
+  .steps { list-style: none; counter-reset: step; }
+  .steps li {
+    counter-increment: step;
+    display: flex; gap: 12px;
+    padding: 7px 0; font-size: 13.5px; line-height: 1.55;
+  }
+  .steps li::before {
+    content: counter(step);
+    flex: none;
+    font: 700 19px/1 var(--serif);
+    color: var(--salmon);
+    min-width: 20px; text-align: right;
+    opacity: .85;
+  }
+
+  /* ---------- states ---------- */
+  .note {
+    text-align: center; color: var(--ink-soft);
+    font: 500 13px var(--sans); padding: 24px 12px;
+  }
+  .skeleton { display: grid; grid-template-columns: repeat(auto-fill, minmax(168px, 1fr)); gap: 12px; }
+  .skeleton .sk {
+    height: 160px; border-radius: 12px;
+    background: linear-gradient(100deg, var(--paper-deep) 40%, var(--card) 50%, var(--paper-deep) 60%);
+    background-size: 200% 100%;
+    animation: shimmer 1.2s linear infinite;
+  }
+  @keyframes shimmer { to { background-position: -200% 0; } }
+  .toast {
+    position: fixed; left: 50%; bottom: 14px; transform: translateX(-50%);
+    background: var(--ink); color: var(--paper);
+    font: 600 12.5px var(--sans);
+    padding: 9px 16px; border-radius: 999px;
+    box-shadow: var(--shadow-lift);
+    animation: rise .25s ease;
+    max-width: 90%; text-align: center;
+  }
+  .savedbadge {
+    display: inline-flex; align-items: center; gap: 6px;
+    background: var(--ok-soft); color: var(--ok);
+    font: 700 12px var(--sans);
+    padding: 7px 14px; border-radius: 999px;
+  }
+  .multirow {
+    display: flex; align-items: center; gap: 12px;
+    background: var(--card); border: 1px solid var(--line);
+    border-radius: 12px; padding: 10px 12px; margin-bottom: 8px;
+    cursor: pointer; box-shadow: var(--shadow);
+    transition: transform .15s ease;
+  }
+  .multirow:hover { transform: translateX(3px); }
+  .multirow .n { font: 700 16px var(--serif); color: var(--salmon); min-width: 18px; text-align: right; }
+  .multirow .t { font: 600 13.5px var(--serif); }
+  .multirow .d { font: 400 11.5px var(--sans); color: var(--ink-soft); }
+</style>
+</head>
+<body>
+<div id="root"><div class="note">Warming up the kitchen&hellip;</div></div>
+<script>
+"use strict";
+/* ------------------------------------------------------------------ *
+ *  Minimal MCP Apps bridge — JSON-RPC 2.0 over postMessage.
+ *  Spec: modelcontextprotocol/ext-apps specification/2026-01-26.
+ * ------------------------------------------------------------------ */
+const bridge = (() => {
+  let nextID = 1;
+  const pending = new Map();
+  const notificationHandlers = new Map();
+
+  function post(msg) { window.parent.postMessage(msg, "*"); }
+
+  function request(method, params) {
+    return new Promise((resolve, reject) => {
+      const id = nextID++;
+      pending.set(id, { resolve, reject });
+      post({ jsonrpc: "2.0", id, method, params: params || {} });
+    });
+  }
+
+  function notify(method, params) {
+    post({ jsonrpc: "2.0", method, params: params || {} });
+  }
+
+  window.addEventListener("message", (event) => {
+    const msg = event.data;
+    if (!msg || typeof msg !== "object" || msg.jsonrpc !== "2.0") return;
+    if (msg.id !== undefined && (msg.result !== undefined || msg.error !== undefined)) {
+      const p = pending.get(msg.id);
+      if (p) {
+        pending.delete(msg.id);
+        if (msg.error) p.reject(new Error(msg.error.message || "host error"));
+        else p.resolve(msg.result);
+      }
+      return;
+    }
+    if (msg.method) {
+      const handler = notificationHandlers.get(msg.method);
+      if (handler) handler(msg.params || {});
+    }
+  });
+
+  return { request, notify, on: (m, fn) => notificationHandlers.set(m, fn) };
+})();
+
+/* ------------------------------------------------------------------ *
+ *  DOM helpers — data is third-party; only ever assign textContent.
+ * ------------------------------------------------------------------ */
+const root = document.getElementById("root");
+function el(tag, className, text) {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text !== undefined) node.textContent = text;
+  return node;
+}
+function clearRoot() { root.textContent = ""; }
+function toast(message) {
+  const t = el("div", "toast", message);
+  document.body.appendChild(t);
+  setTimeout(() => t.remove(), 3200);
+}
+function imageOr(urlString, fallbackTitle, host) {
+  if (urlString && /^https:\/\//.test(urlString)) {
+    const img = document.createElement("img");
+    img.loading = "lazy";
+    img.alt = "";
+    img.src = urlString;
+    img.onerror = () => { host.textContent = ""; host.appendChild(placeholderFor(fallbackTitle)); };
+    return img;
+  }
+  return placeholderFor(fallbackTitle);
+}
+function placeholderFor(title) {
+  const initial = (title || "?").trim().charAt(0).toUpperCase() || "?";
+  return el("div", "thumb-fallback", initial);
+}
+function domainOf(urlString) {
+  try { return new URL(urlString).hostname.replace(/^www\./, ""); } catch { return ""; }
+}
+function qtyText(ing) {
+  if (ing.original_text) return "";
+  let amount = ing.amount;
+  if (!amount) return "";
+  let text = String(Math.round(amount * 100) / 100);
+  if (ing.amount_high) text += "–" + String(Math.round(ing.amount_high * 100) / 100);
+  if (ing.unit) text += " " + ing.unit;
+  return text;
+}
+function brandline(kicker, showBack, onBack) {
+  const bar = el("div", "brandline");
+  bar.appendChild(el("div", "brand-mark", "Sb"));
+  bar.appendChild(el("span", "kicker", kicker));
+  bar.appendChild(el("div", "spacer"));
+  if (showBack) {
+    const back = el("button", "backbtn", "← Back");
+    back.onclick = onBack;
+    bar.appendChild(back);
+  }
+  root.appendChild(bar);
+}
+function skeleton() {
+  clearRoot();
+  brandline("SaltyBytes", false);
+  const wrap = el("div", "skeleton");
+  for (let i = 0; i < 3; i++) wrap.appendChild(el("div", "sk"));
+  root.appendChild(wrap);
+}
+
+/* ------------------------------------------------------------------ *
+ *  Views
+ * ------------------------------------------------------------------ */
+let lastListView = null; // for back navigation from a detail card
+
+function render(data) {
+  if (!data || typeof data !== "object" || !data.view) return;
+  switch (data.view) {
+    case "search_results": lastListView = data; renderSearch(data); break;
+    case "recipe_list": lastListView = data; renderMyRecipes(data); break;
+    case "preview": renderPreview(data); break;
+    case "recipe_card": renderRecipeCard(data); break;
+  }
+}
+
+function renderSearch(data) {
+  clearRoot();
+  brandline("Recipes from around the web", false);
+  const results = data.results || [];
+  if (!results.length) {
+    root.appendChild(el("div", "note", "No recipes found — try different words."));
+    return;
+  }
+  const grid = el("div", "grid");
+  results.forEach((r) => {
+    const card = el("article", "rcard");
+    const thumb = el("div", "thumb");
+    thumb.appendChild(imageOr(r.image_url, r.title, thumb));
+    card.appendChild(thumb);
+    const body = el("div", "body");
+    body.appendChild(el("div", "src", r.source_domain || domainOf(r.source_url)));
+    body.appendChild(el("h3", "", r.title || "Untitled recipe"));
+    const meta = el("div", "meta");
+    if (r.rating) {
+      meta.appendChild(el("span", "star", "★"));
+      meta.appendChild(el("span", "", String(Math.round(r.rating * 10) / 10)));
+    }
+    body.appendChild(meta);
+    card.appendChild(body);
+    card.onclick = () => openPreview(r.source_url);
+    grid.appendChild(card);
+  });
+  root.appendChild(grid);
+}
+
+function renderMyRecipes(data) {
+  clearRoot();
+  brandline("Your saved recipes", false);
+  const recipes = data.recipes || [];
+  if (!recipes.length) {
+    root.appendChild(el("div", "note", "Nothing saved yet — search for a recipe and give it a home."));
+    return;
+  }
+  const grid = el("div", "grid");
+  recipes.forEach((r) => {
+    const card = el("article", "rcard");
+    const thumb = el("div", "thumb");
+    thumb.appendChild(imageOr(r.imageUrl, r.title, thumb));
+    card.appendChild(thumb);
+    const body = el("div", "body");
+    body.appendChild(el("div", "src", (r.tags && r.tags[0]) || "saved"));
+    body.appendChild(el("h3", "", r.title || "Untitled recipe"));
+    const meta = el("div", "meta");
+    if (r.cookTimeMinutes) meta.appendChild(el("span", "", "⏱ " + r.cookTimeMinutes + " min"));
+    body.appendChild(meta);
+    card.appendChild(body);
+    card.onclick = () => openSaved(r.id);
+    grid.appendChild(card);
+  });
+  root.appendChild(grid);
+  if (data.total > recipes.length) {
+    root.appendChild(el("div", "pinch", "∴"));
+    root.appendChild(el("div", "note", recipes.length + " of " + data.total + " — ask for more, or search your collection."));
+  }
+}
+
+function renderPreview(data) {
+  if (data.is_multi) { renderMulti(data); return; }
+  const recipe = data.recipe;
+  if (!recipe) { renderEmpty("Couldn't read a recipe from that page."); return; }
+  renderDetail({
+    title: recipe.title,
+    imageURL: "",
+    cookTime: recipe.cook_time,
+    portions: recipe.portions,
+    ingredients: recipe.ingredients || [],
+    instructions: recipe.instructions || [],
+    sourceURL: recipe.source_url || data.source_url,
+    saved: false,
+    saveURL: data.source_url,
+  });
+}
+
+function renderRecipeCard(data) {
+  const recipe = data.recipe;
+  if (!recipe) { renderEmpty("Recipe not found."); return; }
+  renderDetail({
+    title: recipe.title,
+    imageURL: recipe.imageUrl,
+    cookTime: recipe.cookTimeMinutes,
+    portions: 0,
+    ingredients: recipe.ingredients || [],
+    instructions: recipe.instructions || [],
+    sourceURL: recipe.sourceUrl,
+    saved: !!data.saved,
+    saveURL: "",
+  });
+}
+
+function renderMulti(data) {
+  clearRoot();
+  brandline("This page has several recipes", !!lastListView, () => render(lastListView));
+  (data.recipes || []).forEach((card, i) => {
+    const row = el("div", "multirow");
+    row.appendChild(el("div", "n", String(i + 1)));
+    const col = el("div", "");
+    col.appendChild(el("div", "t", card.title || "Untitled"));
+    if (card.description) col.appendChild(el("div", "d", card.description));
+    row.appendChild(col);
+    row.onclick = () => openPreview(card.cached_url || card.source_url);
+    root.appendChild(row);
+  });
+}
+
+function renderDetail(view) {
+  clearRoot();
+  brandline(view.saved ? "From your collection" : "Recipe preview", !!lastListView, () => render(lastListView));
+
+  const detail = el("div", "detail");
+  const hero = el("div", "hero");
+  if (view.imageURL) {
+    const photo = el("div", "photo");
+    photo.appendChild(imageOr(view.imageURL, view.title, photo));
+    hero.appendChild(photo);
+  }
+  const headings = el("div", "headings");
+  headings.appendChild(el("h2", "", view.title || "Untitled recipe"));
+  const chips = el("div", "chips");
+  if (view.cookTime) chips.appendChild(el("span", "chip accent", "⏱ " + view.cookTime + " min"));
+  if (view.portions) chips.appendChild(el("span", "chip", "serves " + view.portions));
+  chips.appendChild(el("span", "chip", view.ingredients.length + " ingredients"));
+  headings.appendChild(chips);
+
+  const actions = el("div", "actions");
+  if (view.saved) {
+    actions.appendChild(makeSavedBadge());
+  } else if (view.saveURL) {
+    const save = el("button", "savebtn", "Save to SaltyBytes");
+    save.onclick = () => saveRecipe(save, actions, view.saveURL);
+    actions.appendChild(save);
+  }
+  if (view.sourceURL) {
+    const link = el("button", "linkbtn", domainOf(view.sourceURL) || "source");
+    link.onclick = () => bridge.request("ui/open-link", { url: view.sourceURL });
+    actions.appendChild(link);
+  }
+  headings.appendChild(actions);
+  hero.appendChild(headings);
+  detail.appendChild(hero);
+  detail.appendChild(el("div", "pinch", "∴"));
+
+  const cols = el("div", "cols");
+  const ingCol = el("div", "");
+  ingCol.appendChild(el("div", "sect-label", "Ingredients"));
+  const ingList = el("ul", "ing");
+  view.ingredients.forEach((ing) => {
+    const li = el("li", "");
+    li.appendChild(el("span", "box", ""));
+    const txt = el("span", "txt", "");
+    const qty = qtyText(ing);
+    if (qty) {
+      txt.appendChild(el("span", "qty", qty + " "));
+      txt.appendChild(document.createTextNode(ing.name || ""));
+    } else {
+      txt.textContent = ing.original_text || ing.name || "";
+    }
+    li.appendChild(txt);
+    li.onclick = () => li.classList.toggle("done");
+    ingList.appendChild(li);
+  });
+  ingCol.appendChild(ingList);
+  cols.appendChild(ingCol);
+
+  const stepCol = el("div", "");
+  stepCol.appendChild(el("div", "sect-label", "Method"));
+  const steps = el("ol", "steps");
+  view.instructions.forEach((step) => steps.appendChild(el("li", "", step)));
+  stepCol.appendChild(steps);
+  cols.appendChild(stepCol);
+
+  detail.appendChild(cols);
+  root.appendChild(detail);
+}
+
+function makeSavedBadge() {
+  const badge = el("span", "savedbadge");
+  badge.appendChild(el("span", "", "✓"));
+  badge.appendChild(el("span", "", "In your collection"));
+  return badge;
+}
+
+function renderEmpty(message) {
+  clearRoot();
+  brandline("SaltyBytes", !!lastListView, () => render(lastListView));
+  root.appendChild(el("div", "note", message));
+}
+
+/* ------------------------------------------------------------------ *
+ *  Tool calls initiated from the widget
+ * ------------------------------------------------------------------ */
+async function callTool(name, args) {
+  const result = await bridge.request("tools/call", { name, arguments: args });
+  if (result && result.isError) {
+    const text = (result.content || []).map((c) => c.text).filter(Boolean).join(" ");
+    throw new Error(text || "That didn't work — try again.");
+  }
+  return (result && result.structuredContent) || {};
+}
+
+async function openPreview(url) {
+  if (!url) return;
+  skeleton();
+  try { render(await callTool("preview_recipe", { url })); }
+  catch (err) { renderEmpty(err.message); }
+}
+
+async function openSaved(id) {
+  if (!id) return;
+  skeleton();
+  try { render(await callTool("get_recipe", { recipe_id: String(id) })); }
+  catch (err) { renderEmpty(err.message); }
+}
+
+async function saveRecipe(button, actions, url) {
+  button.disabled = true;
+  button.textContent = "Saving…";
+  try {
+    await callTool("save_recipe", { url });
+    button.classList.add("saved");
+    button.textContent = "✓ Saved to SaltyBytes";
+    toast("Saved — it's waiting in your app.");
+  } catch (err) {
+    button.disabled = false;
+    button.textContent = "Save to SaltyBytes";
+    toast(err.message);
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ *  Lifecycle: initialize, receive tool results, report size.
+ * ------------------------------------------------------------------ */
+function applyHostContext(hostContext) {
+  if (!hostContext) return;
+  if (hostContext.theme === "dark" || hostContext.theme === "light") {
+    document.documentElement.setAttribute("data-theme", hostContext.theme);
+  }
+}
+
+bridge.on("ui/notifications/tool-result", (params) => {
+  if (params && params.structuredContent) render(params.structuredContent);
+});
+bridge.on("ui/notifications/tool-input", () => { skeleton(); });
+bridge.on("ui/notifications/host-context-changed", (params) => {
+  applyHostContext(params && params.hostContext);
+});
+
+const resizeObserver = new ResizeObserver(() => {
+  bridge.notify("ui/notifications/size-changed", {
+    width: document.documentElement.scrollWidth,
+    height: document.documentElement.scrollHeight,
+  });
+});
+
+(async function main() {
+  try {
+    const init = await bridge.request("ui/initialize", {
+      protocolVersion: "2026-01-26",
+      clientInfo: { name: "saltybytes-widget", version: "1.0.0" },
+      capabilities: {},
+    });
+    applyHostContext(init && init.hostContext);
+    bridge.notify("ui/notifications/initialized");
+    resizeObserver.observe(document.body);
+  } catch {
+    /* Host without MCP Apps support: leave the static note visible. */
+  }
+})();
+</script>
+</body>
+</html>
