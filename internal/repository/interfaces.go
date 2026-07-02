@@ -92,6 +92,17 @@ type FinderSessionRepo interface {
 	Delete(ctx context.Context, id uint) error
 }
 
+// FinderRunRepo persists agent-run workflow telemetry (dashboard analytics).
+type FinderRunRepo interface {
+	Create(run *models.FinderRun) error
+}
+
+// ExtractionEventRepo persists terminal recipe-extraction outcomes
+// (dashboard analytics + failure drill-downs).
+type ExtractionEventRepo interface {
+	Create(event *models.ExtractionEvent) error
+}
+
 // AllergenRepo is the interface for allergen analysis repository operations.
 type AllergenRepo interface {
 	CreateAnalysis(analysis *models.AllergenAnalysis) error
@@ -124,3 +135,5 @@ var _ UserRepo = (*UserRepository)(nil)
 var _ FamilyRepo = (*FamilyRepository)(nil)
 var _ AllergenRepo = (*AllergenRepository)(nil)
 var _ FinderSessionRepo = (*FinderSessionRepository)(nil)
+var _ FinderRunRepo = (*FinderRunRepository)(nil)
+var _ ExtractionEventRepo = (*ExtractionEventRepository)(nil)

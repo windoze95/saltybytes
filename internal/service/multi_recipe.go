@@ -43,6 +43,10 @@ type MultiRecipeEntry struct {
 	DetectedAt time.Time         `json:"detected_at"`
 	ResolvedAt *time.Time        `json:"resolved_at,omitempty"`
 	pageHTML   string            // stored for extraction, not serialized
+	// Origin is the product flow that triggered this resolve (preview /
+	// finder_dig / multi_expand ...). Card extraction runs on a detached
+	// context, so telemetry reads the flow from here instead of ctx.
+	Origin string `json:"-"`
 }
 
 func (e *MultiRecipeEntry) GetCards() []MultiRecipeCard {
@@ -588,6 +592,7 @@ func (r *MultiRecipeResolver) resolveFromHTMLN(ctx context.Context, sourceURL st
 	entry.mu.Lock()
 	entry.Cards = cards
 	entry.pageHTML = html
+	entry.Origin = extractionOrigin(ctx)
 	entry.mu.Unlock()
 
 	// Start background extraction for each card
@@ -625,6 +630,10 @@ func (r *MultiRecipeResolver) ResolveFromURLWithReason(ctx context.Context, sour
 // resolveFromURLCore fetches a URL and resolves it, returning the entry (or nil)
 // plus a stable reason code when no entry results.
 func (r *MultiRecipeResolver) resolveFromURLCore(ctx context.Context, sourceURL string, maxCards int) (*MultiRecipeEntry, string) {
+	// Late-detection resolves come from a tapped search result unless a more
+	// specific flow (finder_dig) already tagged the context.
+	ctx = WithExtractionOrigin(ctx, ExtractionOriginMultiExpand)
+
 	// Check if already tracked
 	if existing := r.Registry.Get(sourceURL); existing != nil {
 		return existing, ""
@@ -632,9 +641,19 @@ func (r *MultiRecipeResolver) resolveFromURLCore(ctx context.Context, sourceURL 
 
 	// Fetch only the HTML (fetchHTML escalates to Firecrawl on bot-block) — we
 	// only need the page content for JSON-LD multi-recipe card detection.
+	start := time.Now()
 	html, err := r.ImportService.fetchHTML(ctx, sourceURL)
 	if err != nil || html == "" {
-		return nil, fetchFailureReason(err)
+		reason := fetchFailureReason(err)
+		r.ImportService.recordExtraction(ctx, models.ExtractionEvent{
+			URL:        sourceURL,
+			Success:    false,
+			ErrorCode:  reason,
+			Error:      truncateErr(err),
+			DurationMS: time.Since(start).Milliseconds(),
+			Context:    models.ExtractionContext{"stage": "multi_resolve"},
+		})
+		return nil, reason
 	}
 
 	// Check for multiple recipes
@@ -843,12 +862,41 @@ func (r *MultiRecipeResolver) extractSingleCard(entry *MultiRecipeEntry, idx int
 	title := card.Title
 	sourceURL := card.SourceURL
 	pageHTML := entry.pageHTML
+	origin := entry.Origin
 	entry.mu.Unlock()
 
 	log := logger.Get().With(zap.String("title", title), zap.String("source_url", sourceURL))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
+
+	// One telemetry event per card, at whichever path is terminal. The card
+	// extraction runs detached, so the flow origin comes from the entry.
+	start := time.Now()
+	record := func(method string, success bool, errCode, errText string, extra models.ExtractionContext) {
+		eventURL := sourceURL
+		if eventURL == "" {
+			eventURL = entry.SourceURL
+		}
+		evCtx := models.ExtractionContext{
+			"stage":          "multi_card",
+			"collection_url": entry.SourceURL,
+			"card_title":     title,
+		}
+		for k, v := range extra {
+			evCtx[k] = v
+		}
+		r.ImportService.recordExtraction(ctx, models.ExtractionEvent{
+			URL:        eventURL,
+			Origin:     origin,
+			Method:     method,
+			Success:    success,
+			ErrorCode:  errCode,
+			Error:      errText,
+			DurationMS: time.Since(start).Milliseconds(),
+			Context:    evCtx,
+		})
+	}
 
 	// Preferred path: when this card resolved to its own recipe page (a
 	// collection/listicle of links, not inline recipes), fetch and extract that
@@ -880,6 +928,7 @@ func (r *MultiRecipeResolver) extractSingleCard(entry *MultiRecipeEntry, idx int
 				}
 			}
 			log.Info("extracted recipe from its own page", zap.Int("ingredients", len(def.Ingredients)))
+			record("own_page", true, "", "", nil)
 			return
 		}
 		log.Info("individual recipe page unavailable; falling back to collection text")
@@ -893,6 +942,7 @@ func (r *MultiRecipeResolver) extractSingleCard(entry *MultiRecipeEntry, idx int
 		ensureUnitSystem(def)
 		r.finishInlineCard(entry, idx, title, sourceURL, *def, hashtags, models.ExtractionJSONLD, log)
 		log.Info("inline recipe extracted from page JSON-LD", zap.Int("ingredients", len(def.Ingredients)))
+		record("inline_jsonld", true, "", "", nil)
 		return
 	}
 
@@ -905,6 +955,7 @@ func (r *MultiRecipeResolver) extractSingleCard(entry *MultiRecipeEntry, idx int
 		entry.mu.Lock()
 		entry.Cards[idx].ExtractionStatus = "failed"
 		entry.mu.Unlock()
+		record("inline_ai", false, "no_provider", "no AI provider available for multi-recipe extraction", nil)
 		return
 	}
 
@@ -943,6 +994,8 @@ func (r *MultiRecipeResolver) extractSingleCard(entry *MultiRecipeEntry, idx int
 		entry.mu.Lock()
 		entry.Cards[idx].ExtractionStatus = "failed"
 		entry.mu.Unlock()
+		record("inline_ai", false, extractionErrCode(err), truncateErr(err),
+			models.ExtractionContext{"attempts": cardExtractAttempts, "page_text_len": len(pageText)})
 		return
 	}
 
@@ -950,6 +1003,7 @@ func (r *MultiRecipeResolver) extractSingleCard(entry *MultiRecipeEntry, idx int
 	def.SourceURL = sourceURL
 	ensureUnitSystem(&def)
 	r.finishInlineCard(entry, idx, title, sourceURL, def, result.Hashtags, models.ExtractionHaiku, log)
+	record("inline_ai", true, "", "", models.ExtractionContext{"attempts": cardExtractAttempts})
 
 	log.Info("individual recipe extracted from page text via AI")
 }

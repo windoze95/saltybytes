@@ -367,6 +367,8 @@ func SetupRouter(cfg *config.Config, database *gorm.DB) *gin.Engine {
 	// resolver; auto-save records each completed first-page run for history.
 	finderService.MultiResolver = multiResolver
 	finderService.Sessions = finderSessionService
+	finderService.Runs = repository.NewFinderRunRepository(database)
+	importService.Events = repository.NewExtractionEventRepository(database)
 	finderHandler := &handlers.FinderHandler{Service: finderService, SubService: subService}
 	apiProtected.POST("/recipes/find", middleware.AttachUserToContext(userService), finderHandler.FindRecipes)
 	apiProtected.GET("/recipes/finder/sessions", middleware.AttachUserToContext(userService), finderSessionHandler.ListSessions)
