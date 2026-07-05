@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/windoze95/saltybytes-api/internal/models"
 	"github.com/windoze95/saltybytes-api/internal/testutil"
@@ -167,5 +168,39 @@ func TestValidatePassword_RejectsOverBcryptLimit(t *testing.T) {
 	long := "Aa1!" + strings.Repeat("x", 72)
 	if err := svc.ValidatePassword(long); err == nil {
 		t.Error("ValidatePassword should reject passwords longer than 72 bytes")
+	}
+}
+
+func TestCleanupAbandonedAccounts_UsesThirtyDayCutoff(t *testing.T) {
+	repo := testutil.NewMockUserRepo()
+	svc := newTestUserService(repo)
+
+	// A 40-day-old unverified husk and a fresh unverified signup.
+	husk := &models.User{Username: "husk", Email: "husk@example.com", Auth: &models.UserAuth{AuthType: models.Standard}}
+	repo.CreateUser(husk)
+	husk.CreatedAt = time.Now().Add(-40 * 24 * time.Hour)
+
+	fresh := &models.User{Username: "fresh", Email: "fresh@example.com", Auth: &models.UserAuth{AuthType: models.Standard}}
+	repo.CreateUser(fresh)
+	fresh.CreatedAt = time.Now().Add(-2 * 24 * time.Hour)
+
+	n, err := svc.CleanupAbandonedAccounts()
+	if err != nil {
+		t.Fatalf("CleanupAbandonedAccounts error: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("removed %d accounts, want 1 (only the 40-day husk)", n)
+	}
+
+	cutoffAge := time.Since(repo.LastCleanupCutoff)
+	if cutoffAge < 29*24*time.Hour || cutoffAge > 31*24*time.Hour {
+		t.Errorf("cleanup cutoff is %v old, want ~30 days", cutoffAge)
+	}
+
+	if _, err := repo.GetUserByID(husk.ID); err == nil {
+		t.Error("husk should be gone")
+	}
+	if _, err := repo.GetUserByID(fresh.ID); err != nil {
+		t.Error("fresh unverified signup must survive")
 	}
 }

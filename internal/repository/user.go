@@ -290,6 +290,52 @@ func (r *UserRepository) ResetSubscriptionUsage(userID uint, nextReset time.Time
 	return nil
 }
 
+// DeleteAbandonedUnverifiedUsers hard-deletes "empty husk" accounts: never
+// email-verified, older than the cutoff, and with zero durable content (no
+// recipes created or collected, no family owned). These are abandoned
+// signups squatting usernames; hard deletion frees the username and email
+// for reuse (the unique constraints see soft-deleted rows, so soft delete
+// wouldn't). Accounts with any content are never touched — under the soft
+// gate an unverified account can still be a real, active user.
+func (r *UserRepository) DeleteAbandonedUnverifiedUsers(olderThan time.Time) (int64, error) {
+	var deleted int64
+	err := r.DB.Transaction(func(tx *gorm.DB) error {
+		var ids []uint
+		if err := tx.Raw(`
+			SELECT id FROM users
+			WHERE email_verified_at IS NULL
+			  AND created_at < ?
+			  AND NOT EXISTS (SELECT 1 FROM recipes rc WHERE rc.created_by_id = users.id)
+			  AND NOT EXISTS (SELECT 1 FROM user_collected_recipes uc WHERE uc.user_id = users.id)
+			  AND NOT EXISTS (SELECT 1 FROM families f WHERE f.owner_id = users.id)`,
+			olderThan).Scan(&ids).Error; err != nil {
+			return err
+		}
+		if len(ids) == 0 {
+			return nil
+		}
+
+		// Child rows first (the association FKs restrict deletes), then the
+		// user rows themselves — unscoped so the row is truly gone.
+		for _, table := range []string{
+			"email_verifications", "o_auth_auth_codes", "o_auth_tokens",
+			"finder_sessions", "video_imports",
+			"user_auths", "subscriptions", "user_settings", "personalizations",
+		} {
+			if err := tx.Exec(`DELETE FROM `+table+` WHERE user_id IN ?`, ids).Error; err != nil {
+				return err
+			}
+		}
+		res := tx.Exec(`DELETE FROM users WHERE id IN ?`, ids)
+		if res.Error != nil {
+			return res.Error
+		}
+		deleted = res.RowsAffected
+		return nil
+	})
+	return deleted, err
+}
+
 // UsernameExists checks if a username already exists.
 func (r *UserRepository) UsernameExists(username string) (bool, error) {
 	lowercaseUsername := strings.ToLower(username)

@@ -127,6 +127,7 @@ type UserRepo interface {
 	EmailExists(email string) (bool, error)
 	SetEmailVerified(userID uint) error
 	ClearUserEmail(userID uint) error
+	DeleteAbandonedUnverifiedUsers(olderThan time.Time) (int64, error)
 	IncrementTokenVersion(userID uint) error
 	CreateSubscription(sub *models.Subscription) error
 	IncrementSubscriptionUsage(userID uint, column string) error

@@ -605,6 +605,9 @@ type MockUserRepo struct {
 	// GetUserAuthByEmail to simulate infrastructure failures (as opposed to
 	// gorm.ErrRecordNotFound, which the mock returns for unknown users).
 	GetUserAuthErr error
+	// LastCleanupCutoff records the cutoff passed to
+	// DeleteAbandonedUnverifiedUsers, for assertions.
+	LastCleanupCutoff time.Time
 }
 
 // NewMockUserRepo creates a new MockUserRepo with initialized maps.
@@ -757,6 +760,21 @@ func (m *MockUserRepo) EmailExists(email string) (bool, error) {
 		}
 	}
 	return false, nil
+}
+
+func (m *MockUserRepo) DeleteAbandonedUnverifiedUsers(olderThan time.Time) (int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.LastCleanupCutoff = olderThan
+	var deleted int64
+	for id, u := range m.Users {
+		if u.EmailVerifiedAt == nil && u.CreatedAt.Before(olderThan) {
+			delete(m.Users, id)
+			deleted++
+		}
+	}
+	return deleted, nil
 }
 
 func (m *MockUserRepo) SetEmailVerified(userID uint) error {

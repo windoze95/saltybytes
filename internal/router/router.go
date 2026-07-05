@@ -109,6 +109,7 @@ func SetupRouter(cfg *config.Config, database *gorm.DB) *gin.Engine {
 	// User-related routes setup
 	userRepo := repository.NewUserRepository(database)
 	userService := service.NewUserService(cfg, userRepo)
+	userService.StartAbandonedAccountCleanup()
 	userHandler := handlers.NewUserHandler(userService)
 
 	// Signup email verification. Ships dark: without EMAIL_VERIFICATION_ENABLED
