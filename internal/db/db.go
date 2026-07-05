@@ -47,6 +47,7 @@ func connectToDatabaseWithRetry(databaseURL string) (*gorm.DB, error) {
 	if migrateErr := database.AutoMigrate(
 		&models.User{},
 		&models.UserAuth{},
+		&models.EmailVerification{},
 		&models.Subscription{},
 		&models.UserSettings{},
 		&models.Personalization{},

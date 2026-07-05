@@ -759,6 +759,31 @@ func (m *MockUserRepo) EmailExists(email string) (bool, error) {
 	return false, nil
 }
 
+func (m *MockUserRepo) SetEmailVerified(userID uint) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	u, ok := m.Users[userID]
+	if !ok {
+		return fmt.Errorf("user not found")
+	}
+	now := time.Now()
+	u.EmailVerifiedAt = &now
+	return nil
+}
+
+func (m *MockUserRepo) ClearUserEmail(userID uint) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	u, ok := m.Users[userID]
+	if !ok {
+		return fmt.Errorf("user not found")
+	}
+	u.Email = ""
+	return nil
+}
+
 func (m *MockUserRepo) IncrementTokenVersion(userID uint) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -1339,4 +1364,101 @@ func (m *MockExtractionEventRepo) Events() []*models.ExtractionEvent {
 	out := make([]*models.ExtractionEvent, len(m.events))
 	copy(out, m.events)
 	return out
+}
+
+// --- MockEmailVerificationRepo ---
+
+// MockEmailVerificationRepo is an in-memory implementation of
+// repository.EmailVerificationRepo.
+type MockEmailVerificationRepo struct {
+	mu   sync.Mutex
+	Rows map[uint]*models.EmailVerification
+
+	UpsertErr error
+	GetErr    error
+}
+
+// NewMockEmailVerificationRepo creates an initialized mock.
+func NewMockEmailVerificationRepo() *MockEmailVerificationRepo {
+	return &MockEmailVerificationRepo{Rows: make(map[uint]*models.EmailVerification)}
+}
+
+func (m *MockEmailVerificationRepo) Upsert(v *models.EmailVerification) error {
+	if m.UpsertErr != nil {
+		return m.UpsertErr
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cp := *v
+	m.Rows[v.UserID] = &cp
+	return nil
+}
+
+func (m *MockEmailVerificationRepo) GetByUserID(userID uint) (*models.EmailVerification, error) {
+	if m.GetErr != nil {
+		return nil, m.GetErr
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	v, ok := m.Rows[userID]
+	if !ok {
+		return nil, nil
+	}
+	cp := *v
+	return &cp, nil
+}
+
+func (m *MockEmailVerificationRepo) IncrementAttempts(userID uint) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if v, ok := m.Rows[userID]; ok {
+		v.Attempts++
+	}
+	return nil
+}
+
+func (m *MockEmailVerificationRepo) DeleteByUserID(userID uint) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.Rows, userID)
+	return nil
+}
+
+// --- MockEmailSender ---
+
+// SentEmail records one delivery through MockEmailSender.
+type SentEmail struct {
+	To      string
+	Subject string
+	Text    string
+	HTML    string
+}
+
+// MockEmailSender records sends for assertions; set SendErr to simulate
+// delivery failures.
+type MockEmailSender struct {
+	mu      sync.Mutex
+	Sent    []SentEmail
+	SendErr error
+}
+
+func (m *MockEmailSender) Send(ctx context.Context, to, subject, textBody, htmlBody string) error {
+	if m.SendErr != nil {
+		return m.SendErr
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.Sent = append(m.Sent, SentEmail{To: to, Subject: subject, Text: textBody, HTML: htmlBody})
+	return nil
+}
+
+// LastSent returns the most recent delivery, or nil when none happened.
+func (m *MockEmailSender) LastSent() *SentEmail {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.Sent) == 0 {
+		return nil
+	}
+	cp := m.Sent[len(m.Sent)-1]
+	return &cp
 }

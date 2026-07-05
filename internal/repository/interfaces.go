@@ -125,6 +125,8 @@ type UserRepo interface {
 	UpdatePersonalization(userID uint, update *models.PersonalizationUpdate) error
 	UsernameExists(username string) (bool, error)
 	EmailExists(email string) (bool, error)
+	SetEmailVerified(userID uint) error
+	ClearUserEmail(userID uint) error
 	IncrementTokenVersion(userID uint) error
 	CreateSubscription(sub *models.Subscription) error
 	IncrementSubscriptionUsage(userID uint, column string) error
@@ -132,8 +134,17 @@ type UserRepo interface {
 	ResetSubscriptionUsage(userID uint, nextReset time.Time) error
 }
 
+// EmailVerificationRepo persists pending signup email-verification codes.
+type EmailVerificationRepo interface {
+	Upsert(v *models.EmailVerification) error
+	GetByUserID(userID uint) (*models.EmailVerification, error)
+	IncrementAttempts(userID uint) error
+	DeleteByUserID(userID uint) error
+}
+
 // Compile-time check that the concrete repository satisfies the interface.
 var _ UserRepo = (*UserRepository)(nil)
+var _ EmailVerificationRepo = (*EmailVerificationRepository)(nil)
 var _ FamilyRepo = (*FamilyRepository)(nil)
 var _ AllergenRepo = (*AllergenRepository)(nil)
 var _ FinderSessionRepo = (*FinderSessionRepository)(nil)
