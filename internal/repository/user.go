@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lib/pq"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/windoze95/saltybytes-api/internal/logger"
 	"github.com/windoze95/saltybytes-api/internal/models"
 	"go.uber.org/zap"
@@ -22,23 +22,37 @@ func NewUserRepository(db *gorm.DB) *UserRepository {
 	return &UserRepository{DB: db}
 }
 
+// mapUserUniqueViolation converts Postgres unique-constraint violations on
+// the users table into the sentinel errors handlers match with errors.Is.
+// Any other error is returned unchanged. The pgx driver (used by
+// gorm.io/driver/postgres) surfaces these as *pgconn.PgError with SQLSTATE
+// 23505; the violation fires on the INSERT itself, not on commit.
+func mapUserUniqueViolation(err error) error {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+		constraint := pgErr.ConstraintName
+		if constraint == "" {
+			constraint = pgErr.Message
+		}
+		if strings.Contains(constraint, "username") {
+			return ErrUsernameTaken
+		}
+		if strings.Contains(constraint, "email") {
+			return ErrEmailTaken
+		}
+	}
+	return err
+}
+
 // CreateUser creates a new user.
 func (r *UserRepository) CreateUser(user *models.User) (*models.User, error) {
 	tx := r.DB.Begin()
 	if err := tx.Create(user).Error; err != nil {
 		tx.Rollback()
-		return nil, err
+		return nil, mapUserUniqueViolation(err)
 	}
 	if err := tx.Commit().Error; err != nil {
-		// Check for unique constraints
-		if pgErr, ok := err.(*pq.Error); ok && pgErr.Code == "23505" {
-			if strings.Contains(pgErr.Error(), "username") {
-				return nil, ErrUsernameTaken
-			} else if strings.Contains(pgErr.Error(), "email") {
-				return nil, ErrEmailTaken
-			}
-		}
-		return nil, err
+		return nil, mapUserUniqueViolation(err)
 	}
 
 	return user, nil
@@ -71,11 +85,27 @@ func (r *UserRepository) GetUserWithAuthByID(userID uint) (*models.User, error) 
 	return &user, nil
 }
 
-// GetUserAuthByUsername retrieves a user's authentication information by their username.
+// GetUserAuthByUsername retrieves a user's authentication information by
+// their username. The match is case-insensitive: signup stores the username
+// as typed (mobile keyboards autocapitalize), so an exact match would lock
+// out anyone who types their name in a different case at login.
 func (r *UserRepository) GetUserAuthByUsername(username string) (*models.User, error) {
 	var user models.User
 	if err := r.DB.Preload("Auth").Preload("Settings").Preload("Personalization").
-		Where("username = ?", username).
+		Where("LOWER(username) = LOWER(?)", username).
+		First(&user).Error; err != nil {
+		return nil, err
+	}
+
+	return &user, nil
+}
+
+// GetUserAuthByEmail retrieves a user's authentication information by their
+// email address, case-insensitively.
+func (r *UserRepository) GetUserAuthByEmail(email string) (*models.User, error) {
+	var user models.User
+	if err := r.DB.Preload("Auth").Preload("Settings").Preload("Personalization").
+		Where("LOWER(email) = LOWER(?)", email).
 		First(&user).Error; err != nil {
 		return nil, err
 	}
@@ -101,9 +131,10 @@ func (r *UserRepository) UpdateUserEmail(userID uint, email string) error {
 		Update("Email", email).Error
 	if err != nil {
 		logger.Get().Error("failed to update user email", zap.Uint("user_id", userID), zap.Error(err))
+		return mapUserUniqueViolation(err)
 	}
 
-	return err
+	return nil
 }
 
 // UpdateUserSettingsKeepScreenAwake updates a user's KeepScreenAwake setting.
@@ -240,6 +271,22 @@ func (r *UserRepository) UsernameExists(username string) (bool, error) {
 	lowercaseUsername := strings.ToLower(username)
 	var user models.User
 	err := r.DB.Where("LOWER(username) = ?", lowercaseUsername).
+		First(&user).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
+// EmailExists checks if an email address is already registered, ignoring
+// case. The DB unique constraint on email is case-sensitive, so this check
+// is also what keeps Foo@x.com and foo@x.com from becoming two accounts.
+func (r *UserRepository) EmailExists(email string) (bool, error) {
+	var user models.User
+	err := r.DB.Where("LOWER(email) = LOWER(?)", email).
 		First(&user).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {

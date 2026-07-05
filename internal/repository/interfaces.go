@@ -118,11 +118,13 @@ type UserRepo interface {
 	GetUserByID(userID uint) (*models.User, error)
 	GetUserWithAuthByID(userID uint) (*models.User, error)
 	GetUserAuthByUsername(username string) (*models.User, error)
+	GetUserAuthByEmail(email string) (*models.User, error)
 	UpdateUserFirstName(userID uint, firstName string) error
 	UpdateUserEmail(userID uint, email string) error
 	UpdateUserSettingsKeepScreenAwake(userID uint, keepScreenAwake bool) error
 	UpdatePersonalization(userID uint, update *models.PersonalizationUpdate) error
 	UsernameExists(username string) (bool, error)
+	EmailExists(email string) (bool, error)
 	IncrementTokenVersion(userID uint) error
 	CreateSubscription(sub *models.Subscription) error
 	IncrementSubscriptionUsage(userID uint, column string) error

@@ -95,6 +95,15 @@ func connectToDatabaseWithRetry(databaseURL string) (*gorm.DB, error) {
 		logger.Get().Warn("failed to create idx_recipes_user_created index", zap.Error(execErr))
 	}
 
+	// Login matches usernames and emails case-insensitively; expression
+	// indexes keep those lookups off a sequential scan.
+	if execErr := database.Exec(`CREATE INDEX IF NOT EXISTS idx_users_username_lower ON users (LOWER(username))`).Error; execErr != nil {
+		logger.Get().Warn("failed to create idx_users_username_lower index", zap.Error(execErr))
+	}
+	if execErr := database.Exec(`CREATE INDEX IF NOT EXISTS idx_users_email_lower ON users (LOWER(email))`).Error; execErr != nil {
+		logger.Get().Warn("failed to create idx_users_email_lower index", zap.Error(execErr))
+	}
+
 	// Add the FK from recipe_nodes.tree_id → recipe_trees.id that gorm:"-" skipped.
 	// Postgres does not support ADD CONSTRAINT IF NOT EXISTS, so guard with a
 	// pg_constraint existence check.

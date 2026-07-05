@@ -230,18 +230,23 @@ func SetupRouter(cfg *config.Config, database *gorm.DB) *gin.Engine {
 	// Group for API routes that don't require token verification
 	apiPublic := r.Group("/v1")
 	apiPublic.Use(middleware.CheckIDHeader(cfg.EnvVars.IDHeader))
-	// Rate-limit the public auth endpoints per IP (5 req/min, burst 10) to
-	// slow down credential stuffing and signup abuse.
-	apiPublic.Use(middleware.RateLimitByIP(5, 10, 5*time.Minute, 15*time.Minute))
+	// Rate-limit the public auth endpoints per IP. Signup and login share one
+	// tight bucket to slow credential stuffing and signup abuse. Refresh gets
+	// its own, much higher bucket: it needs a validly signed refresh token to
+	// be of any use to an attacker, it fires on every app cold start, and
+	// many legitimate users can share one IP (office NAT, carrier CGNAT) —
+	// starving it logs real users out.
+	credentialLimiter := middleware.RateLimitByIP(10, 20, 5*time.Minute, 15*time.Minute)
+	refreshLimiter := middleware.RateLimitByIP(60, 120, 5*time.Minute, 15*time.Minute)
 	{
 		// User-related routes
 
 		// Create a new user
-		apiPublic.POST("/users", userHandler.CreateUser)
+		apiPublic.POST("/users", credentialLimiter, userHandler.CreateUser)
 		// Login a user
-		apiPublic.POST("/auth/login", userHandler.LoginUser)
+		apiPublic.POST("/auth/login", credentialLimiter, userHandler.LoginUser)
 		// Refresh an access token
-		apiPublic.POST("/auth/refresh", userHandler.RefreshToken)
+		apiPublic.POST("/auth/refresh", refreshLimiter, userHandler.RefreshToken)
 	}
 
 	// Group for API routes that require token verification

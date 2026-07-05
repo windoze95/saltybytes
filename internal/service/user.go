@@ -14,6 +14,7 @@ import (
 	"github.com/windoze95/saltybytes-api/internal/models"
 	"github.com/windoze95/saltybytes-api/internal/repository"
 	"golang.org/x/crypto/bcrypt"
+	"gorm.io/gorm"
 )
 
 // UserService is the business logic layer for user-related operations.
@@ -55,8 +56,14 @@ func NewUserService(cfg *config.Config, repo repository.UserRepo) *UserService {
 	}
 }
 
-// CreateUser creates a new user.
+// CreateUser creates a new user. Identifier fields are trimmed here as well
+// as in the handler so no caller can store padded values; the password is
+// never trimmed (spaces are legitimate password characters).
 func (s *UserService) CreateUser(username, firstName, email, password string) (*models.User, error) {
+	username = strings.TrimSpace(username)
+	firstName = strings.TrimSpace(firstName)
+	email = strings.TrimSpace(email)
+
 	// Hash password
 	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(password), 10)
 	if err != nil {
@@ -108,9 +115,25 @@ var ErrInvalidCredentials = errors.New("invalid username or password")
 // username exists.
 var dummyBcryptHash = []byte("$2a$10$eTN04vDBzQvPQeH2t2QGHe/dB4sezgOEiN7Jd9/BB4cv7Hkgimei6")
 
-// LoginUser logs in a user.
-func (s *UserService) LoginUser(username, password string) (*models.User, error) {
-	user, err := s.Repo.GetUserAuthByUsername(username)
+// LoginUser logs in a user. The identifier may be a username or an email
+// address — usernames are alphanumeric-only, so anything containing '@' can
+// only be an email. Both are matched case-insensitively. Unknown identifier
+// and wrong password return ErrInvalidCredentials; any other error is an
+// internal failure the handler should report as such rather than blaming
+// the user's credentials.
+func (s *UserService) LoginUser(identifier, password string) (*models.User, error) {
+	identifier = strings.TrimSpace(identifier)
+
+	var user *models.User
+	var err error
+	if strings.Contains(identifier, "@") {
+		user, err = s.Repo.GetUserAuthByEmail(identifier)
+	} else {
+		user, err = s.Repo.GetUserAuthByUsername(identifier)
+	}
+	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, fmt.Errorf("login lookup failed: %w", err)
+	}
 	if err != nil || user == nil || user.Auth == nil {
 		// Burn a bcrypt compare so this path takes as long as a real
 		// password check (prevents username enumeration via timing).
@@ -123,6 +146,12 @@ func (s *UserService) LoginUser(username, password string) (*models.User, error)
 	}
 
 	return user, nil
+}
+
+// EmailInUse reports whether an account already exists with the given email
+// address, ignoring case.
+func (s *UserService) EmailInUse(email string) (bool, error) {
+	return s.Repo.EmailExists(strings.TrimSpace(email))
 }
 
 // GetUserWithAuthByID gets a user with their auth record (token version) loaded.
@@ -294,6 +323,11 @@ func (s *UserService) ValidatePassword(password string) error {
 	if len(password) < 8 {
 		return errors.New("password must be at least 8 characters long")
 	}
+	// bcrypt only reads the first 72 bytes and errors on longer input, so
+	// reject here with a clear message instead of failing at hash time.
+	if len(password) > 72 {
+		return errors.New("password must be at most 72 characters long")
+	}
 	hasUppercase, _ := regexp.MatchString(`[A-Z]`, password)
 	if !hasUppercase {
 		return errors.New("password must contain at least one uppercase letter")
@@ -306,9 +340,12 @@ func (s *UserService) ValidatePassword(password string) error {
 	if !hasNumber {
 		return errors.New("password must contain at least one digit")
 	}
-	hasSpecialChar, _ := regexp.MatchString(`[!@#$%^&*]`, password)
+	// Any non-alphanumeric character counts as special. An allowlist here
+	// (the old [!@#$%^&*]) silently rejected common choices like '.' or '?',
+	// which read to users as "signup doesn't work".
+	hasSpecialChar, _ := regexp.MatchString(`[^a-zA-Z0-9]`, password)
 	if !hasSpecialChar {
-		return errors.New("password must contain at least one special character")
+		return errors.New("password must contain at least one special character (e.g. ! @ # $ %)")
 	}
 	return nil
 }
