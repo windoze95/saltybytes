@@ -550,6 +550,22 @@ func (r *MultiRecipeResolver) DetectMultiFromHTML(ctx context.Context, sourceURL
 	return len(r.detectCards(ctx, sourceURL, html)) > 1
 }
 
+// preferOwnPageCards stably reorders cards so those that resolved to their own
+// recipe page (SourceURL differs from the collection page) come first. Order
+// within each group is preserved.
+func preferOwnPageCards(cards []MultiRecipeCard, pageURL string) []MultiRecipeCard {
+	ordered := make([]MultiRecipeCard, 0, len(cards))
+	var inline []MultiRecipeCard
+	for _, c := range cards {
+		if u := strings.TrimSpace(c.SourceURL); u != "" && u != pageURL {
+			ordered = append(ordered, c)
+		} else {
+			inline = append(inline, c)
+		}
+	}
+	return append(ordered, inline...)
+}
+
 // MultiResolver is the finder's seam over the multi-recipe resolver. Digging
 // depends only on this interface so the finder's tests can inject a fake and
 // stay fully offline.
@@ -576,13 +592,20 @@ func (r *MultiRecipeResolver) resolveFromHTMLN(ctx context.Context, sourceURL st
 		return nil
 	}
 
-	if maxCards > 0 && len(cards) > maxCards {
-		cards = cards[:maxCards]
-	}
-
 	// Point cards at their own recipe pages when this is a collection/listicle
 	// of links (so each card extracts from its real recipe page, not the index).
+	// Runs before any cap so a capped resolve can keep the cards that lead
+	// somewhere instead of whichever happened to be listed first.
 	assignRecipeURLs(cards, html, sourceURL)
+
+	if maxCards > 0 && len(cards) > maxCards {
+		if extractionOrigin(ctx) == ExtractionOriginFinderDig {
+			// Digging can only fold cards that extract quickly and reliably,
+			// which in practice means cards with their own recipe page.
+			cards = preferOwnPageCards(cards, sourceURL)
+		}
+		cards = cards[:maxCards]
+	}
 
 	entry, isNew := r.Registry.Register(sourceURL)
 	if !isNew {
@@ -943,6 +966,20 @@ func (r *MultiRecipeResolver) extractSingleCard(entry *MultiRecipeEntry, idx int
 		r.finishInlineCard(entry, idx, title, sourceURL, *def, hashtags, models.ExtractionJSONLD, log)
 		log.Info("inline recipe extracted from page JSON-LD", zap.Int("ingredients", len(def.Ingredients)))
 		record("inline_jsonld", true, "", "", nil)
+		return
+	}
+
+	// During finder digging, a card with no own page and no inline JSON-LD is
+	// dropped instead of falling through to AI text extraction: link-index
+	// roundups carry no inline ingredients, so that path burns seconds per card
+	// (and light-tier quota) to fail with "recipe has no ingredients" nearly
+	// every time. Preview/import flows keep the AI fallback — there the user
+	// explicitly asked for this page and can wait.
+	if origin == ExtractionOriginFinderDig {
+		entry.mu.Lock()
+		entry.Cards[idx].ExtractionStatus = "failed"
+		entry.mu.Unlock()
+		record("inline_ai", false, "skipped_dig", "inline AI extraction skipped during finder digging (no own page, no inline JSON-LD)", nil)
 		return
 	}
 

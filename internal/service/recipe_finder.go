@@ -249,6 +249,13 @@ func (s *RecipeFinderService) FindRecipes(ctx context.Context, user *models.User
 	// (and in the dig queue) even when the ranking call failed entirely and
 	// fallbackRanking returned no flags.
 	s.applyKnownCollections(results, rank)
+	// When the ranking call failed there are NO model expand flags at all, so
+	// first-seen roundups would render as recipe cards. Fall back to
+	// high-precision URL/title pattern flags — heuristics only fill in for a
+	// dead model, they never override a successful ranking.
+	if rankErr != "" {
+		applyHeuristicCollections(results, rank)
+	}
 	run.CollectionsFlagged = countExpandFlags(rank)
 
 	// 5. Curate the shown picks: INDIVIDUAL recipes only (collections excluded),
@@ -282,7 +289,7 @@ func (s *RecipeFinderService) FindRecipes(ctx context.Context, user *models.User
 		room = finderDigMaxCards
 	}
 	digStart := time.Now()
-	folded, dug := s.digCollections(ctx, events, results, rank, room, &shortlistEmitted, searchRes.HasMore)
+	folded, dug := s.digCollections(ctx, events, results, rank, room, &shortlistEmitted, searchRes.HasMore, seenResultKeys(shown))
 	run.DigMS = time.Since(digStart).Milliseconds()
 	run.CollectionsDug = dug
 	run.CardsMined = len(folded)
@@ -369,9 +376,12 @@ func countExpandFlags(rank *ai.FinderRankResult) int {
 // was shown (shortlistEmitted false), the first mined batch seeds the shortlist
 // instead so build-89 gets a proper base list. Returns every folded recipe plus
 // how many collections were actually dug (for run telemetry).
-func (s *RecipeFinderService) digCollections(ctx context.Context, events chan<- FinderEvent, results []ai.SearchResult, rank *ai.FinderRankResult, room int, shortlistEmitted *bool, hasMore bool) ([]FinderResultItem, int) {
+func (s *RecipeFinderService) digCollections(ctx context.Context, events chan<- FinderEvent, results []ai.SearchResult, rank *ai.FinderRankResult, room int, shortlistEmitted *bool, hasMore bool, seen map[string]bool) ([]FinderResultItem, int) {
 	if s.MultiResolver == nil || rank == nil || room <= 0 {
 		return nil, 0
+	}
+	if seen == nil {
+		seen = make(map[string]bool)
 	}
 	// Card extractions kicked off below are the finder's own digging.
 	ctx = WithExtractionOrigin(ctx, ExtractionOriginFinderDig)
@@ -434,6 +444,11 @@ func (s *RecipeFinderService) digCollections(ctx context.Context, events chan<- 
 			}
 			cached := strings.TrimSpace(card.CachedURL)
 			if cached == "" {
+				continue
+			}
+			// The same recipe often appears in several roundups (and sometimes as
+			// a direct pick too) — fold each distinct recipe once.
+			if !markResultSeen(seen, cached, card.Title) {
 				continue
 			}
 			batch = append(batch, FinderResultItem{
@@ -641,6 +656,145 @@ func (s *RecipeFinderService) applyKnownCollections(results []ai.SearchResult, r
 			}
 		}
 	}
+}
+
+// applyHeuristicCollections flags candidates whose URL or title carries a
+// near-certain collection/listicle signal. It runs ONLY when the ranking call
+// failed (no model expand flags exist), because a false positive here hides a
+// real single recipe — the patterns are deliberately high-precision, not
+// comprehensive.
+func applyHeuristicCollections(results []ai.SearchResult, rank *ai.FinderRankResult) {
+	if rank == nil {
+		return
+	}
+	for i := range rank.Ranked {
+		r := &rank.Ranked[i]
+		if r.Expand || r.Index < 0 || r.Index >= len(results) {
+			continue
+		}
+		if looksLikeCollectionPage(results[r.Index].URL, results[r.Index].Title) {
+			r.Expand = true
+			if r.ExpandPriority == 0 {
+				// Below applyKnownCollections' DB-certain priority (4).
+				r.ExpandPriority = 3
+			}
+		}
+	}
+}
+
+// looksLikeCollectionPage reports whether a URL/title pair carries a
+// near-certain roundup/listicle signal: a counting title ("40 Easy Weeknight
+// Dinners"), a counting slug (/40-easy-weeknight-dinners), or an index-ish
+// path segment (/gallery/, /collection/, ...).
+func looksLikeCollectionPage(rawURL, title string) bool {
+	if u, err := url.Parse(rawURL); err == nil {
+		p := strings.ToLower(u.Path)
+		for _, seg := range []string{"/gallery/", "/galleries/", "/slideshow", "/roundup", "/collection/", "/collections/", "/category/"} {
+			if strings.Contains(p, seg) {
+				return true
+			}
+		}
+		if countingListSignal(lastPathSegment(p)) {
+			return true
+		}
+	}
+	return countingListSignal(strings.ToLower(strings.TrimSpace(title)))
+}
+
+// lastPathSegment returns the final non-empty segment of an already-lowercased
+// URL path ("" when none).
+func lastPathSegment(p string) string {
+	segs := strings.Split(strings.Trim(p, "/"), "/")
+	if len(segs) == 0 {
+		return ""
+	}
+	return segs[len(segs)-1]
+}
+
+// countQualifiers are words that make a leading number describe ONE recipe
+// ("5-ingredient brownies", "30-minute chili", "15 bean soup") rather than
+// count a list ("40 easy weeknight dinners"). Precision beats recall here: a
+// missed collection just shows one odd card; a false positive hides a real
+// recipe.
+var countQualifiers = map[string]bool{
+	"minute": true, "minutes": true, "min": true, "hour": true, "hours": true,
+	"ingredient": true, "ingredients": true, "step": true, "steps": true,
+	"layer": true, "layers": true, "pot": true, "pan": true, "sheet": true,
+	"day": true, "days": true, "week": true, "weeks": true,
+	"bean": true, "beans": true, "spice": true, "spices": true,
+	"cheese": true, "grain": true, "grains": true, "seed": true, "seeds": true,
+}
+
+// countingListSignal reports whether an already-lowercased title or slug starts
+// with an integer >= 2 counting a LIST ("40 easy weeknight dinners",
+// "23-best-chicken-dinners", "12+ cozy soups"), excluding single-recipe
+// qualifiers ("5-ingredient brownies").
+func countingListSignal(s string) bool {
+	i := 0
+	for i < len(s) && s[i] >= '0' && s[i] <= '9' {
+		i++
+	}
+	if i == 0 || i > 3 {
+		return false // no leading number, or an absurdly long digit run
+	}
+	n := 0
+	for _, c := range s[:i] {
+		n = n*10 + int(c-'0')
+	}
+	if n < 2 {
+		return false
+	}
+	rest := s[i:]
+	if rest != "" && rest[0] == '+' {
+		rest = rest[1:]
+	}
+	if rest == "" || (rest[0] != ' ' && rest[0] != '-') {
+		return false
+	}
+	next := strings.FieldsFunc(rest, func(r rune) bool {
+		return !((r >= 'a' && r <= 'z') || (r >= '0' && r <= '9'))
+	})
+	return len(next) > 0 && !countQualifiers[next[0]]
+}
+
+// seenResultKeys seeds a dedup set from already-shown picks so digging never
+// folds a recipe the user is already looking at.
+func seenResultKeys(items []FinderResultItem) map[string]bool {
+	seen := make(map[string]bool, len(items)*2)
+	for _, it := range items {
+		markResultSeen(seen, it.Result.URL, it.Result.Title)
+	}
+	return seen
+}
+
+// markResultSeen records a recipe's URL+title dedup keys, reporting true when
+// the recipe was NOT seen before (i.e. the caller should keep it). A recipe is
+// a duplicate when either its normalized URL or its normalized title was
+// already recorded — the same dish mined from two roundups usually shares a
+// URL, but titles catch same-recipe-different-tracking-params cases.
+func markResultSeen(seen map[string]bool, rawURL, title string) bool {
+	urlKey := ""
+	if u := strings.TrimSpace(rawURL); u != "" {
+		if norm, err := NormalizeURL(u); err == nil {
+			urlKey = "u:" + norm
+		} else {
+			urlKey = "u:" + strings.ToLower(u)
+		}
+	}
+	titleKey := ""
+	if t := strings.Join(strings.Fields(strings.ToLower(title)), " "); t != "" {
+		titleKey = "t:" + t
+	}
+	if (urlKey != "" && seen[urlKey]) || (titleKey != "" && seen[titleKey]) {
+		return false
+	}
+	if urlKey != "" {
+		seen[urlKey] = true
+	}
+	if titleKey != "" {
+		seen[titleKey] = true
+	}
+	return true
 }
 
 // dietContext compacts the owner's family dietary needs into a model-facing
