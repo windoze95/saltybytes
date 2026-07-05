@@ -35,7 +35,7 @@ func TestExtractJSONLDRecipeByTitle_MatchesByTitle(t *testing.T) {
 		`<script type="application/ld+json">` + fullJSONLDRecipe("Black Bean Tacos", "1 can black beans", "6 tortillas") + `</script>` +
 		`</head><body></body></html>`
 
-	def, _, ok := extractJSONLDRecipeByTitle(html, "Black Bean Tacos")
+	def, _, _, ok := extractJSONLDRecipeByTitle(html, "Black Bean Tacos")
 	if !ok || def == nil {
 		t.Fatalf("expected to extract a recipe by title, ok=%v", ok)
 	}
@@ -55,11 +55,11 @@ func TestExtractJSONLDRecipeByTitle_GraphAndNoMatch(t *testing.T) {
 		fullJSONLDRecipe("Lemon Garlic Salmon", "2 salmon fillets", "1 lemon") + `]}` +
 		`</script></head></html>`
 
-	def, _, ok := extractJSONLDRecipeByTitle(html, "Lemon Garlic Salmon")
+	def, _, _, ok := extractJSONLDRecipeByTitle(html, "Lemon Garlic Salmon")
 	if !ok || def == nil || len(def.Ingredients) != 2 {
 		t.Fatalf("expected salmon recipe from @graph, ok=%v", ok)
 	}
-	if _, _, ok := extractJSONLDRecipeByTitle(html, "Chocolate Lava Cake"); ok {
+	if _, _, _, ok := extractJSONLDRecipeByTitle(html, "Chocolate Lava Cake"); ok {
 		t.Errorf("expected no match for an absent title")
 	}
 }

@@ -733,14 +733,15 @@ func (r *MultiRecipeResolver) extractAllRecipes(entry *MultiRecipeEntry) {
 }
 
 // extractJSONLDRecipeByTitle finds the JSON-LD Recipe block on the page whose
-// name matches wantTitle and parses it into a full RecipeDef. This lets an inline
+// name matches wantTitle and parses it into a full RecipeDef, plus the
+// recipe's own image URL when the block carries one. This lets an inline
 // (listicle) card be extracted from the SAME page HTML that detected it — free,
 // and immune to the AI-text truncation that silently drops recipes past the size
 // cap. Returns ok=false when no confident JSON-LD match exists.
-func extractJSONLDRecipeByTitle(html, wantTitle string) (*models.RecipeDef, []string, bool) {
+func extractJSONLDRecipeByTitle(html, wantTitle string) (*models.RecipeDef, []string, string, bool) {
 	wantToks := slugTokens(wantTitle)
 	if len(wantToks) == 0 {
-		return nil, nil, false
+		return nil, nil, "", false
 	}
 	re := regexp.MustCompile(`(?s)<script[^>]*type=["']application/ld\+json["'][^>]*>(.*?)</script>`)
 	for _, match := range re.FindAllStringSubmatch(html, -1) {
@@ -755,14 +756,14 @@ func extractJSONLDRecipeByTitle(html, wantTitle string) (*models.RecipeDef, []st
 			if !titleTokensMatch(recipe.Name, wantToks) {
 				continue
 			}
-			def, hashtags, _, err := jsonLDToRecipeDef(&recipe)
+			def, hashtags, imageURL, err := jsonLDToRecipeDef(&recipe)
 			if err != nil || def == nil || len(def.Ingredients) == 0 {
 				continue
 			}
-			return def, hashtags, true
+			return def, hashtags, imageURL, true
 		}
 	}
-	return nil, nil, false
+	return nil, nil, "", false
 }
 
 // collectJSONLDRecipeObjects returns the JSON strings of every Recipe-typed
@@ -925,7 +926,7 @@ func (r *MultiRecipeResolver) extractSingleCard(entry *MultiRecipeEntry, idx int
 	// collection/listicle of links, not inline recipes), fetch and extract that
 	// page directly — it carries the full recipe, usually via free JSON-LD.
 	if sourceURL != "" && sourceURL != entry.SourceURL {
-		if def, hashtags, _, ferr := r.ImportService.fetchAndExtractWithHTML(ctx, sourceURL); ferr == nil && def != nil && len(def.Ingredients) > 0 {
+		if def, hashtags, ownHTML, ferr := r.ImportService.fetchAndExtractWithHTML(ctx, sourceURL); ferr == nil && def != nil && len(def.Ingredients) > 0 {
 			def.SourceURL = sourceURL
 			ensureUnitSystem(def)
 			entry.mu.Lock()
@@ -934,6 +935,12 @@ func (r *MultiRecipeResolver) extractSingleCard(entry *MultiRecipeEntry, idx int
 			entry.Cards[idx].Hashtags = hashtags
 			// The recipe lives at its own page, so that URL is its cache key.
 			entry.Cards[idx].CachedURL = sourceURL
+			// Link-index cards usually detect without an image; the recipe's
+			// own page has the hero (og:image) — backfill so the card isn't a
+			// blank poster in the full-bleed views.
+			if entry.Cards[idx].ImageURL == "" {
+				entry.Cards[idx].ImageURL = pageImageURL(ownHTML)
+			}
 			entry.mu.Unlock()
 			if r.ImportService.CanonicalRepo != nil {
 				if normalizedURL, nerr := NormalizeURL(sourceURL); nerr == nil {
@@ -960,9 +967,16 @@ func (r *MultiRecipeResolver) extractSingleCard(entry *MultiRecipeEntry, idx int
 	// Inline recipe (no own recipe page): prefer the matching JSON-LD Recipe
 	// block from the SAME page HTML that detected the cards — free, and immune to
 	// the AI-text truncation that silently drops recipes past the size cap.
-	if def, hashtags, ok := extractJSONLDRecipeByTitle(pageHTML, title); ok {
+	if def, hashtags, recipeImage, ok := extractJSONLDRecipeByTitle(pageHTML, title); ok {
 		def.SourceURL = sourceURL
 		ensureUnitSystem(def)
+		if recipeImage != "" {
+			entry.mu.Lock()
+			if entry.Cards[idx].ImageURL == "" {
+				entry.Cards[idx].ImageURL = recipeImage
+			}
+			entry.mu.Unlock()
+		}
 		r.finishInlineCard(entry, idx, title, sourceURL, *def, hashtags, models.ExtractionJSONLD, log)
 		log.Info("inline recipe extracted from page JSON-LD", zap.Int("ingredients", len(def.Ingredients)))
 		record("inline_jsonld", true, "", "", nil)
@@ -1048,6 +1062,26 @@ func (r *MultiRecipeResolver) extractSingleCard(entry *MultiRecipeEntry, idx int
 // cardExtractAttempts is how many times a card's AI extraction is tried before
 // the card is marked failed (a single transient blip should not be terminal).
 const cardExtractAttempts = 2
+
+// pageImageURLRe matches the social-preview image meta tags (og:image /
+// twitter:image) in either attribute order.
+var pageImageURLRe = []*regexp.Regexp{
+	regexp.MustCompile(`(?is)<meta[^>]+(?:property|name)=["'](?:og:image|twitter:image)["'][^>]+content=["']([^"'<>\s]+)["']`),
+	regexp.MustCompile(`(?is)<meta[^>]+content=["']([^"'<>\s]+)["'][^>]+(?:property|name)=["'](?:og:image|twitter:image)["']`),
+}
+
+// pageImageURL scrapes a page's social-preview image — the recipe hero on
+// virtually every recipe site. Returns "" when none is declared.
+func pageImageURL(html string) string {
+	for _, re := range pageImageURLRe {
+		if m := re.FindStringSubmatch(html); m != nil {
+			if u := strings.TrimSpace(m[1]); strings.HasPrefix(u, "http") {
+				return u
+			}
+		}
+	}
+	return ""
+}
 
 // windowAroundTitle returns at most `window` bytes of text centered on the first
 // occurrence of the title (or its longest significant token), so a target recipe
