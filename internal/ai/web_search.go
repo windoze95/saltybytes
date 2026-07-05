@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -215,13 +216,24 @@ type braveThumbnail struct {
 	Src string `json:"src"`
 }
 
+// braveSearchQuery steers a query toward recipe results, without stuttering
+// when the caller's query already says "recipe" (user-typed "chicken parmesan
+// recipe" or the finder's composed "<facets> recipe -shellfish" must not become
+// "... recipe recipe").
+func braveSearchQuery(query string) string {
+	if strings.Contains(strings.ToLower(query), "recipe") {
+		return query
+	}
+	return query + " recipe"
+}
+
 func (p *WebSearchProvider) searchBrave(ctx context.Context, query string, count int, offset int) ([]SearchResult, error) {
 	if count > 20 {
 		count = 20
 	}
 
 	params := url.Values{}
-	params.Set("q", query+" recipe")
+	params.Set("q", braveSearchQuery(query))
 	params.Set("count", fmt.Sprintf("%d", count))
 	if offset > 0 {
 		params.Set("offset", fmt.Sprintf("%d", offset))

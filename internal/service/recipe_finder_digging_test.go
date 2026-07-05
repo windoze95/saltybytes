@@ -407,3 +407,140 @@ func TestFindRecipes_KnownMultiExcludedEvenWhenRankingFails(t *testing.T) {
 		t.Errorf("mined recipe not folded into results: %v", titles)
 	}
 }
+
+// TestFindRecipes_HeuristicCollectionsExcludedWhenRankingFails locks the second
+// fail-closed layer: when ranking fails, FIRST-SEEN roundups (not yet in the
+// canonical cache, so applyKnownCollections can't catch them) must still be
+// pulled out of the results by URL/title pattern and dug instead of being
+// painted as recipe cards.
+func TestFindRecipes_HeuristicCollectionsExcludedWhenRankingFails(t *testing.T) {
+	slugCollection := "https://example.com/40-easy-weeknight-dinners"
+	pathCollection := "https://example.com/gallery/cozy-fall-soups"
+	results := []ai.SearchResult{
+		{Title: "Sheet Pan Chicken Fajitas", URL: "https://example.com/recipe/sheet-pan-chicken-fajitas", Source: "example.com", Description: "Quick weeknight fajitas."},
+		{Title: "40 Easy Weeknight Dinner Recipes", URL: slugCollection, Source: "example.com", Description: "Our favorite quick dinners."},
+		{Title: "Cozy Fall Soups", URL: pathCollection, Source: "example.com", Description: "A gallery of soups."},
+		{Title: "5-Ingredient Brownies", URL: "https://example.com/recipe/5-ingredient-brownies", Source: "example.com", Description: "One bowl, five ingredients."},
+	}
+	searchProvider := &testutil.MockSearchProvider{
+		SearchRecipesFunc: func(ctx context.Context, query string, count, offset int) ([]ai.SearchResult, error) {
+			return results, nil
+		},
+	}
+	ranker := &testutil.MockTextProvider{
+		ExpandAndRankRecipesFunc: func(ctx context.Context, req ai.FinderRankRequest) (*ai.FinderRankResult, error) {
+			return nil, fmt.Errorf("model exploded")
+		},
+	}
+	fake := &fakeMultiResolver{entries: map[string]*MultiRecipeEntry{
+		slugCollection: resolvedEntry(slugCollection, doneCard("Skillet Chicken Parm", "https://example.com/recipe/skillet-chicken-parm")),
+		pathCollection: resolvedEntry(pathCollection, doneCard("Butternut Squash Soup", "https://example.com/recipe/butternut-squash-soup")),
+	}}
+
+	svc := newFinderService(searchProvider, ranker, &testutil.MockFamilyRepo{})
+	svc.MultiResolver = fake
+
+	events := runFinder(svc, testutil.TestUser(), FinderRequest{Facets: FinderFacets{Occasion: "weeknight"}})
+
+	// Neither pattern-flagged collection is ever shown as a card...
+	for _, u := range []string{slugCollection, pathCollection} {
+		if shownHasURL(events, u) {
+			t.Errorf("heuristic collection %q shown as a result despite ranking failure", u)
+		}
+	}
+	// ...but the real singles are, INCLUDING the count-qualified single recipe.
+	for _, u := range []string{results[0].URL, results[3].URL} {
+		if !shownHasURL(events, u) {
+			t.Errorf("real single recipe %q missing from results", u)
+		}
+	}
+	// Both heuristic collections were dug and their recipes folded in.
+	if len(fake.calls) != 2 {
+		t.Errorf("resolver calls = %v, want both heuristic collections dug", fake.calls)
+	}
+	for _, mined := range []string{"https://example.com/recipe/skillet-chicken-parm", "https://example.com/recipe/butternut-squash-soup"} {
+		if !shownHasURL(events, mined) {
+			t.Errorf("mined recipe %q not folded into results", mined)
+		}
+	}
+}
+
+// TestFindRecipes_DedupsMinedAcrossCollectionsAndDirect: the same recipe often
+// appears in several roundups and as a direct pick; each distinct recipe is
+// folded at most once (URL and normalized-title keys).
+func TestFindRecipes_DedupsMinedAcrossCollectionsAndDirect(t *testing.T) {
+	direct := ai.SearchResult{Title: "One-Pot Chicken and Rice", URL: "https://example.com/recipe/one-pot-chicken-rice", Source: "example.com", Description: "A comforting classic."}
+	collA := ai.SearchResult{Title: "Roundup A", URL: "https://example.com/roundup-a", Source: "example.com"}
+	collB := ai.SearchResult{Title: "Roundup B", URL: "https://example.com/roundup-b", Source: "example.com"}
+	results := []ai.SearchResult{direct, collA, collB}
+
+	searchProvider := &testutil.MockSearchProvider{
+		SearchRecipesFunc: func(ctx context.Context, query string, count, offset int) ([]ai.SearchResult, error) {
+			return results, nil
+		},
+	}
+	ranker := rankAllFlagging(results, map[int]int{1: 5, 2: 4})
+
+	fake := &fakeMultiResolver{entries: map[string]*MultiRecipeEntry{
+		collA.URL: resolvedEntry(collA.URL,
+			doneCard("One-Pot Chicken and Rice", direct.URL), // duplicate of the direct pick
+			doneCard("Ground Beef Gyros", "https://example.com/recipe/ground-beef-gyros"),
+			doneCard("Skillet Lasagna", "https://example.com/recipe/skillet-lasagna"),
+		),
+		collB.URL: resolvedEntry(collB.URL,
+			doneCard("Ground Beef Gyros", "https://example.com/recipe/ground-beef-gyros"), // dup by URL
+			doneCard("Skillet  Lasagna", "https://example.com/recipe/skillet-lasagna-two"), // dup by normalized title
+			doneCard("Chicken Tikka Masala", "https://example.com/recipe/chicken-tikka-masala"),
+		),
+	}}
+
+	svc := newFinderService(searchProvider, ranker, &testutil.MockFamilyRepo{})
+	svc.MultiResolver = fake
+
+	events := runFinder(svc, testutil.TestUser(), FinderRequest{Facets: FinderFacets{Protein: "chicken"}})
+
+	shown := shownItems(events)
+	counts := map[string]int{}
+	for _, it := range shown {
+		counts[strings.ToLower(strings.Join(strings.Fields(it.Result.Title), " "))]++
+	}
+	for title, n := range counts {
+		if n > 1 {
+			t.Errorf("recipe %q shown %d times, want 1", title, n)
+		}
+	}
+	// Exactly the 4 distinct recipes: direct + gyros + lasagna + tikka.
+	if len(shown) != 4 {
+		titles := make([]string, 0, len(shown))
+		for _, it := range shown {
+			titles = append(titles, it.Result.Title)
+		}
+		t.Errorf("shown %d items %v, want the 4 distinct recipes", len(shown), titles)
+	}
+}
+
+func TestLooksLikeCollectionPage(t *testing.T) {
+	cases := []struct {
+		url, title string
+		want       bool
+	}{
+		{"https://example.com/40-easy-weeknight-dinners", "40 Easy Weeknight Dinner Recipes", true},
+		{"https://example.com/dinners", "23 Best Chicken Dinners", true},
+		{"https://example.com/dinners", "12+ Cozy Soups for Fall", true},
+		{"https://example.com/gallery/best-soups", "Our Best Soups", true},
+		{"https://example.com/recipes/category/desserts", "Desserts", true},
+		{"https://example.com/slideshow/comfort-food", "Comfort Food", true},
+		// Single recipes with counting qualifiers must NOT be flagged.
+		{"https://example.com/recipe/5-ingredient-brownies", "5-Ingredient Brownies", false},
+		{"https://example.com/recipe/30-minute-chili", "30-Minute Chili", false},
+		{"https://example.com/recipe/15-bean-soup", "15 Bean Soup", false},
+		{"https://example.com/recipe/3-cheese-lasagna", "3 Cheese Lasagna", false},
+		{"https://example.com/recipe/lemon-garlic-chicken", "Creamy Lemon Garlic Chicken", false},
+		{"https://example.com/recipe/one-pot-pasta", "1 Pot Pasta", false},
+	}
+	for _, c := range cases {
+		if got := looksLikeCollectionPage(c.url, c.title); got != c.want {
+			t.Errorf("looksLikeCollectionPage(%q, %q) = %v, want %v", c.url, c.title, got, c.want)
+		}
+	}
+}
