@@ -30,6 +30,20 @@ type SearchResultItem struct {
 	Rating      float64 `json:"rating"`
 	ImageURL    string  `json:"image_url"`
 	Description string  `json:"description"`
+	// Finder-session extras (additive; absent for plain cached searches): the
+	// agent's one-line rationale, per-member dietary safety and — for recipes
+	// mined out of a roundup — the collection title they came from.
+	Reason string             `json:"reason,omitempty"`
+	Safety []ResultSafetyItem `json:"safety,omitempty"`
+	Via    string             `json:"via,omitempty"`
+}
+
+// ResultSafetyItem mirrors the finder's per-member safety badge for JSONB
+// storage (models must not import the ai package).
+type ResultSafetyItem struct {
+	MemberName string `json:"member_name"`
+	Status     string `json:"status"`
+	Note       string `json:"note,omitempty"`
 }
 
 // SearchResultList is a slice of SearchResultItem for JSONB storage.

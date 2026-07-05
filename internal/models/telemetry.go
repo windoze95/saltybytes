@@ -45,11 +45,20 @@ type FinderRun struct {
 	Terminal  string `gorm:"size:16;index" json:"terminal"`
 	ErrorText string `gorm:"type:text" json:"error_text,omitempty"`
 
-	// Step latencies.
-	SearchMS int64 `json:"search_ms"`
-	RankMS   int64 `json:"rank_ms"`
-	DigMS    int64 `json:"dig_ms"`
-	TotalMS  int64 `json:"total_ms"`
+	// Picks step: the final curation pass across direct + mined recipes.
+	// PickRankOK=false means the picks ranking call failed and the picks
+	// degraded to pre-pick order (only possible when something was mined).
+	PicksTotal int  `json:"picks_total"`
+	PickRankOK bool `json:"pick_rank_ok"`
+
+	// Step latencies. FirstResultsMS is time-to-first-paint: how long until the
+	// instant (pre-rank) results event was emitted.
+	SearchMS       int64 `json:"search_ms"`
+	FirstResultsMS int64 `json:"first_results_ms"`
+	RankMS         int64 `json:"rank_ms"`
+	DigMS          int64 `json:"dig_ms"`
+	PicksMS        int64 `json:"picks_ms"`
+	TotalMS        int64 `json:"total_ms"`
 }
 
 // ExtractionEvent records one terminal recipe-extraction attempt — success or
