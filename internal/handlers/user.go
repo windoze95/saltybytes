@@ -21,6 +21,9 @@ import (
 // UserHandler is the handler for user-related requests.
 type UserHandler struct {
 	Service *service.UserService
+	// EmailVerification, when set and enabled, sends the signup verification
+	// code after account creation. Nil in tests that don't exercise it.
+	EmailVerification *service.EmailVerificationService
 }
 
 // NewUserHandler is the constructor function for initializing a new UserHandler.
@@ -63,14 +66,15 @@ func (h *UserHandler) CreateUser(c *gin.Context) {
 	}
 
 	// Reject duplicate emails up front with a clear message; the DB unique
-	// constraint stays as the backstop for races.
-	emailInUse, err := h.Service.EmailInUse(newUser.Email)
+	// constraint stays as the backstop for races. Stale unverified signups
+	// release the address instead of squatting it forever.
+	emailTaken, err := h.Service.EmailTakenForSignup(newUser.Email)
 	if err != nil {
 		logger.Get().Error("failed to check email availability", zap.Error(err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create user"})
 		return
 	}
-	if emailInUse {
+	if emailTaken {
 		c.JSON(http.StatusConflict, gin.H{"error": "email already in use"})
 		return
 	}
@@ -94,6 +98,14 @@ func (h *UserHandler) CreateUser(c *gin.Context) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create user"})
 		}
 		return
+	}
+
+	// Send the verification code (best-effort — a mail hiccup must never
+	// fail the signup; the app offers resend from the verify screen).
+	if h.EmailVerification != nil && h.EmailVerification.Enabled() {
+		if err := h.EmailVerification.StartVerification(c.Request.Context(), user); err != nil {
+			logger.Get().Warn("failed to send signup verification email", zap.Uint("user_id", user.ID), zap.Error(err))
+		}
 	}
 
 	// Log the user in

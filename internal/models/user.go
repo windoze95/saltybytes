@@ -12,14 +12,41 @@ import (
 // User is the model for a user.
 type User struct {
 	gorm.Model
-	Username         string           `gorm:"unique;index"`
-	FirstName        string           `gorm:"default:null"`
-	Email            string           `gorm:"unique;default:null"`
+	Username  string `gorm:"unique;index"`
+	FirstName string `gorm:"default:null"`
+	Email     string `gorm:"unique;default:null"`
+	// EmailVerifiedAt is set when the user proves ownership of Email (or
+	// immediately at signup while email verification is disabled). Nil means
+	// unverified: AI-cost endpoints are gated and a stale signup releases its
+	// email address for reuse.
+	EmailVerifiedAt  *time.Time
 	Auth             *UserAuth        `gorm:"foreignKey:UserID"`
 	Subscription     *Subscription    `gorm:"foreignKey:UserID"`
 	Settings         *UserSettings    `gorm:"foreignKey:UserID"`
 	Personalization  *Personalization `gorm:"foreignKey:UserID"`
 	CollectedRecipes []*Recipe        `gorm:"many2many:user_collected_recipes;"`
+}
+
+// EmailVerified reports whether the user's email address is verified.
+func (u *User) EmailVerified() bool {
+	return u.EmailVerifiedAt != nil
+}
+
+// EmailVerification holds the pending 6-digit signup verification code for a
+// user. One row per user; resends overwrite it. The code itself is stored
+// bcrypt-hashed so a database leak can't be replayed.
+type EmailVerification struct {
+	gorm.Model
+	UserID    uint   `gorm:"uniqueIndex;not null"`
+	CodeHash  string `gorm:"not null"`
+	ExpiresAt time.Time
+	// Attempts counts wrong codes entered for the current code; capped so a
+	// 6-digit space can't be brute-forced.
+	Attempts int `gorm:"default:0"`
+	// SendCount counts emails sent during the UTC day of LastSentAt,
+	// bounding daily sends per user.
+	SendCount  int `gorm:"default:0"`
+	LastSentAt time.Time
 }
 
 // UserAuth is the model for a user's authentication information.

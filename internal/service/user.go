@@ -29,6 +29,7 @@ type UserResponse struct {
 	Username        string                  `json:"username"`
 	FirstName       string                  `json:"first_name"`
 	Email           string                  `json:"email"`
+	EmailVerified   bool                    `json:"email_verified"`
 	Settings        SettingsResponse        `json:"settings"`
 	Personalization PersonalizationResponse `json:"personalization"`
 	CreatedAt       time.Time               `json:"createdAt"`
@@ -72,11 +73,21 @@ func (s *UserService) CreateUser(username, firstName, email, password string) (*
 
 	hashedPasswordStr := string(hashedPassword)
 
+	// While email verification is disabled, accounts are verified at birth so
+	// nothing gates on it; once enabled, new accounts start unverified and
+	// the signup handler sends the code.
+	var emailVerifiedAt *time.Time
+	if !s.Cfg.EmailVerificationActive() {
+		now := time.Now()
+		emailVerifiedAt = &now
+	}
+
 	// Create User and UserSettings
 	user := &models.User{
-		Username:  username,
-		FirstName: firstName,
-		Email:     email,
+		Username:        username,
+		FirstName:       firstName,
+		Email:           email,
+		EmailVerifiedAt: emailVerifiedAt,
 		Auth: &models.UserAuth{
 			HashedPassword: hashedPasswordStr,
 			AuthType:       models.Standard,
@@ -154,6 +165,34 @@ func (s *UserService) EmailInUse(email string) (bool, error) {
 	return s.Repo.EmailExists(strings.TrimSpace(email))
 }
 
+// EmailTakenForSignup reports whether an email is unavailable to a new
+// signup. Unlike EmailInUse, a stale squatter — an account that never
+// verified the address within 48 hours of signup (only possible while email
+// verification is on) — releases the address and does not block the signup.
+// The squatting account keeps working via username login.
+func (s *UserService) EmailTakenForSignup(email string) (bool, error) {
+	holder, err := s.Repo.GetUserAuthByEmail(strings.TrimSpace(email))
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return false, nil
+		}
+		return true, err
+	}
+	if holder == nil {
+		return false, nil
+	}
+	if holder.EmailVerified() || !s.Cfg.EmailVerificationActive() {
+		return true, nil
+	}
+	if time.Since(holder.CreatedAt) < staleSignupAfter {
+		return true, nil
+	}
+	if err := s.Repo.ClearUserEmail(holder.ID); err != nil {
+		return true, err
+	}
+	return false, nil
+}
+
 // GetUserWithAuthByID gets a user with their auth record (token version) loaded.
 func (s *UserService) GetUserWithAuthByID(userID uint) (*models.User, error) {
 	return s.Repo.GetUserWithAuthByID(userID)
@@ -168,12 +207,13 @@ func (s *UserService) LogoutUser(userID uint) error {
 // ToUserResponse converts a User to a UserResponse.
 func ToUserResponse(user *models.User) *UserResponse {
 	resp := &UserResponse{
-		ID:        strconv.FormatUint(uint64(user.ID), 10),
-		Username:  user.Username,
-		FirstName: user.FirstName,
-		Email:     user.Email,
-		CreatedAt: user.CreatedAt,
-		UpdatedAt: user.UpdatedAt,
+		ID:            strconv.FormatUint(uint64(user.ID), 10),
+		Username:      user.Username,
+		FirstName:     user.FirstName,
+		Email:         user.Email,
+		EmailVerified: user.EmailVerified(),
+		CreatedAt:     user.CreatedAt,
+		UpdatedAt:     user.UpdatedAt,
 	}
 	if user.Settings != nil {
 		resp.Settings = SettingsResponse{

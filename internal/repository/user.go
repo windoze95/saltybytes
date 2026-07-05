@@ -137,6 +137,30 @@ func (r *UserRepository) UpdateUserEmail(userID uint, email string) error {
 	return nil
 }
 
+// SetEmailVerified stamps the user's email as verified now.
+func (r *UserRepository) SetEmailVerified(userID uint) error {
+	err := r.DB.Model(&models.User{}).
+		Where("id = ?", userID).
+		Update("email_verified_at", time.Now()).Error
+	if err != nil {
+		logger.Get().Error("failed to set email verified", zap.Uint("user_id", userID), zap.Error(err))
+	}
+	return err
+}
+
+// ClearUserEmail releases a user's email address (used when a stale
+// unverified signup is squatting an address someone else wants to register
+// with). The account keeps working via username login.
+func (r *UserRepository) ClearUserEmail(userID uint) error {
+	err := r.DB.Model(&models.User{}).
+		Where("id = ?", userID).
+		Update("email", nil).Error
+	if err != nil {
+		logger.Get().Error("failed to clear user email", zap.Uint("user_id", userID), zap.Error(err))
+	}
+	return err
+}
+
 // UpdateUserSettingsKeepScreenAwake updates a user's KeepScreenAwake setting.
 func (r *UserRepository) UpdateUserSettingsKeepScreenAwake(userID uint, keepScreenAwake bool) error {
 	err := r.DB.Model(&models.UserSettings{}).

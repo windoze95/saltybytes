@@ -89,6 +89,21 @@ type EnvVars struct {
 	// OAuth issuer identifier and the base of the MCP resource URL, so it must
 	// match what MCP hosts (Claude/ChatGPT connectors) are configured with.
 	PublicBaseURL string `env:"PUBLIC_BASE_URL" envDefault:"https://api.saltybytes.ai" optional:"true"`
+	// EmailFrom is the From header for verification emails, e.g.
+	// "SaltyBytes <no-reply@saltybytes.ai>". Must be an SES-verified identity.
+	EmailFrom string `env:"EMAIL_FROM" optional:"true"`
+	// EmailVerificationEnabled turns on signup email verification: signup
+	// sends a 6-digit code, and AI-cost endpoints require a verified email.
+	// While false (the default), signups are marked verified immediately and
+	// nothing is gated, so the feature can ship dark and be flipped on once
+	// the SES domain identity and production access are in place.
+	EmailVerificationEnabled bool `env:"EMAIL_VERIFICATION_ENABLED" optional:"true"`
+}
+
+// EmailVerificationActive reports whether the signup email-verification flow
+// is fully configured: the flag is on and a From identity is set.
+func (c *Config) EmailVerificationActive() bool {
+	return c.EnvVars.EmailVerificationEnabled && c.EnvVars.EmailFrom != ""
 }
 
 // LoadConfig parses environment variables into the Config struct.

@@ -8,6 +8,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/windoze95/saltybytes-api/internal/ai"
 	"github.com/windoze95/saltybytes-api/internal/config"
+	"github.com/windoze95/saltybytes-api/internal/email"
 	"github.com/windoze95/saltybytes-api/internal/handlers"
 	"github.com/windoze95/saltybytes-api/internal/logger"
 	"github.com/windoze95/saltybytes-api/internal/mcpserver"
@@ -99,6 +100,30 @@ func SetupRouter(cfg *config.Config, database *gorm.DB) *gin.Engine {
 	userRepo := repository.NewUserRepository(database)
 	userService := service.NewUserService(cfg, userRepo)
 	userHandler := handlers.NewUserHandler(userService)
+
+	// Signup email verification. Ships dark: without EMAIL_VERIFICATION_ENABLED
+	// + EMAIL_FROM the sender stays nil, signups auto-verify, and the
+	// verified-email gate below is a no-op.
+	var emailSender email.Sender
+	if cfg.EmailVerificationActive() {
+		sesSender, err := email.NewSESSender(context.Background(), cfg)
+		if err != nil {
+			logger.Get().Error("email verification requested but SES init failed — running with verification disabled", zap.Error(err))
+		} else {
+			emailSender = sesSender
+			logger.Get().Info("signup email verification enabled")
+		}
+	} else {
+		logger.Get().Info("signup email verification disabled")
+	}
+	emailVerificationRepo := repository.NewEmailVerificationRepository(database)
+	emailVerificationService := service.NewEmailVerificationService(cfg, userRepo, emailVerificationRepo, emailSender)
+	emailVerificationHandler := handlers.NewEmailVerificationHandler(emailVerificationService)
+	userHandler.EmailVerification = emailVerificationService
+
+	// Gate for AI-cost endpoints: throwaway signups must verify their email
+	// before they can spend AI quota. No-op while verification is disabled.
+	verifiedOnly := middleware.RequireVerifiedEmail(emailVerificationService.Enabled())
 
 	// Subscription service (shared by AI-generation, allergen, search and
 	// subscription routes for usage gating)
@@ -266,6 +291,10 @@ func SetupRouter(cfg *config.Config, database *gorm.DB) *gin.Engine {
 		// Get a user's settings
 		apiProtected.GET("/users/me/settings", middleware.AttachUserToContext(userService), userHandler.GetUserSettings)
 
+		// Signup email verification: (re)send the 6-digit code / confirm it
+		apiProtected.POST("/users/me/email/verification", middleware.AttachUserToContext(userService), emailVerificationHandler.RequestVerification)
+		apiProtected.POST("/users/me/email/verification/confirm", middleware.AttachUserToContext(userService), emailVerificationHandler.ConfirmVerification)
+
 		// Recipe-related routes
 
 		// Get a single recipe by its ID (any authenticated user may view any
@@ -275,18 +304,18 @@ func SetupRouter(cfg *config.Config, database *gorm.DB) *gin.Engine {
 		// List the authenticated user's recipes
 		apiProtected.GET("/recipes", middleware.AttachUserToContext(userService), recipeHandler.ListRecipes)
 		// Regenerate a recipe in place based on a previous recipe and the user's chat
-		apiProtected.PUT("/recipes/:recipe_id/chat", middleware.AttachUserToContext(userService), recipeHandler.RegenerateRecipe)
+		apiProtected.PUT("/recipes/:recipe_id/chat", middleware.AttachUserToContext(userService), verifiedOnly, recipeHandler.RegenerateRecipe)
 
-		apiProtected.POST("/recipes/:recipe_id/fork", middleware.AttachUserToContext(userService), recipeHandler.GenerateRecipeWithFork)
+		apiProtected.POST("/recipes/:recipe_id/fork", middleware.AttachUserToContext(userService), verifiedOnly, recipeHandler.GenerateRecipeWithFork)
 
 		// Recipe import routes
 		apiProtected.POST("/recipes/import/url", middleware.AttachUserToContext(userService), importHandler.ImportFromURL)
-		apiProtected.POST("/recipes/import/photo", middleware.AttachUserToContext(userService), importHandler.ImportFromPhoto)
-		apiProtected.POST("/recipes/import/files", middleware.AttachUserToContext(userService), importHandler.ImportFromFiles)
-		apiProtected.POST("/recipes/import/voice", middleware.AttachUserToContext(userService), importHandler.ImportFromVoice)
-		apiProtected.POST("/recipes/import/video", middleware.AttachUserToContext(userService), importHandler.ImportFromVideo)
+		apiProtected.POST("/recipes/import/photo", middleware.AttachUserToContext(userService), verifiedOnly, importHandler.ImportFromPhoto)
+		apiProtected.POST("/recipes/import/files", middleware.AttachUserToContext(userService), verifiedOnly, importHandler.ImportFromFiles)
+		apiProtected.POST("/recipes/import/voice", middleware.AttachUserToContext(userService), verifiedOnly, importHandler.ImportFromVoice)
+		apiProtected.POST("/recipes/import/video", middleware.AttachUserToContext(userService), verifiedOnly, importHandler.ImportFromVideo)
 		apiProtected.GET("/recipes/import/video/:id", middleware.AttachUserToContext(userService), importHandler.GetVideoImportStatus)
-		apiProtected.POST("/recipes/import/text", middleware.AttachUserToContext(userService), importHandler.ImportFromText)
+		apiProtected.POST("/recipes/import/text", middleware.AttachUserToContext(userService), verifiedOnly, importHandler.ImportFromText)
 		apiProtected.POST("/recipes/import/manual", middleware.AttachUserToContext(userService), importHandler.ImportManual)
 		apiProtected.POST("/recipes/import/canonical", middleware.AttachUserToContext(userService), importHandler.ImportFromCanonical)
 
@@ -315,16 +344,16 @@ func SetupRouter(cfg *config.Config, database *gorm.DB) *gin.Engine {
 	apiProtected.PUT("/family/members/:member_id", middleware.AttachUserToContext(userService), familyHandler.UpdateMember)
 	apiProtected.DELETE("/family/members/:member_id", middleware.AttachUserToContext(userService), familyHandler.DeleteMember)
 	apiProtected.PUT("/family/members/:member_id/dietary", middleware.AttachUserToContext(userService), familyHandler.UpdateDietaryProfile)
-	apiProtected.POST("/family/members/:member_id/dietary/interview", middleware.AttachUserToContext(userService), familyHandler.DietaryInterview)
+	apiProtected.POST("/family/members/:member_id/dietary/interview", middleware.AttachUserToContext(userService), verifiedOnly, familyHandler.DietaryInterview)
 
 	// Allergen analysis routes setup
 	allergenRepo := repository.NewAllergenRepository(database)
 	allergenService := service.NewAllergenService(cfg, allergenRepo, familyRepo, recipeRepo, mainTextProvider, subService)
 	allergenHandler := handlers.NewAllergenHandler(allergenService)
 
-	apiProtected.POST("/recipes/:recipe_id/allergens/analyze", middleware.AttachUserToContext(userService), allergenHandler.AnalyzeRecipe)
+	apiProtected.POST("/recipes/:recipe_id/allergens/analyze", middleware.AttachUserToContext(userService), verifiedOnly, allergenHandler.AnalyzeRecipe)
 	apiProtected.GET("/recipes/:recipe_id/allergens", middleware.AttachUserToContext(userService), allergenHandler.GetAnalysis)
-	apiProtected.POST("/recipes/:recipe_id/allergens/check-family", middleware.AttachUserToContext(userService), allergenHandler.CheckFamily)
+	apiProtected.POST("/recipes/:recipe_id/allergens/check-family", middleware.AttachUserToContext(userService), verifiedOnly, allergenHandler.CheckFamily)
 
 	// User update routes
 	apiProtected.PUT("/users/me", middleware.AttachUserToContext(userService), userHandler.UpdateUser)
@@ -376,7 +405,7 @@ func SetupRouter(cfg *config.Config, database *gorm.DB) *gin.Engine {
 	finderService.Runs = repository.NewFinderRunRepository(database)
 	importService.Events = repository.NewExtractionEventRepository(database)
 	finderHandler := &handlers.FinderHandler{Service: finderService, SubService: subService}
-	apiProtected.POST("/recipes/find", middleware.AttachUserToContext(userService), finderHandler.FindRecipes)
+	apiProtected.POST("/recipes/find", middleware.AttachUserToContext(userService), verifiedOnly, finderHandler.FindRecipes)
 	apiProtected.GET("/recipes/finder/sessions", middleware.AttachUserToContext(userService), finderSessionHandler.ListSessions)
 	apiProtected.GET("/recipes/finder/sessions/:session_id", middleware.AttachUserToContext(userService), finderSessionHandler.GetSession)
 	apiProtected.DELETE("/recipes/finder/sessions/:session_id", middleware.AttachUserToContext(userService), finderSessionHandler.DeleteSession)
