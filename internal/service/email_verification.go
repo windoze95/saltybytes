@@ -11,6 +11,7 @@ import (
 	"github.com/windoze95/saltybytes-api/internal/config"
 	"github.com/windoze95/saltybytes-api/internal/email"
 	"github.com/windoze95/saltybytes-api/internal/models"
+	"github.com/windoze95/saltybytes-api/internal/notify"
 	"github.com/windoze95/saltybytes-api/internal/repository"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -118,6 +119,15 @@ func (s *EmailVerificationService) StartVerification(ctx context.Context, user *
 </div>`, code)
 
 	if err := s.Sender.Send(ctx, user.Email, subject, text, html); err != nil {
+		// New users can't verify (and eventually can't use AI features) while
+		// this is broken — page the operator with a link to the SES console.
+		notify.Alert(
+			"ses-send-failure",
+			"SaltyBytes: verification emails failing",
+			fmt.Sprintf("SES send failed: %v\n\nNew signups can't receive their codes until this is fixed (check domain identity, sending quota, and account status).", err),
+			"https://us-east-2.console.aws.amazon.com/ses/home?region=us-east-2",
+			time.Hour,
+		)
 		return fmt.Errorf("sending verification email: %w", err)
 	}
 	return nil
