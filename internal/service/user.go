@@ -11,8 +11,10 @@ import (
 	goaway "github.com/TwiN/go-away"
 	"github.com/asaskevich/govalidator"
 	"github.com/windoze95/saltybytes-api/internal/config"
+	"github.com/windoze95/saltybytes-api/internal/logger"
 	"github.com/windoze95/saltybytes-api/internal/models"
 	"github.com/windoze95/saltybytes-api/internal/repository"
+	"go.uber.org/zap"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 )
@@ -202,6 +204,42 @@ func (s *UserService) GetUserWithAuthByID(userID uint) (*models.User, error) {
 // incrementing their token version.
 func (s *UserService) LogoutUser(userID uint) error {
 	return s.Repo.IncrementTokenVersion(userID)
+}
+
+// abandonedAccountAfter is how long an unverified, contentless signup may
+// sit before the cleanup sweeper garbage-collects it (freeing its username
+// and email for reuse).
+const abandonedAccountAfter = 30 * 24 * time.Hour
+
+// CleanupAbandonedAccounts runs one sweep of abandoned unverified signups.
+// Returns how many accounts were removed.
+func (s *UserService) CleanupAbandonedAccounts() (int64, error) {
+	return s.Repo.DeleteAbandonedUnverifiedUsers(time.Now().Add(-abandonedAccountAfter))
+}
+
+// StartAbandonedAccountCleanup sweeps shortly after boot and then every 12
+// hours. The boot sweep matters because frequent deploys restart the task —
+// a ticker alone might never fire between deployments.
+func (s *UserService) StartAbandonedAccountCleanup() {
+	sweep := func() {
+		n, err := s.CleanupAbandonedAccounts()
+		if err != nil {
+			logger.Get().Warn("abandoned-account cleanup failed", zap.Error(err))
+			return
+		}
+		if n > 0 {
+			logger.Get().Info("abandoned-account cleanup removed empty unverified signups", zap.Int64("count", n))
+		}
+	}
+	go func() {
+		time.Sleep(2 * time.Minute)
+		sweep()
+		ticker := time.NewTicker(12 * time.Hour)
+		defer ticker.Stop()
+		for range ticker.C {
+			sweep()
+		}
+	}()
 }
 
 // ToUserResponse converts a User to a UserResponse.
