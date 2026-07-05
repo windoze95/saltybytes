@@ -9,6 +9,7 @@ import (
 	"github.com/windoze95/saltybytes-api/internal/ai"
 	"github.com/windoze95/saltybytes-api/internal/logger"
 	"github.com/windoze95/saltybytes-api/internal/models"
+	"github.com/windoze95/saltybytes-api/internal/notify"
 	"github.com/windoze95/saltybytes-api/internal/s3"
 	"github.com/windoze95/saltybytes-api/internal/video"
 	"go.uber.org/zap"
@@ -193,6 +194,13 @@ func (s *ImportService) processVideoImport(jobID uint, rawURL string, user *mode
 	if budget := s.Cfg.EnvVars.VideoImportDailyBudgetUSD; budget > 0 {
 		since := time.Now().UTC().Truncate(24 * time.Hour)
 		if spent, sErr := s.VideoRepo.SumImportCostSince(since); sErr == nil && spent >= budget {
+			notify.Alert(
+				"video-daily-budget",
+				"SaltyBytes: video import budget reached",
+				fmt.Sprintf("Video extraction spend hit $%.2f (limit $%.2f); fresh video imports are paused until midnight UTC (cache hits still serve). Raise VIDEO_IMPORT_DAILY_BUDGET_USD in SSM if intended.", spent, budget),
+				s.Cfg.EnvVars.DashboardURL,
+				6*time.Hour,
+			)
 			fail("at_capacity", "video import is temporarily at capacity; please try again later", fmt.Errorf("daily budget $%.2f reached (spent $%.2f)", budget, spent))
 			return
 		}

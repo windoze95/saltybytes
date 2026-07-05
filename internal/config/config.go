@@ -78,6 +78,21 @@ type EnvVars struct {
 	// extractions; once the day's metered cost exceeds it, fresh extractions are
 	// refused (cache hits still serve). The kill switch.
 	VideoImportDailyBudgetUSD float64 `env:"VIDEO_IMPORT_DAILY_BUDGET_USD" envDefault:"25" optional:"true"`
+	// AIDailyBudgetUSD is the app-wide daily spend ceiling across ALL metered
+	// AI calls (ai_usage_logs). Once reached, every AI-cost endpoint returns
+	// 429 until the UTC day rolls over. Per-user quotas bound individuals;
+	// this bounds the fleet — the last line against runaway AI cost. 0
+	// disables the guard.
+	AIDailyBudgetUSD float64 `env:"AI_DAILY_BUDGET_USD" envDefault:"0" optional:"true"`
+	// Ntfy operational alerting (budget trips, AI-provider failures, email
+	// send failures). Disabled while NtfyURL or NtfyTopic is empty. NtfyToken
+	// is the optional Bearer token for authenticated/self-hosted servers.
+	NtfyURL   string `env:"NTFY_URL" optional:"true"`
+	NtfyTopic string `env:"NTFY_TOPIC" optional:"true"`
+	NtfyToken string `env:"NTFY_TOKEN" optional:"true"`
+	// DashboardURL is the operator dashboard base URL used as the
+	// tap-through target on cost/capacity alerts.
+	DashboardURL string `env:"DASHBOARD_URL" optional:"true"`
 	// RecipeWarmingConcurrency bounds how many search results extract in parallel
 	// during proactive cache warming.
 	RecipeWarmingConcurrency int `env:"RECIPE_WARMING_CONCURRENCY" envDefault:"6" optional:"true"`
