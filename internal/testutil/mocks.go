@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -600,6 +601,10 @@ type MockUserRepo struct {
 
 	CreateUserErr         error
 	CreateSubscriptionErr error
+	// GetUserAuthErr, when set, is returned by GetUserAuthByUsername and
+	// GetUserAuthByEmail to simulate infrastructure failures (as opposed to
+	// gorm.ErrRecordNotFound, which the mock returns for unknown users).
+	GetUserAuthErr error
 }
 
 // NewMockUserRepo creates a new MockUserRepo with initialized maps.
@@ -646,15 +651,34 @@ func (m *MockUserRepo) GetUserWithAuthByID(userID uint) (*models.User, error) {
 }
 
 func (m *MockUserRepo) GetUserAuthByUsername(username string) (*models.User, error) {
+	if m.GetUserAuthErr != nil {
+		return nil, m.GetUserAuthErr
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// Case-insensitive, mirroring the LOWER(username) match in the real repo.
+	for _, u := range m.Users {
+		if strings.EqualFold(u.Username, username) {
+			return u, nil
+		}
+	}
+	return nil, gorm.ErrRecordNotFound
+}
+
+func (m *MockUserRepo) GetUserAuthByEmail(email string) (*models.User, error) {
+	if m.GetUserAuthErr != nil {
+		return nil, m.GetUserAuthErr
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	for _, u := range m.Users {
-		if u.Username == username {
+		if u.Email != "" && strings.EqualFold(u.Email, email) {
 			return u, nil
 		}
 	}
-	return nil, fmt.Errorf("user not found")
+	return nil, gorm.ErrRecordNotFound
 }
 
 func (m *MockUserRepo) UpdateUserFirstName(userID uint, firstName string) error {
@@ -716,7 +740,19 @@ func (m *MockUserRepo) UsernameExists(username string) (bool, error) {
 	defer m.mu.Unlock()
 
 	for _, u := range m.Users {
-		if u.Username == username {
+		if strings.EqualFold(u.Username, username) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (m *MockUserRepo) EmailExists(email string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	for _, u := range m.Users {
+		if u.Email != "" && strings.EqualFold(u.Email, email) {
 			return true, nil
 		}
 	}

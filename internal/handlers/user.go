@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -42,6 +43,13 @@ func (h *UserHandler) CreateUser(c *gin.Context) {
 		return
 	}
 
+	// Mobile keyboards autocapitalize and append stray spaces; normalize the
+	// identifier fields before validating. The password is never trimmed —
+	// spaces are legitimate password characters.
+	newUser.Username = strings.TrimSpace(newUser.Username)
+	newUser.Email = strings.TrimSpace(newUser.Email)
+	newUser.FirstName = strings.TrimSpace(newUser.FirstName)
+
 	// Validate username
 	if err := h.Service.ValidateUsername(newUser.Username); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -51,6 +59,19 @@ func (h *UserHandler) CreateUser(c *gin.Context) {
 	// Validate email
 	if err := h.Service.ValidateEmail(newUser.Email); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Reject duplicate emails up front with a clear message; the DB unique
+	// constraint stays as the backstop for races.
+	emailInUse, err := h.Service.EmailInUse(newUser.Email)
+	if err != nil {
+		logger.Get().Error("failed to check email availability", zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create user"})
+		return
+	}
+	if emailInUse {
+		c.JSON(http.StatusConflict, gin.H{"error": "email already in use"})
 		return
 	}
 
@@ -104,11 +125,18 @@ func (h *UserHandler) LoginUser(c *gin.Context) {
 		return
 	}
 
-	user, err := h.Service.LoginUser(userCredentials.Username, userCredentials.Password)
+	user, err := h.Service.LoginUser(strings.TrimSpace(userCredentials.Username), userCredentials.Password)
 	if err != nil {
-		// Identical generic response for unknown-user and bad-password so the
-		// endpoint cannot be used to enumerate usernames.
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid username or password"})
+		if errors.Is(err, service.ErrInvalidCredentials) {
+			// Identical generic response for unknown-user and bad-password so
+			// the endpoint cannot be used to enumerate usernames.
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid username or password"})
+			return
+		}
+		// Infrastructure failure (e.g. DB outage) — telling the user their
+		// credentials are wrong would be a lie they can't fix.
+		logger.Get().Error("login failed on internal error", zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Something went wrong, please try again"})
 		return
 	}
 
