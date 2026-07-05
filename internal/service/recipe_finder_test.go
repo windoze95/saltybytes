@@ -119,11 +119,34 @@ func TestFindRecipes_HappyPath(t *testing.T) {
 		FreeText: "weeknight",
 	})
 
-	// Full happy-path event order.
+	// Full happy-path event order: instant results paint before the model call,
+	// final picks after curation.
 	if got := eventTypes(events); !sameTypes(got,
-		FinderEventSearching, FinderEventFound, FinderEventFiltering,
-		FinderEventShortlist, FinderEventWarming, FinderEventRefineReady, FinderEventDone) {
+		FinderEventSearching, FinderEventFound, FinderEventResults, FinderEventFiltering,
+		FinderEventShortlist, FinderEventPicks, FinderEventWarming, FinderEventRefineReady, FinderEventDone) {
 		t.Fatalf("unexpected event order: %v", got)
+	}
+
+	// The instant results event carries every candidate (none look like
+	// collections here), tappable before any model call, with no reasons yet.
+	instant, _ := firstEventOfType(events, FinderEventResults)
+	if len(instant.Items) != len(candidates) {
+		t.Fatalf("instant results has %d items, want %d", len(instant.Items), len(candidates))
+	}
+	for i, it := range instant.Items {
+		if it.Reason != "" {
+			t.Errorf("instant item %d has a reason %q before ranking", i, it.Reason)
+		}
+	}
+
+	// With nothing mined, picks pass the ranked shortlist through (no second
+	// model call) — same order, reasons intact.
+	picks, _ := firstEventOfType(events, FinderEventPicks)
+	if len(picks.Items) != 3 {
+		t.Fatalf("picks has %d items, want 3", len(picks.Items))
+	}
+	if picks.Items[0].Result.Title != candidates[0].Title || picks.Items[0].Reason == "" {
+		t.Errorf("picks[0] = %q (reason %q), want ranked top pick with reason", picks.Items[0].Result.Title, picks.Items[0].Reason)
 	}
 
 	// searching carries the deterministically-composed query.
@@ -232,8 +255,8 @@ func TestFindRecipes_DropsAllergenAvoid(t *testing.T) {
 
 	// Same overall trajectory (a shortlist still forms from the survivors).
 	if got := eventTypes(events); !sameTypes(got,
-		FinderEventSearching, FinderEventFound, FinderEventFiltering,
-		FinderEventShortlist, FinderEventWarming, FinderEventRefineReady, FinderEventDone) {
+		FinderEventSearching, FinderEventFound, FinderEventResults, FinderEventFiltering,
+		FinderEventShortlist, FinderEventPicks, FinderEventWarming, FinderEventRefineReady, FinderEventDone) {
 		t.Fatalf("unexpected event order: %v", got)
 	}
 

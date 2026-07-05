@@ -23,8 +23,10 @@ type FinderHandler struct {
 }
 
 // FindRecipes handles POST /v1/recipes/find. It runs the bounded finder
-// trajectory and streams each step (searching → found → filtering → shortlist →
-// warming → refine_ready → done, or a terminal empty/error) as an SSE event.
+// trajectory and streams each step (searching → found → results → filtering →
+// shortlist → digging/expanded → picks → warming → refine_ready → done, or a
+// terminal empty/error) as an SSE event. `results` (instant pre-rank paint)
+// and `picks` (final curation) are additive — older clients ignore them.
 func (h *FinderHandler) FindRecipes(c *gin.Context) {
 	user, err := util.GetUserFromContext(c)
 	if err != nil {

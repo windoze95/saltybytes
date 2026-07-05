@@ -58,6 +58,11 @@ const (
 	FinderEventSearching FinderEventType = "searching"
 	// FinderEventFound reports how many real candidates search returned.
 	FinderEventFound FinderEventType = "found"
+	// FinderEventResults carries the instant, pre-rank candidate set (obvious
+	// collections withheld) so the client can paint tappable results
+	// immediately, before any model call. Additive: older clients ignore it and
+	// keep revealing at shortlist/done.
+	FinderEventResults FinderEventType = "results"
 	// FinderEventFiltering signals the single ranking/filtering model call.
 	FinderEventFiltering FinderEventType = "filtering"
 	// FinderEventShortlist carries the ranked real results with rationales+safety.
@@ -67,6 +72,10 @@ const (
 	FinderEventDigging FinderEventType = "digging"
 	// FinderEventExpanded carries the individual recipes dug out of a collection.
 	FinderEventExpanded FinderEventType = "expanded"
+	// FinderEventPicks carries the agent's FINAL curated top picks: direct
+	// picks and mined recipes re-ranked together, each with a fresh rationale.
+	// Additive: older clients ignore it. First-page runs only.
+	FinderEventPicks FinderEventType = "picks"
 	// FinderEventWarming lists the top URLs being proactively cache-warmed.
 	FinderEventWarming FinderEventType = "warming"
 	// FinderEventRefineReady offers tap-to-refine chips + broaden suggestions.
@@ -86,6 +95,9 @@ type FinderResultItem struct {
 	Result ai.SearchResult   `json:"result"`
 	Reason string            `json:"reason,omitempty"`
 	Safety []ai.MemberSafety `json:"safety,omitempty"`
+	// Via is the collection/roundup title this recipe was mined out of
+	// (provenance for the "found inside ..." chip); empty for direct picks.
+	Via string `json:"via,omitempty"`
 }
 
 // FinderEvent is a single event streamed to the client during a find. Only the
@@ -233,7 +245,23 @@ func (s *RecipeFinderService) FindRecipes(ctx context.Context, user *models.User
 		return
 	}
 
-	// 4. The one and only model call: expand + rank + rationale + safety.
+	// 3.5. Instant results: paint the real candidates NOW, before any model
+	// call, withholding only obvious collections (canonical-cache fact or
+	// near-certain URL/title pattern). A pattern false positive is benign —
+	// the recipe reappears in the ranked shortlist moments later.
+	instant := make([]FinderResultItem, 0, len(results))
+	for _, r := range results {
+		if s.isLikelyCollection(r) {
+			continue
+		}
+		instant = append(instant, FinderResultItem{Result: r})
+	}
+	if !s.emit(ctx, events, FinderEvent{Type: FinderEventResults, Items: instant, HasMore: searchRes.HasMore}) {
+		return
+	}
+	run.FirstResultsMS = time.Since(runStart).Milliseconds()
+
+	// 4. The first model call: expand + rank + rationale + safety.
 	if !s.emit(ctx, events, FinderEvent{Type: FinderEventFiltering}) {
 		return
 	}
@@ -288,8 +316,17 @@ func (s *RecipeFinderService) FindRecipes(ctx context.Context, user *models.User
 	if room > finderDigMaxCards {
 		room = finderDigMaxCards
 	}
+	seen := seenResultKeys(shown)
 	digStart := time.Now()
-	folded, dug := s.digCollections(ctx, events, results, rank, room, &shortlistEmitted, searchRes.HasMore, seenResultKeys(shown))
+	folded, dug, dugEntries := s.digCollections(ctx, events, results, rank, room, &shortlistEmitted, searchRes.HasMore, seen)
+
+	// 6.6. Late harvest: cards keep extracting in the background after their
+	// collection's dig window closes — sweep the dug collections once more (at
+	// zero added wait, except a single grace window when nothing folded at all)
+	// so a card that finished at second 6 still makes this run.
+	room -= len(folded)
+	late := s.lateHarvest(ctx, events, dugEntries, seen, room, len(folded), &shortlistEmitted, searchRes.HasMore)
+	folded = append(folded, late...)
 	run.DigMS = time.Since(digStart).Milliseconds()
 	run.CollectionsDug = dug
 	run.CardsMined = len(folded)
@@ -303,9 +340,35 @@ func (s *RecipeFinderService) FindRecipes(ctx context.Context, user *models.User
 		return
 	}
 
-	// 8. Proactively warm the top curated picks (best-effort) so a later tap is
-	// an instant cache hit. Mined recipes are already cached by extraction.
-	if warmURLs := topURLs(shown, finderWarmTopN); len(warmURLs) > 0 {
+	// 7.5. Final curation: re-rank direct picks + mined recipes TOGETHER into
+	// the agent's top picks, each with a fresh rationale (mined recipes get a
+	// real "why", not just provenance). First-page runs only — load-more pages
+	// are browsing material, not a new curation.
+	var picks []FinderResultItem
+	if offset == 0 {
+		picksStart := time.Now()
+		var pickErr string
+		picks, pickErr = s.buildPicks(ctx, user, req, dietSummary, shown, folded)
+		run.PicksMS = time.Since(picksStart).Milliseconds()
+		run.PickRankOK = pickErr == ""
+		run.PicksTotal = len(picks)
+		if len(picks) > 0 {
+			if !s.emit(ctx, events, FinderEvent{Type: FinderEventPicks, Items: picks}) {
+				return
+			}
+		}
+	} else {
+		run.PickRankOK = true
+	}
+
+	// 8. Proactively warm the top picks (best-effort) so a later tap is an
+	// instant cache hit. Mined recipes are already cached by extraction; the
+	// warm service skips already-cached URLs cheaply.
+	warmPool := picks
+	if len(warmPool) == 0 {
+		warmPool = shown
+	}
+	if warmURLs := topURLs(warmPool, finderWarmTopN); len(warmURLs) > 0 {
 		if s.Warm != nil {
 			s.Warm.WarmURLs(warmURLs)
 		}
@@ -326,7 +389,17 @@ func (s *RecipeFinderService) FindRecipes(ctx context.Context, user *models.User
 	assembled := make([]FinderResultItem, 0, len(shown)+len(folded))
 	assembled = append(assembled, shown...)
 	assembled = append(assembled, folded...)
-	s.autoSaveSession(user, req, query, len(results), len(folded), assembled)
+	s.autoSaveSession(user, req, query, len(results), len(folded), len(picks), assembled)
+}
+
+// isLikelyCollection reports whether a candidate is an obvious collection page
+// — a canonical-cache fact (IsMultiPage) or a near-certain URL/title pattern —
+// cheap enough to run before the instant results emit.
+func (s *RecipeFinderService) isLikelyCollection(r ai.SearchResult) bool {
+	if looksLikeCollectionPage(r.URL, r.Title) {
+		return true
+	}
+	return s.Warm != nil && s.Warm.IsKnownMulti(r.URL)
 }
 
 // emit sends one event, returning false if the context is cancelled (e.g. the
@@ -376,9 +449,9 @@ func countExpandFlags(rank *ai.FinderRankResult) int {
 // was shown (shortlistEmitted false), the first mined batch seeds the shortlist
 // instead so build-89 gets a proper base list. Returns every folded recipe plus
 // how many collections were actually dug (for run telemetry).
-func (s *RecipeFinderService) digCollections(ctx context.Context, events chan<- FinderEvent, results []ai.SearchResult, rank *ai.FinderRankResult, room int, shortlistEmitted *bool, hasMore bool, seen map[string]bool) ([]FinderResultItem, int) {
+func (s *RecipeFinderService) digCollections(ctx context.Context, events chan<- FinderEvent, results []ai.SearchResult, rank *ai.FinderRankResult, room int, shortlistEmitted *bool, hasMore bool, seen map[string]bool) ([]FinderResultItem, int, []dugCollection) {
 	if s.MultiResolver == nil || rank == nil || room <= 0 {
-		return nil, 0
+		return nil, 0, nil
 	}
 	if seen == nil {
 		seen = make(map[string]bool)
@@ -404,7 +477,7 @@ func (s *RecipeFinderService) digCollections(ctx context.Context, events chan<- 
 		collections = append(collections, collection{url: u, title: results[r.Index].Title, prio: r.ExpandPriority})
 	}
 	if len(collections) == 0 {
-		return nil, 0
+		return nil, 0, nil
 	}
 	sort.SliceStable(collections, func(i, j int) bool { return collections[i].prio > collections[j].prio })
 	if len(collections) > finderDigK {
@@ -412,13 +485,14 @@ func (s *RecipeFinderService) digCollections(ctx context.Context, events chan<- 
 	}
 
 	var folded []FinderResultItem
+	var entries []dugCollection
 	dug := 0
 	for _, c := range collections {
 		if room <= 0 {
 			break
 		}
 		if !s.emit(ctx, events, FinderEvent{Type: FinderEventDigging, CollectionTitle: c.title}) {
-			return folded, dug
+			return folded, dug, entries
 		}
 		dug++
 
@@ -431,58 +505,112 @@ func (s *RecipeFinderService) digCollections(ctx context.Context, events chan<- 
 		if entry == nil {
 			continue
 		}
+		entries = append(entries, dugCollection{entry: entry, title: c.title})
 
-		var batch []FinderResultItem
-		for _, card := range s.waitForCollection(ctx, entry) {
-			if len(batch) >= room {
-				break
-			}
-			// Only fold recipes that finished extracting and have a cache key —
-			// the folded URL must be an instant cache hit on tap.
-			if card.ExtractionStatus != "done" {
-				continue
-			}
-			cached := strings.TrimSpace(card.CachedURL)
-			if cached == "" {
-				continue
-			}
-			// The same recipe often appears in several roundups (and sometimes as
-			// a direct pick too) — fold each distinct recipe once.
-			if !markResultSeen(seen, cached, card.Title) {
-				continue
-			}
-			batch = append(batch, FinderResultItem{
-				Result: ai.SearchResult{
-					Title:       card.Title,
-					URL:         cached,
-					Source:      hostOf(cached),
-					ImageURL:    card.ImageURL,
-					Description: card.Description,
-				},
-				Reason: fmt.Sprintf("from '%s'", c.title),
-			})
-		}
+		batch := foldDoneCards(s.waitForCollection(ctx, entry), seen, room, c.title)
 		if len(batch) == 0 {
 			continue
 		}
 		folded = append(folded, batch...)
 		room -= len(batch)
-
-		// Seed the shortlist from the first mined batch when there were no direct
-		// picks (search was all collections); otherwise append via expanded. Both
-		// carry only individual recipes — never a collection card.
-		var ev FinderEvent
-		if *shortlistEmitted {
-			ev = FinderEvent{Type: FinderEventExpanded, Items: batch, CollectionTitle: c.title}
-		} else {
-			ev = FinderEvent{Type: FinderEventShortlist, Items: batch, HasMore: hasMore}
-			*shortlistEmitted = true
-		}
-		if !s.emit(ctx, events, ev) {
-			return folded, dug
+		if !s.emitFoldBatch(ctx, events, batch, c.title, shortlistEmitted, hasMore) {
+			return folded, dug, entries
 		}
 	}
-	return folded, dug
+	return folded, dug, entries
+}
+
+// dugCollection pairs a resolving multi-recipe entry with the collection title
+// it was dug from, so the late harvest can attribute its cards.
+type dugCollection struct {
+	entry *MultiRecipeEntry
+	title string
+}
+
+// foldDoneCards maps a collection's DONE cards (with a cache key, not yet seen)
+// into result items, up to room. The folded URL must be an instant cache hit on
+// tap; the same recipe folded from two roundups (or already a direct pick) is
+// kept once.
+func foldDoneCards(cards []MultiRecipeCard, seen map[string]bool, room int, collectionTitle string) []FinderResultItem {
+	var batch []FinderResultItem
+	for _, card := range cards {
+		if len(batch) >= room {
+			break
+		}
+		if card.ExtractionStatus != "done" {
+			continue
+		}
+		cached := strings.TrimSpace(card.CachedURL)
+		if cached == "" {
+			continue
+		}
+		if !markResultSeen(seen, cached, card.Title) {
+			continue
+		}
+		batch = append(batch, FinderResultItem{
+			Result: ai.SearchResult{
+				Title:       card.Title,
+				URL:         cached,
+				Source:      hostOf(cached),
+				ImageURL:    card.ImageURL,
+				Description: card.Description,
+			},
+			Reason: fmt.Sprintf("from '%s'", collectionTitle),
+			Via:    collectionTitle,
+		})
+	}
+	return batch
+}
+
+// emitFoldBatch appends mined recipes via expanded, or seeds the shortlist with
+// the first mined batch when there were no direct picks (search was all
+// collections). Both carry only individual recipes — never a collection card.
+func (s *RecipeFinderService) emitFoldBatch(ctx context.Context, events chan<- FinderEvent, batch []FinderResultItem, collectionTitle string, shortlistEmitted *bool, hasMore bool) bool {
+	var ev FinderEvent
+	if *shortlistEmitted {
+		ev = FinderEvent{Type: FinderEventExpanded, Items: batch, CollectionTitle: collectionTitle}
+	} else {
+		ev = FinderEvent{Type: FinderEventShortlist, Items: batch, HasMore: hasMore}
+		*shortlistEmitted = true
+	}
+	return s.emit(ctx, events, ev)
+}
+
+// lateHarvest sweeps the already-dug collections one final time before the
+// picks stage: cards keep extracting in the background after their collection's
+// dig window closes, so a card that finished while later collections were being
+// dug still makes this run — at zero added wait. The one exception: when
+// digging folded NOTHING (foldedSoFar == 0), it waits a single extra grace
+// window on the first still-extracting collection rather than ending the run
+// empty-handed.
+func (s *RecipeFinderService) lateHarvest(ctx context.Context, events chan<- FinderEvent, entries []dugCollection, seen map[string]bool, room, foldedSoFar int, shortlistEmitted *bool, hasMore bool) []FinderResultItem {
+	if len(entries) == 0 || room <= 0 {
+		return nil
+	}
+	grace := foldedSoFar == 0
+	var folded []FinderResultItem
+	for _, de := range entries {
+		if room <= 0 {
+			break
+		}
+		cards := de.entry.GetCards()
+		if grace {
+			if status := de.entry.GetStatus(); status != "resolved" && status != "failed" {
+				cards = s.waitForCollection(ctx, de.entry)
+				grace = false
+			}
+		}
+		batch := foldDoneCards(cards, seen, room, de.title)
+		if len(batch) == 0 {
+			continue
+		}
+		folded = append(folded, batch...)
+		room -= len(batch)
+		if !s.emitFoldBatch(ctx, events, batch, de.title, shortlistEmitted, hasMore) {
+			return folded
+		}
+	}
+	return folded
 }
 
 // waitForCollection polls a resolving collection until it is terminal (resolved
@@ -509,21 +637,31 @@ func (s *RecipeFinderService) waitForCollection(ctx context.Context, entry *Mult
 // ungated and best-effort: only first-page runs with at least one result are
 // saved, on a context detached from the request (so a client disconnect after
 // "done" doesn't cancel the write), and any error is logged, never surfaced.
-func (s *RecipeFinderService) autoSaveSession(user *models.User, req FinderRequest, query string, foundCount, foldedCount int, assembled []FinderResultItem) {
+func (s *RecipeFinderService) autoSaveSession(user *models.User, req FinderRequest, query string, foundCount, foldedCount, picksCount int, assembled []FinderResultItem) {
 	if s.Sessions == nil || user == nil || req.Offset != 0 || len(assembled) == 0 {
 		return
 	}
 
 	results := make(models.SearchResultList, 0, len(assembled))
 	for _, it := range assembled {
-		results = append(results, models.SearchResultItem{
+		item := models.SearchResultItem{
 			Title:       it.Result.Title,
 			URL:         it.Result.URL,
 			Source:      it.Result.Source,
 			Rating:      it.Result.Rating,
 			ImageURL:    it.Result.ImageURL,
 			Description: it.Result.Description,
-		})
+			Reason:      it.Reason,
+			Via:         it.Via,
+		}
+		for _, sf := range it.Safety {
+			item.Safety = append(item.Safety, models.ResultSafetyItem{
+				MemberName: sf.MemberName,
+				Status:     sf.Status,
+				Note:       sf.Note,
+			})
+		}
+		results = append(results, item)
 	}
 
 	narration := models.StringList{
@@ -532,6 +670,9 @@ func (s *RecipeFinderService) autoSaveSession(user *models.User, req FinderReque
 	}
 	if foldedCount > 0 {
 		narration = append(narration, fmt.Sprintf("Dug %d more from collections", foldedCount))
+	}
+	if picksCount > 0 {
+		narration = append(narration, fmt.Sprintf("Curated %d top picks", picksCount))
 	}
 	narration = append(narration, fmt.Sprintf("Shortlisted %d", len(assembled)))
 
@@ -613,6 +754,18 @@ func (s *RecipeFinderService) rankCandidates(ctx context.Context, user *models.U
 		}
 	}
 
+	res, err := s.RankProvider.ExpandAndRankRecipes(ctx, s.buildRankRequest(user, req, dietSummary, candidates))
+	if err != nil {
+		logger.Get().Warn("recipe finder ranking failed; showing unranked real results", zap.Error(err))
+		return fallbackRanking(len(results)), truncateErr(err)
+	}
+	return res, ""
+}
+
+// buildRankRequest assembles the model-facing ranking request from the
+// server-side steering context plus the given candidates. Shared by the
+// initial ranking and the final picks curation.
+func (s *RecipeFinderService) buildRankRequest(user *models.User, req FinderRequest, dietSummary string, candidates []ai.FinderCandidate) ai.FinderRankRequest {
 	rankReq := ai.FinderRankRequest{
 		Facets:      facetsSummary(req),
 		FreeText:    strings.TrimSpace(req.FreeText),
@@ -624,13 +777,73 @@ func (s *RecipeFinderService) rankCandidates(ctx context.Context, user *models.U
 		rankReq.CookingContext = user.Personalization.CookingContextPrompt()
 		rankReq.Requirements = user.Personalization.Requirements
 	}
+	return rankReq
+}
 
-	res, err := s.RankProvider.ExpandAndRankRecipes(ctx, rankReq)
-	if err != nil {
-		logger.Get().Warn("recipe finder ranking failed; showing unranked real results", zap.Error(err))
-		return fallbackRanking(len(results)), truncateErr(err)
+// buildPicks curates the agent's FINAL top picks across the direct picks and
+// everything mined from collections. When recipes were mined it spends one more
+// cheap ranking call so mined recipes get a real rationale and the two sets are
+// genuinely ordered together; when nothing was mined the direct picks are
+// already ranked and reasoned, so they pass through unchanged (no model call).
+// The second return is the picks-rank failure text ("" when it succeeded or
+// was skipped) — on failure the picks degrade to pre-pick order.
+func (s *RecipeFinderService) buildPicks(ctx context.Context, user *models.User, req FinderRequest, dietSummary string, direct, mined []FinderResultItem) ([]FinderResultItem, string) {
+	pool := make([]FinderResultItem, 0, len(direct)+len(mined))
+	pool = append(pool, direct...)
+	pool = append(pool, mined...)
+	if len(pool) == 0 {
+		return nil, ""
 	}
-	return res, ""
+	if len(pool) > finderCuratedCap {
+		pool = pool[:finderCuratedCap]
+	}
+	if len(mined) == 0 {
+		return pool, ""
+	}
+
+	candidates := make([]ai.FinderCandidate, len(pool))
+	for i, it := range pool {
+		candidates[i] = ai.FinderCandidate{
+			Index:       i,
+			Title:       it.Result.Title,
+			URL:         it.Result.URL,
+			Source:      it.Result.Source,
+			Description: it.Result.Description,
+		}
+	}
+
+	res, err := s.RankProvider.ExpandAndRankRecipes(ctx, s.buildRankRequest(user, req, dietSummary, candidates))
+	if err != nil {
+		logger.Get().Warn("recipe finder picks ranking failed; keeping pre-pick order", zap.Error(err))
+		return pool, truncateErr(err)
+	}
+
+	picks := make([]FinderResultItem, 0, len(pool))
+	used := make(map[int]bool, len(res.Ranked))
+	for _, r := range res.Ranked {
+		if r.Index < 0 || r.Index >= len(pool) || used[r.Index] {
+			continue
+		}
+		used[r.Index] = true
+		// Every pool item is an individual recipe (collections were excluded
+		// before digging), so a spurious expand flag must not hide one.
+		if hasAvoid(r.Safety) {
+			continue
+		}
+		item := pool[r.Index]
+		if reason := strings.TrimSpace(r.Reason); reason != "" {
+			item.Reason = reason
+		}
+		if len(r.Safety) > 0 {
+			item.Safety = r.Safety
+		}
+		picks = append(picks, item)
+	}
+	if len(picks) == 0 {
+		// The model dropped everything — curation must never erase real picks.
+		return pool, ""
+	}
+	return picks, ""
 }
 
 // applyKnownCollections force-flags ranked candidates whose URL the canonical

@@ -488,7 +488,7 @@ func TestFindRecipes_DedupsMinedAcrossCollectionsAndDirect(t *testing.T) {
 			doneCard("Skillet Lasagna", "https://example.com/recipe/skillet-lasagna"),
 		),
 		collB.URL: resolvedEntry(collB.URL,
-			doneCard("Ground Beef Gyros", "https://example.com/recipe/ground-beef-gyros"), // dup by URL
+			doneCard("Ground Beef Gyros", "https://example.com/recipe/ground-beef-gyros"),  // dup by URL
 			doneCard("Skillet  Lasagna", "https://example.com/recipe/skillet-lasagna-two"), // dup by normalized title
 			doneCard("Chicken Tikka Masala", "https://example.com/recipe/chicken-tikka-masala"),
 		),
@@ -542,5 +542,285 @@ func TestLooksLikeCollectionPage(t *testing.T) {
 		if got := looksLikeCollectionPage(c.url, c.title); got != c.want {
 			t.Errorf("looksLikeCollectionPage(%q, %q) = %v, want %v", c.url, c.title, got, c.want)
 		}
+	}
+}
+
+// TestFindRecipes_InstantResultsWithholdLikelyCollections: the pre-rank
+// `results` event paints immediately but never paints an obvious roundup.
+func TestFindRecipes_InstantResultsWithholdLikelyCollections(t *testing.T) {
+	results := []ai.SearchResult{
+		{Title: "Sheet Pan Chicken Fajitas", URL: "https://example.com/recipe/sheet-pan-chicken-fajitas", Source: "example.com", Description: "Quick fajitas."},
+		{Title: "40 Easy Weeknight Dinner Recipes", URL: "https://example.com/40-easy-weeknight-dinners", Source: "example.com", Description: "Roundup."},
+		{Title: "One-Pot Chicken and Rice", URL: "https://example.com/recipe/one-pot-chicken-rice", Source: "example.com", Description: "Classic."},
+	}
+	searchProvider := &testutil.MockSearchProvider{
+		SearchRecipesFunc: func(ctx context.Context, query string, count, offset int) ([]ai.SearchResult, error) {
+			return results, nil
+		},
+	}
+	ranker := rankAllFlagging(results, map[int]int{1: 5})
+
+	svc := newFinderService(searchProvider, ranker, &testutil.MockFamilyRepo{})
+	events := runFinder(svc, testutil.TestUser(), FinderRequest{Facets: FinderFacets{Protein: "chicken"}})
+
+	instant, ok := firstEventOfType(events, FinderEventResults)
+	if !ok {
+		t.Fatalf("no results event (%v)", eventTypes(events))
+	}
+	if len(instant.Items) != 2 {
+		t.Fatalf("instant results has %d items, want 2 (roundup withheld)", len(instant.Items))
+	}
+	for _, it := range instant.Items {
+		if it.Result.URL == results[1].URL {
+			t.Errorf("obvious roundup %q painted in instant results", it.Result.URL)
+		}
+	}
+	// The results event precedes the model call (filtering).
+	ri, fi := indexOfType(events, FinderEventResults), indexOfType(events, FinderEventFiltering)
+	if !(ri >= 0 && fi >= 0 && ri < fi) {
+		t.Errorf("results (%d) must precede filtering (%d): %v", ri, fi, eventTypes(events))
+	}
+}
+
+// TestFindRecipes_PicksCurateAcrossDirectAndMined: after digging, one more
+// cheap ranking call orders direct + mined TOGETHER; mined picks get a real
+// model rationale (provenance kept in via) and warming targets the picks.
+func TestFindRecipes_PicksCurateAcrossDirectAndMined(t *testing.T) {
+	direct := ai.SearchResult{Title: "Sheet Pan Chicken Fajitas", URL: "https://example.com/recipe/sheet-pan-chicken-fajitas", Source: "example.com", Description: "Quick fajitas."}
+	coll := ai.SearchResult{Title: "Best Weeknight Dinners", URL: "https://example.com/roundup-weeknight", Source: "example.com", Description: "Roundup."}
+	results := []ai.SearchResult{direct, coll}
+	minedURL := "https://example.com/recipe/ground-beef-gyros"
+
+	searchProvider := &testutil.MockSearchProvider{
+		SearchRecipesFunc: func(ctx context.Context, query string, count, offset int) ([]ai.SearchResult, error) {
+			return results, nil
+		},
+	}
+	rankCalls := 0
+	ranker := &testutil.MockTextProvider{
+		ExpandAndRankRecipesFunc: func(ctx context.Context, req ai.FinderRankRequest) (*ai.FinderRankResult, error) {
+			rankCalls++
+			if rankCalls == 1 {
+				return &ai.FinderRankResult{Ranked: []ai.FinderRanking{
+					{Index: 0, Reason: "Solid fajitas."},
+					{Index: 1, Expand: true, ExpandPriority: 5},
+				}}, nil
+			}
+			// Picks call: pool = [direct, mined]; put the mined recipe first
+			// with a fresh rationale.
+			if len(req.Candidates) != 2 {
+				t.Errorf("picks call got %d candidates, want 2", len(req.Candidates))
+			}
+			return &ai.FinderRankResult{Ranked: []ai.FinderRanking{
+				{Index: 1, Reason: "Weeknight hero: 20 minutes, one skillet."},
+				{Index: 0, Reason: "Fajitas fit the brief."},
+			}}, nil
+		},
+	}
+	fake := &fakeMultiResolver{entries: map[string]*MultiRecipeEntry{
+		coll.URL: resolvedEntry(coll.URL, doneCard("Ground Beef Gyros", minedURL)),
+	}}
+
+	svc := newFinderService(searchProvider, ranker, &testutil.MockFamilyRepo{})
+	svc.MultiResolver = fake
+
+	events := runFinder(svc, testutil.TestUser(), FinderRequest{Facets: FinderFacets{Occasion: "weeknight"}})
+
+	if rankCalls != 2 {
+		t.Fatalf("rank calls = %d, want 2 (initial + picks)", rankCalls)
+	}
+	picks, ok := firstEventOfType(events, FinderEventPicks)
+	if !ok {
+		t.Fatalf("no picks event (%v)", eventTypes(events))
+	}
+	if len(picks.Items) != 2 {
+		t.Fatalf("picks has %d items, want 2", len(picks.Items))
+	}
+	top := picks.Items[0]
+	if top.Result.URL != minedURL {
+		t.Errorf("picks[0] = %q, want the mined recipe ranked first", top.Result.URL)
+	}
+	if top.Reason != "Weeknight hero: 20 minutes, one skillet." {
+		t.Errorf("picks[0] reason = %q, want the fresh model rationale", top.Reason)
+	}
+	if top.Via != coll.Title {
+		t.Errorf("picks[0] via = %q, want provenance %q kept", top.Via, coll.Title)
+	}
+	// Warming targets the picks order (mined recipe first).
+	warming, _ := firstEventOfType(events, FinderEventWarming)
+	if len(warming.URLs) == 0 || warming.URLs[0] != minedURL {
+		t.Errorf("warming URLs = %v, want picks-first (%q)", warming.URLs, minedURL)
+	}
+	// The picks event lands after digging/expanded and before warming.
+	pi, ei, wi := indexOfType(events, FinderEventPicks), indexOfType(events, FinderEventExpanded), indexOfType(events, FinderEventWarming)
+	if !(ei < pi && pi < wi) {
+		t.Errorf("event order wrong: expanded=%d picks=%d warming=%d (%v)", ei, pi, wi, eventTypes(events))
+	}
+}
+
+// TestFindRecipes_PicksFallbackOnPickRankFailure: a failed picks call degrades
+// to pre-pick order (direct then mined, provenance reasons intact) — curation
+// can improve the result, never erase it.
+func TestFindRecipes_PicksFallbackOnPickRankFailure(t *testing.T) {
+	direct := ai.SearchResult{Title: "Sheet Pan Chicken Fajitas", URL: "https://example.com/recipe/sheet-pan-chicken-fajitas", Source: "example.com", Description: "Quick fajitas."}
+	coll := ai.SearchResult{Title: "Best Weeknight Dinners", URL: "https://example.com/roundup-weeknight", Source: "example.com", Description: "Roundup."}
+	results := []ai.SearchResult{direct, coll}
+
+	searchProvider := &testutil.MockSearchProvider{
+		SearchRecipesFunc: func(ctx context.Context, query string, count, offset int) ([]ai.SearchResult, error) {
+			return results, nil
+		},
+	}
+	rankCalls := 0
+	ranker := &testutil.MockTextProvider{
+		ExpandAndRankRecipesFunc: func(ctx context.Context, req ai.FinderRankRequest) (*ai.FinderRankResult, error) {
+			rankCalls++
+			if rankCalls == 1 {
+				return &ai.FinderRankResult{Ranked: []ai.FinderRanking{
+					{Index: 0, Reason: "Solid fajitas."},
+					{Index: 1, Expand: true, ExpandPriority: 5},
+				}}, nil
+			}
+			return nil, fmt.Errorf("picks model exploded")
+		},
+	}
+	fake := &fakeMultiResolver{entries: map[string]*MultiRecipeEntry{
+		coll.URL: resolvedEntry(coll.URL, doneCard("Ground Beef Gyros", "https://example.com/recipe/ground-beef-gyros")),
+	}}
+
+	svc := newFinderService(searchProvider, ranker, &testutil.MockFamilyRepo{})
+	svc.MultiResolver = fake
+
+	events := runFinder(svc, testutil.TestUser(), FinderRequest{Facets: FinderFacets{Occasion: "weeknight"}})
+
+	picks, ok := firstEventOfType(events, FinderEventPicks)
+	if !ok {
+		t.Fatalf("no picks event after picks-rank failure (%v)", eventTypes(events))
+	}
+	if len(picks.Items) != 2 {
+		t.Fatalf("picks has %d items, want 2 (pre-pick order fallback)", len(picks.Items))
+	}
+	if picks.Items[0].Result.URL != direct.URL {
+		t.Errorf("picks[0] = %q, want direct pick first on fallback", picks.Items[0].Result.URL)
+	}
+	if picks.Items[1].Reason == "" || picks.Items[1].Via != coll.Title {
+		t.Errorf("mined fallback pick lost provenance: reason=%q via=%q", picks.Items[1].Reason, picks.Items[1].Via)
+	}
+	// done still terminates the run.
+	if indexOfType(events, FinderEventDone) < 0 {
+		t.Errorf("run did not finish after picks fallback (%v)", eventTypes(events))
+	}
+}
+
+// TestFindRecipes_NoPicksOnPagedRuns: load-more pages are browsing material —
+// no picks event, no second model call.
+func TestFindRecipes_NoPicksOnPagedRuns(t *testing.T) {
+	results := digSearchResults(3)
+	searchProvider := &testutil.MockSearchProvider{
+		SearchRecipesFunc: func(ctx context.Context, query string, count, offset int) ([]ai.SearchResult, error) {
+			return results, nil
+		},
+	}
+	rankCalls := 0
+	ranker := &testutil.MockTextProvider{
+		ExpandAndRankRecipesFunc: func(ctx context.Context, req ai.FinderRankRequest) (*ai.FinderRankResult, error) {
+			rankCalls++
+			ranked := make([]ai.FinderRanking, len(req.Candidates))
+			for i := range req.Candidates {
+				ranked[i] = ai.FinderRanking{Index: i, Reason: "fits"}
+			}
+			return &ai.FinderRankResult{Ranked: ranked}, nil
+		},
+	}
+
+	svc := newFinderService(searchProvider, ranker, &testutil.MockFamilyRepo{})
+	events := runFinder(svc, testutil.TestUser(), FinderRequest{Facets: FinderFacets{Protein: "chicken"}, Offset: 10})
+
+	if n := countEventsOfType(events, FinderEventPicks); n != 0 {
+		t.Errorf("paged run emitted %d picks events, want 0", n)
+	}
+	if rankCalls != 1 {
+		t.Errorf("paged run made %d rank calls, want 1", rankCalls)
+	}
+	// Instant results still paint on paged runs.
+	if countEventsOfType(events, FinderEventResults) != 1 {
+		t.Errorf("paged run missing instant results event (%v)", eventTypes(events))
+	}
+}
+
+// TestFindRecipes_LateHarvestNoDoubleFold: digging and the late-harvest sweep
+// both read the same entries; every foldable card must be folded exactly once.
+// (The slow-card recovery itself is exercised directly in
+// TestLateHarvest_FoldsCardsMissedByDigging.)
+func TestFindRecipes_LateHarvestNoDoubleFold(t *testing.T) {
+	coll := ai.SearchResult{Title: "Best Weeknight Dinners", URL: "https://example.com/roundup-weeknight", Source: "example.com", Description: "Roundup."}
+	results := []ai.SearchResult{coll}
+	searchProvider := &testutil.MockSearchProvider{
+		SearchRecipesFunc: func(ctx context.Context, query string, count, offset int) ([]ai.SearchResult, error) {
+			return results, nil
+		},
+	}
+	ranker := rankAllFlagging(results, map[int]int{0: 5})
+	fake := &fakeMultiResolver{entries: map[string]*MultiRecipeEntry{
+		coll.URL: resolvedEntry(coll.URL,
+			doneCard("Ground Beef Gyros", "https://example.com/recipe/ground-beef-gyros"),
+			doneCard("Skillet Lasagna", "https://example.com/recipe/skillet-lasagna"),
+		),
+	}}
+
+	svc := newFinderService(searchProvider, ranker, &testutil.MockFamilyRepo{})
+	svc.MultiResolver = fake
+
+	events := runFinder(svc, testutil.TestUser(), FinderRequest{Facets: FinderFacets{Occasion: "weeknight"}})
+
+	shown := shownItems(events)
+	counts := map[string]int{}
+	for _, it := range shown {
+		counts[it.Result.URL]++
+	}
+	for u, n := range counts {
+		if n > 1 {
+			t.Errorf("recipe %q folded %d times across dig + late harvest, want 1", u, n)
+		}
+	}
+	if len(shown) != 2 {
+		t.Errorf("shown %d items, want 2", len(shown))
+	}
+}
+
+// TestLateHarvest_FoldsCardsMissedByDigging exercises the sweep directly: a
+// card that was NOT folded during the dig window (its key is absent from seen)
+// is folded by the sweep, deduped against what digging already took, and
+// emitted as expanded with its collection's provenance.
+func TestLateHarvest_FoldsCardsMissedByDigging(t *testing.T) {
+	svc := newFinderService(&testutil.MockSearchProvider{}, &testutil.MockTextProvider{}, &testutil.MockFamilyRepo{})
+
+	entry := resolvedEntry("https://example.com/roundup-weeknight",
+		doneCard("Ground Beef Gyros", "https://example.com/recipe/ground-beef-gyros"), // folded during digging
+		doneCard("Skillet Lasagna", "https://example.com/recipe/skillet-lasagna"),     // finished late
+		MultiRecipeCard{Title: "Still Extracting", ExtractionStatus: "extracting"},    // never folds
+	)
+	seen := map[string]bool{}
+	markResultSeen(seen, "https://example.com/recipe/ground-beef-gyros", "Ground Beef Gyros")
+
+	events := make(chan FinderEvent, 8)
+	shortlistEmitted := true
+	folded := svc.lateHarvest(context.Background(), events,
+		[]dugCollection{{entry: entry, title: "Best Weeknight Dinners"}},
+		seen, 4, 1, &shortlistEmitted, false)
+	close(events)
+
+	if len(folded) != 1 || folded[0].Result.URL != "https://example.com/recipe/skillet-lasagna" {
+		t.Fatalf("late harvest folded %+v, want exactly the late lasagna card", folded)
+	}
+	if folded[0].Via != "Best Weeknight Dinners" {
+		t.Errorf("late-folded via = %q, want the collection title", folded[0].Via)
+	}
+	var got []FinderEvent
+	for ev := range events {
+		got = append(got, ev)
+	}
+	if len(got) != 1 || got[0].Type != FinderEventExpanded || len(got[0].Items) != 1 {
+		t.Errorf("late harvest emitted %v, want one expanded event with one item", eventTypes(got))
 	}
 }
