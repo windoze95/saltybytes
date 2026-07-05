@@ -93,3 +93,45 @@ func TestExtractSingleCard_DigSkipsInlineAI(t *testing.T) {
 		}
 	})
 }
+
+func TestPageImageURL(t *testing.T) {
+	cases := []struct{ html, want string }{
+		{`<meta property="og:image" content="https://x.com/hero.jpg"/>`, "https://x.com/hero.jpg"},
+		{`<meta content="https://x.com/hero.jpg" property="og:image"/>`, "https://x.com/hero.jpg"},
+		{`<meta name="twitter:image" content="https://x.com/tw.jpg">`, "https://x.com/tw.jpg"},
+		{`<meta property="og:title" content="Hi">`, ""},
+		{`<meta property="og:image" content="/relative.jpg">`, ""},
+	}
+	for _, c := range cases {
+		if got := pageImageURL(c.html); got != c.want {
+			t.Errorf("pageImageURL(%q) = %q, want %q", c.html, got, c.want)
+		}
+	}
+}
+
+// TestExtractSingleCard_InlineJSONLDBackfillsImage: a card extracted from the
+// page's JSON-LD block picks up that recipe's own image when detection left
+// the card imageless.
+func TestExtractSingleCard_InlineJSONLDBackfillsImage(t *testing.T) {
+	page := "https://example.com/roundup-with-images"
+	html := `<html><head>
+<script type="application/ld+json">{"@type":"Recipe","name":"Pumpkin Chili","image":"https://example.com/pumpkin-chili.jpg","recipeIngredient":["2 cups pumpkin","1 lb beef"],"recipeInstructions":["Simmer."]}</script>
+<script type="application/ld+json">{"@type":"Recipe","name":"Wild Rice Soup","image":"https://example.com/wild-rice.jpg","recipeIngredient":["1 cup wild rice","4 cups broth"],"recipeInstructions":["Boil."]}</script>
+</head><body><h1>Roundup</h1></body></html>`
+
+	resolver := newResolverForTest(&testutil.MockTextProvider{}, &testutil.MockCanonicalRecipeRepo{})
+	entry := resolver.ResolveFromHTML(context.Background(), page, html)
+	if entry == nil {
+		t.Fatal("ResolveFromHTML returned nil for a multi-recipe page")
+	}
+	waitResolved(t, entry)
+
+	for _, card := range entry.GetCards() {
+		if card.ExtractionStatus != "done" {
+			t.Errorf("card %q status = %q, want done (inline JSON-LD)", card.Title, card.ExtractionStatus)
+		}
+		if card.ImageURL == "" {
+			t.Errorf("card %q has no image; want the JSON-LD recipe image backfilled", card.Title)
+		}
+	}
+}
