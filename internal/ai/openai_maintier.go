@@ -170,30 +170,10 @@ func (p *OpenAICompatProvider) GenerateRecipe(ctx context.Context, req RecipeReq
 			return nil, fmt.Errorf("render user prompt: %w", err)
 		}
 
-		summaryDesc := p.prompts.Recipe.Summarize.Recipe
-
-		chatReq := openai.ChatCompletionRequest{
-			Model:     p.model,
-			MaxTokens: 4096,
-			Messages: []openai.ChatCompletionMessage{
-				{Role: openai.ChatMessageRoleSystem, Content: combineSystemPrompt(p.prompts.Recipe.Generate.SystemPrefix, sysSuffix)},
-				{Role: openai.ChatMessageRoleUser, Content: userPrompt},
-			},
-			Tools: []openai.Tool{{
-				Type: openai.ToolTypeFunction,
-				Function: &openai.FunctionDefinition{
-					Name:        "create_recipe",
-					Description: "Create a structured recipe definition with all required fields.",
-					Parameters:  schemaObject(recipeProperties(summaryDesc)),
-				},
-			}},
-			ToolChoice: openai.ToolChoice{
-				Type:     openai.ToolTypeFunction,
-				Function: openai.ToolFunction{Name: "create_recipe"},
-			},
-		}
-
-		return p.completeRecipe(ctx, chatReq)
+		return p.completeRecipe(ctx, p.prompts.Recipe.Summarize.Recipe, []openai.ChatCompletionMessage{
+			{Role: openai.ChatMessageRoleSystem, Content: combineSystemPrompt(p.prompts.Recipe.Generate.SystemPrefix, sysSuffix)},
+			{Role: openai.ChatMessageRoleUser, Content: userPrompt},
+		})
 	})
 }
 
@@ -217,8 +197,6 @@ func (p *OpenAICompatProvider) RegenerateRecipe(ctx context.Context, req Regener
 			return nil, fmt.Errorf("render system prompt: %w", err)
 		}
 
-		summaryDesc := p.prompts.Recipe.Summarize.Changes
-
 		userPrompt, err := config.RenderPrompt(p.prompts.Recipe.Regenerate.User, map[string]interface{}{
 			"Prompt": req.UserPrompt,
 		})
@@ -233,25 +211,7 @@ func (p *OpenAICompatProvider) RegenerateRecipe(ctx context.Context, req Regener
 		messages = append(messages, messagesToOpenAIParams(req.ExistingHistory)...)
 		messages = append(messages, openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: userPrompt})
 
-		chatReq := openai.ChatCompletionRequest{
-			Model:     p.model,
-			MaxTokens: 4096,
-			Messages:  messages,
-			Tools: []openai.Tool{{
-				Type: openai.ToolTypeFunction,
-				Function: &openai.FunctionDefinition{
-					Name:        "create_recipe",
-					Description: "Create a structured recipe definition with all required fields.",
-					Parameters:  schemaObject(recipeProperties(summaryDesc)),
-				},
-			}},
-			ToolChoice: openai.ToolChoice{
-				Type:     openai.ToolTypeFunction,
-				Function: openai.ToolFunction{Name: "create_recipe"},
-			},
-		}
-
-		return p.completeRecipe(ctx, chatReq)
+		return p.completeRecipe(ctx, p.prompts.Recipe.Summarize.Changes, messages)
 	})
 }
 
@@ -275,8 +235,6 @@ func (p *OpenAICompatProvider) ForkRecipe(ctx context.Context, req ForkRequest) 
 			return nil, fmt.Errorf("render system prompt: %w", err)
 		}
 
-		summaryDesc := p.prompts.Recipe.Summarize.Recipe
-
 		userPrompt, err := config.RenderPrompt(p.prompts.Recipe.Fork.User, map[string]interface{}{
 			"Prompt": req.UserPrompt,
 		})
@@ -290,44 +248,23 @@ func (p *OpenAICompatProvider) ForkRecipe(ctx context.Context, req ForkRequest) 
 		messages = append(messages, messagesToOpenAIParams(req.ExistingHistory)...)
 		messages = append(messages, openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: userPrompt})
 
-		chatReq := openai.ChatCompletionRequest{
-			Model:     p.model,
-			MaxTokens: 4096,
-			Messages:  messages,
-			Tools: []openai.Tool{{
-				Type: openai.ToolTypeFunction,
-				Function: &openai.FunctionDefinition{
-					Name:        "create_recipe",
-					Description: "Create a structured recipe definition with all required fields.",
-					Parameters:  schemaObject(recipeProperties(summaryDesc)),
-				},
-			}},
-			ToolChoice: openai.ToolChoice{
-				Type:     openai.ToolTypeFunction,
-				Function: openai.ToolFunction{Name: "create_recipe"},
-			},
-		}
-
-		return p.completeRecipe(ctx, chatReq)
+		return p.completeRecipe(ctx, p.prompts.Recipe.Summarize.Recipe, messages)
 	})
 }
 
-// completeRecipe issues a forced create_recipe chat completion and parses,
-// validates and stamps the resulting recipe. Shared by GenerateRecipe,
-// RegenerateRecipe and ForkRecipe (their only difference is prompt/history).
-func (p *OpenAICompatProvider) completeRecipe(ctx context.Context, chatReq openai.ChatCompletionRequest) (*RecipeResult, error) {
-	resp, err := p.createChatCompletion(ctx, chatReq)
-	if err != nil {
-		return nil, err
-	}
-
-	args, err := firstToolCallArguments(resp, "create_recipe")
+// completeRecipe issues a schema-constrained create_recipe completion and
+// parses, validates and stamps the resulting recipe. Shared by GenerateRecipe,
+// RegenerateRecipe, ForkRecipe and ExtractRecipeFromText (their only difference
+// is prompt/history). MaxTokens is generous because Gemini 2.5 models spend
+// completion budget on internal thinking before the recipe JSON.
+func (p *OpenAICompatProvider) completeRecipe(ctx context.Context, summaryDesc string, messages []openai.ChatCompletionMessage) (*RecipeResult, error) {
+	content, err := p.structuredCompletion(ctx, "create_recipe", schemaObject(recipeProperties(summaryDesc)), 8192, messages)
 	if err != nil {
 		return nil, err
 	}
 
 	var tr recipeToolResult
-	if err := json.Unmarshal([]byte(args), &tr); err != nil {
+	if err := json.Unmarshal([]byte(content), &tr); err != nil {
 		return nil, NewAIError(FailureContentParse, fmt.Errorf("failed to unmarshal recipe: %w", err), "failed to parse recipe tool result")
 	}
 
@@ -364,39 +301,16 @@ func (p *OpenAICompatProvider) AnalyzeAllergens(ctx context.Context, req Allerge
 			return nil, fmt.Errorf("render user prompt: %w", err)
 		}
 
-		chatReq := openai.ChatCompletionRequest{
-			Model:     p.model,
-			MaxTokens: 4096,
-			Messages: []openai.ChatCompletionMessage{
-				{Role: openai.ChatMessageRoleSystem, Content: sysPrompt},
-				{Role: openai.ChatMessageRoleUser, Content: userPrompt},
-			},
-			Tools: []openai.Tool{{
-				Type: openai.ToolTypeFunction,
-				Function: &openai.FunctionDefinition{
-					Name:        "analyze_allergens",
-					Description: "Analyze ingredients for allergen risks and return structured results.",
-					Parameters:  schemaObject(allergenProperties()),
-				},
-			}},
-			ToolChoice: openai.ToolChoice{
-				Type:     openai.ToolTypeFunction,
-				Function: openai.ToolFunction{Name: "analyze_allergens"},
-			},
-		}
-
-		resp, err := p.createChatCompletion(ctx, chatReq)
-		if err != nil {
-			return nil, err
-		}
-
-		args, err := firstToolCallArguments(resp, "analyze_allergens")
+		content, err := p.structuredCompletion(ctx, "analyze_allergens", schemaObject(allergenProperties()), 4096, []openai.ChatCompletionMessage{
+			{Role: openai.ChatMessageRoleSystem, Content: sysPrompt},
+			{Role: openai.ChatMessageRoleUser, Content: userPrompt},
+		})
 		if err != nil {
 			return nil, err
 		}
 
 		var tr allergenToolResult
-		if err := json.Unmarshal([]byte(args), &tr); err != nil {
+		if err := json.Unmarshal([]byte(content), &tr); err != nil {
 			return nil, NewAIError(FailureContentParse, fmt.Errorf("failed to unmarshal allergen analysis: %w", err), "failed to parse allergen tool result")
 		}
 		return toolResultToAllergenResult(&tr), nil
@@ -420,39 +334,16 @@ func (p *OpenAICompatProvider) ClassifyVoiceIntent(ctx context.Context, transcri
 			return nil, fmt.Errorf("render system prompt: %w", err)
 		}
 
-		chatReq := openai.ChatCompletionRequest{
-			Model:     p.model,
-			MaxTokens: 256,
-			Messages: []openai.ChatCompletionMessage{
-				{Role: openai.ChatMessageRoleSystem, Content: sysPrompt},
-				{Role: openai.ChatMessageRoleUser, Content: transcript},
-			},
-			Tools: []openai.Tool{{
-				Type: openai.ToolTypeFunction,
-				Function: &openai.FunctionDefinition{
-					Name:        "classify_voice_intent",
-					Description: "Classify a voice transcript into an app intent.",
-					Parameters:  schemaObject(voiceIntentProperties()),
-				},
-			}},
-			ToolChoice: openai.ToolChoice{
-				Type:     openai.ToolTypeFunction,
-				Function: openai.ToolFunction{Name: "classify_voice_intent"},
-			},
-		}
-
-		resp, err := p.createChatCompletion(ctx, chatReq)
-		if err != nil {
-			return nil, err
-		}
-
-		args, err := firstToolCallArguments(resp, "classify_voice_intent")
+		content, err := p.structuredCompletion(ctx, "classify_voice_intent", schemaObject(voiceIntentProperties()), 1024, []openai.ChatCompletionMessage{
+			{Role: openai.ChatMessageRoleSystem, Content: sysPrompt},
+			{Role: openai.ChatMessageRoleUser, Content: transcript},
+		})
 		if err != nil {
 			return nil, err
 		}
 
 		var tr voiceIntentToolResult
-		if err := json.Unmarshal([]byte(args), &tr); err != nil {
+		if err := json.Unmarshal([]byte(content), &tr); err != nil {
 			return nil, NewAIError(FailureContentParse, fmt.Errorf("failed to unmarshal voice intent: %w", err), "failed to parse voice intent tool result")
 		}
 		return toolResultToVoiceIntent(&tr), nil

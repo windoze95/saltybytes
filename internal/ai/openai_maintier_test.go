@@ -9,8 +9,8 @@ import (
 )
 
 // toolCallResponse builds a canned chat-completion response carrying a single
-// forced tool call (fnName + JSON args). Mirrors the shape the real providers
-// return so the offline tests exercise the same parse path.
+// forced tool call (fnName + JSON args). Still used by the DietaryInterview
+// tests — that flow keeps real tool calling (tool choice "auto").
 func toolCallResponse(fnName, args string) openai.ChatCompletionResponse {
 	return openai.ChatCompletionResponse{
 		Choices: []openai.ChatCompletionChoice{{
@@ -24,6 +24,24 @@ func toolCallResponse(fnName, args string) openai.ChatCompletionResponse {
 				}},
 			},
 			FinishReason: openai.FinishReasonToolCalls,
+		}},
+		Usage: openai.Usage{PromptTokens: 100, CompletionTokens: 60},
+	}
+}
+
+// structuredJSONResponse builds a canned chat-completion response whose content
+// is a schema-constrained JSON body — the shape the provider's
+// response_format=json_schema calls (create_recipe, analyze_allergens, ...)
+// return since the Gemini function-call parser workaround.
+func structuredJSONResponse(content string) openai.ChatCompletionResponse {
+	return openai.ChatCompletionResponse{
+		Choices: []openai.ChatCompletionChoice{{
+			Index: 0,
+			Message: openai.ChatCompletionMessage{
+				Role:    openai.ChatMessageRoleAssistant,
+				Content: content,
+			},
+			FinishReason: openai.FinishReasonStop,
 		}},
 		Usage: openai.Usage{PromptTokens: 100, CompletionTokens: 60},
 	}
@@ -45,7 +63,7 @@ func TestOpenAICompatProvider_GenerateRecipe(t *testing.T) {
 		"unit_system": "us_customary"
 	}`
 
-	srv := newMockOpenAIServer(t, toolCallResponse("create_recipe", recipeArgs))
+	srv := newMockOpenAIServer(t, structuredJSONResponse(recipeArgs))
 	defer srv.Close()
 
 	p := NewOpenAICompatProvider("test-key", srv.URL, "gemini-2.5-pro", "gemini", testPrompts())
@@ -78,7 +96,7 @@ func TestOpenAICompatProvider_GenerateRecipe_MissingTitleIsError(t *testing.T) {
 		"ingredients": [{"name": "flour", "unit": "cup", "amount": 1}],
 		"instructions": ["Mix."]
 	}`
-	srv := newMockOpenAIServer(t, toolCallResponse("create_recipe", badArgs))
+	srv := newMockOpenAIServer(t, structuredJSONResponse(badArgs))
 	defer srv.Close()
 
 	p := NewOpenAICompatProvider("test-key", srv.URL, "gemini-2.5-pro", "gemini", testPrompts())
@@ -105,7 +123,7 @@ func TestOpenAICompatProvider_AnalyzeAllergens(t *testing.T) {
 		"requires_review": false
 	}`
 
-	srv := newMockOpenAIServer(t, toolCallResponse("analyze_allergens", allergenArgs))
+	srv := newMockOpenAIServer(t, structuredJSONResponse(allergenArgs))
 	defer srv.Close()
 
 	p := NewOpenAICompatProvider("test-key", srv.URL, "gemini-2.5-pro", "gemini", testPrompts())
@@ -139,7 +157,7 @@ func TestOpenAICompatProvider_ClassifyVoiceIntent(t *testing.T) {
 	// Field names match voiceIntentToolResult json tags.
 	voiceArgs := `{"type": "scroll_down", "amount": "large", "target": "", "text": ""}`
 
-	srv := newMockOpenAIServer(t, toolCallResponse("classify_voice_intent", voiceArgs))
+	srv := newMockOpenAIServer(t, structuredJSONResponse(voiceArgs))
 	defer srv.Close()
 
 	p := NewOpenAICompatProvider("test-key", srv.URL, "gemini-2.5-pro", "gemini", testPrompts())

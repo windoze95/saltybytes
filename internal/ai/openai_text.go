@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	openai "github.com/sashabaranov/go-openai"
@@ -117,27 +118,6 @@ func (p *OpenAICompatProvider) createChatCompletion(ctx context.Context, req ope
 	return nil, fmt.Errorf("%s chat completion: exhausted %d retries: %w", p.providerName, maxRetries, lastErr)
 }
 
-// firstToolCallArguments returns the JSON argument string of the first tool
-// call in the response, guarding against zero choices / zero tool calls. fnName
-// is used only for diagnostics; tool choice is forced so the first call is the
-// requested function. The empty-tool-call error carries finish_reason + token
-// usage: Gemini 2.5 models spend completion budget on thinking, so
-// finish_reason=length with a large completion count means the budget was
-// consumed before the tool call was emitted (raise MaxTokens).
-func firstToolCallArguments(resp *openai.ChatCompletionResponse, fnName string) (string, error) {
-	if resp == nil || len(resp.Choices) == 0 {
-		return "", NewAIError(FailureContentEmpty, errors.New("no choices in chat completion response"), "no choices in response")
-	}
-	calls := resp.Choices[0].Message.ToolCalls
-	if len(calls) == 0 {
-		return "", NewAIError(FailureContentEmpty,
-			fmt.Errorf("no %s tool call in chat completion response (finish_reason=%s, completion_tokens=%d)",
-				fnName, resp.Choices[0].FinishReason, resp.Usage.CompletionTokens),
-			"no tool call in response")
-	}
-	return calls[0].Function.Arguments, nil
-}
-
 // schemaObject wraps a property set into a JSON-schema object so the reused
 // *Properties helpers can serve as an OpenAI function's Parameters.
 func schemaObject(properties map[string]interface{}) map[string]interface{} {
@@ -147,8 +127,90 @@ func schemaObject(properties map[string]interface{}) map[string]interface{} {
 	}
 }
 
+// structuredCompletion issues a chat completion constrained to the given JSON
+// schema (response_format json_schema) and returns the raw JSON content.
+// Forced FUNCTION calls are avoided deliberately on this provider: Gemini's
+// OpenAI-compat function-call parser intermittently rejects large calls
+// wholesale (finish_reason=MALFORMED_FUNCTION_CALL / "no tool call", zero
+// output) — the exact failure #112 fixed for the finder's ranking, later seen
+// in prod against create_recipe extraction too. Schema-constrained JSON
+// sidesteps that parser; one resample covers residual empty responses.
+//
+// The schema-following instruction is appended to the first system message so
+// callers keep prompts that were written for the tool-call era.
+func (p *OpenAICompatProvider) structuredCompletion(ctx context.Context, name string, schema map[string]interface{}, maxTokens int, messages []openai.ChatCompletionMessage) (string, error) {
+	msgs := make([]openai.ChatCompletionMessage, len(messages))
+	copy(msgs, messages)
+	for i := range msgs {
+		if msgs[i].Role == openai.ChatMessageRoleSystem {
+			msgs[i].Content += fmt.Sprintf("\n\nRespond with ONLY a JSON object matching the %s schema.", name)
+			break
+		}
+	}
+
+	chatReq := openai.ChatCompletionRequest{
+		Model: p.model,
+		// Generous budgets everywhere: Gemini 2.5 models spend completion
+		// budget on internal thinking BEFORE the answer; billing is by actual
+		// tokens, so headroom is free.
+		MaxTokens: maxTokens,
+		Messages:  msgs,
+		ResponseFormat: &openai.ChatCompletionResponseFormat{
+			Type: openai.ChatCompletionResponseFormatTypeJSONSchema,
+			JSONSchema: &openai.ChatCompletionResponseFormatJSONSchema{
+				Name:   name,
+				Schema: jsonSchemaMap(schema),
+			},
+		},
+	}
+
+	var lastErr error
+	for attempt := 0; attempt < 2; attempt++ {
+		resp, err := p.createChatCompletion(ctx, chatReq)
+		if err != nil {
+			return "", err // transport errors already retried downstream
+		}
+		content := ""
+		finishReason := ""
+		if len(resp.Choices) > 0 {
+			content = stripCodeFences(resp.Choices[0].Message.Content)
+			finishReason = string(resp.Choices[0].FinishReason)
+		}
+		if content != "" {
+			return content, nil
+		}
+		lastErr = NewAIError(FailureContentEmpty,
+			fmt.Errorf("empty %s JSON response (finish_reason=%s, completion_tokens=%d)",
+				name, finishReason, resp.Usage.CompletionTokens),
+			"empty response")
+		logger.Get().Warn("structured completion empty, resampling",
+			zap.String("provider", p.providerName),
+			zap.String("schema", name),
+			zap.Int("attempt", attempt+1),
+		)
+	}
+	return "", lastErr
+}
+
+// stripCodeFences unwraps a ```json ... ``` fenced block some models emit
+// around structured output; plain content passes through untouched.
+func stripCodeFences(s string) string {
+	s = strings.TrimSpace(s)
+	if !strings.HasPrefix(s, "```") {
+		return s
+	}
+	s = strings.TrimPrefix(s, "```json")
+	s = strings.TrimPrefix(s, "```")
+	if i := strings.LastIndex(s, "```"); i >= 0 {
+		s = s[:i]
+	}
+	return strings.TrimSpace(s)
+}
+
 // ExtractRecipeFromText extracts a structured recipe from free-form text via a
-// forced create_recipe function call. Mirrors AnthropicProvider.ExtractRecipeFromText.
+// schema-constrained create_recipe completion. Mirrors
+// AnthropicProvider.ExtractRecipeFromText (which keeps the tool path — the
+// function-call rejection is specific to OpenAI-compat Gemini).
 func (p *OpenAICompatProvider) ExtractRecipeFromText(ctx context.Context, text string, unitSystem string) (*RecipeResult, error) {
 	op := AIOperation{
 		Name:      "ExtractRecipeFromText",
@@ -181,50 +243,10 @@ func (p *OpenAICompatProvider) ExtractRecipeFromText(ctx context.Context, text s
 			return nil, fmt.Errorf("render system prompt: %w", err)
 		}
 
-		summaryDesc := p.prompts.Recipe.Summarize.Recipe
-
-		req := openai.ChatCompletionRequest{
-			Model:     p.model,
-			MaxTokens: 4096,
-			Messages: []openai.ChatCompletionMessage{
-				{Role: openai.ChatMessageRoleSystem, Content: combineSystemPrompt(sysPrefix, sysSuffix)},
-				{Role: openai.ChatMessageRoleUser, Content: text},
-			},
-			Tools: []openai.Tool{{
-				Type: openai.ToolTypeFunction,
-				Function: &openai.FunctionDefinition{
-					Name:        "create_recipe",
-					Description: "Create a structured recipe definition with all required fields.",
-					Parameters:  schemaObject(recipeProperties(summaryDesc)),
-				},
-			}},
-			ToolChoice: openai.ToolChoice{
-				Type:     openai.ToolTypeFunction,
-				Function: openai.ToolFunction{Name: "create_recipe"},
-			},
-		}
-
-		resp, err := p.createChatCompletion(ctx, req)
-		if err != nil {
-			return nil, err
-		}
-
-		args, err := firstToolCallArguments(resp, "create_recipe")
-		if err != nil {
-			return nil, err
-		}
-
-		var tr recipeToolResult
-		if err := json.Unmarshal([]byte(args), &tr); err != nil {
-			return nil, NewAIError(FailureContentParse, fmt.Errorf("failed to unmarshal recipe: %w", err), "failed to parse recipe tool result")
-		}
-
-		result := toolResultToRecipeResult(&tr)
-		if err := validateRecipeResult(result); err != nil {
-			return nil, err
-		}
-		result.PromptVersion = config.PromptVersion(p.prompts)
-		return result, nil
+		return p.completeRecipe(ctx, p.prompts.Recipe.Summarize.Recipe, []openai.ChatCompletionMessage{
+			{Role: openai.ChatMessageRoleSystem, Content: combineSystemPrompt(sysPrefix, sysSuffix)},
+			{Role: openai.ChatMessageRoleUser, Content: text},
+		})
 	})
 }
 
@@ -244,39 +266,16 @@ func (p *OpenAICompatProvider) EstimatePortions(ctx context.Context, recipeDef i
 			return nil, fmt.Errorf("failed to marshal recipe: %w", err)
 		}
 
-		req := openai.ChatCompletionRequest{
-			Model:     p.model,
-			MaxTokens: 256,
-			Messages: []openai.ChatCompletionMessage{
-				{Role: openai.ChatMessageRoleSystem, Content: "You are a culinary expert. Estimate the number of portions and portion size for the given recipe."},
-				{Role: openai.ChatMessageRoleUser, Content: string(recipeJSON)},
-			},
-			Tools: []openai.Tool{{
-				Type: openai.ToolTypeFunction,
-				Function: &openai.FunctionDefinition{
-					Name:        "estimate_portions",
-					Description: "Estimate the number of portions and portion size for a recipe.",
-					Parameters:  schemaObject(portionProperties()),
-				},
-			}},
-			ToolChoice: openai.ToolChoice{
-				Type:     openai.ToolTypeFunction,
-				Function: openai.ToolFunction{Name: "estimate_portions"},
-			},
-		}
-
-		resp, err := p.createChatCompletion(ctx, req)
-		if err != nil {
-			return nil, err
-		}
-
-		args, err := firstToolCallArguments(resp, "estimate_portions")
+		content, err := p.structuredCompletion(ctx, "estimate_portions", schemaObject(portionProperties()), 2048, []openai.ChatCompletionMessage{
+			{Role: openai.ChatMessageRoleSystem, Content: "You are a culinary expert. Estimate the number of portions and portion size for the given recipe."},
+			{Role: openai.ChatMessageRoleUser, Content: string(recipeJSON)},
+		})
 		if err != nil {
 			return nil, err
 		}
 
 		var tr portionToolResult
-		if err := json.Unmarshal([]byte(args), &tr); err != nil {
+		if err := json.Unmarshal([]byte(content), &tr); err != nil {
 			return nil, NewAIError(FailureContentParse, fmt.Errorf("failed to unmarshal portion estimate: %w", err), "failed to parse portion tool result")
 		}
 		return toolResultToPortionEstimate(&tr), nil

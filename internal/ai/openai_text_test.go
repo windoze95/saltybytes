@@ -55,26 +55,7 @@ func TestOpenAICompatProvider_ExtractRecipeFromText(t *testing.T) {
 		"unit_system": "us_customary"
 	}`
 
-	canned := openai.ChatCompletionResponse{
-		Choices: []openai.ChatCompletionChoice{{
-			Index: 0,
-			Message: openai.ChatCompletionMessage{
-				Role: openai.ChatMessageRoleAssistant,
-				ToolCalls: []openai.ToolCall{{
-					ID:   "call_1",
-					Type: openai.ToolTypeFunction,
-					Function: openai.FunctionCall{
-						Name:      "create_recipe",
-						Arguments: recipeArgs,
-					},
-				}},
-			},
-			FinishReason: openai.FinishReasonToolCalls,
-		}},
-		Usage: openai.Usage{PromptTokens: 120, CompletionTokens: 80},
-	}
-
-	srv := newMockOpenAIServer(t, canned)
+	srv := newMockOpenAIServer(t, structuredJSONResponse(recipeArgs))
 	defer srv.Close()
 
 	p := NewOpenAICompatProvider("test-key", srv.URL, "gpt-4o-mini", "openai", testPrompts())
@@ -136,26 +117,7 @@ func TestOpenAICompatProvider_CookingQA(t *testing.T) {
 }
 
 func TestOpenAICompatProvider_EstimatePortions(t *testing.T) {
-	canned := openai.ChatCompletionResponse{
-		Choices: []openai.ChatCompletionChoice{{
-			Index: 0,
-			Message: openai.ChatCompletionMessage{
-				Role: openai.ChatMessageRoleAssistant,
-				ToolCalls: []openai.ToolCall{{
-					ID:   "call_1",
-					Type: openai.ToolTypeFunction,
-					Function: openai.FunctionCall{
-						Name:      "estimate_portions",
-						Arguments: `{"portions": 6, "portion_size": "1 bowl", "confidence": 0.9}`,
-					},
-				}},
-			},
-			FinishReason: openai.FinishReasonToolCalls,
-		}},
-		Usage: openai.Usage{PromptTokens: 40, CompletionTokens: 12},
-	}
-
-	srv := newMockOpenAIServer(t, canned)
+	srv := newMockOpenAIServer(t, structuredJSONResponse(`{"portions": 6, "portion_size": "1 bowl", "confidence": 0.9}`))
 	defer srv.Close()
 
 	p := NewOpenAICompatProvider("test-key", srv.URL, "gpt-4o-mini", "openai", testPrompts())
@@ -175,40 +137,66 @@ func TestOpenAICompatProvider_EstimatePortions(t *testing.T) {
 	}
 }
 
-func TestOpenAICompatProvider_NoToolCallIsError(t *testing.T) {
-	// A response with no tool call must surface a clear error rather than panic.
-	canned := openai.ChatCompletionResponse{
-		Choices: []openai.ChatCompletionChoice{{
-			Index:        0,
-			Message:      openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant, Content: "I cannot help."},
-			FinishReason: openai.FinishReasonStop,
-		}},
-		Usage: openai.Usage{PromptTokens: 10, CompletionTokens: 4},
-	}
-
-	srv := newMockOpenAIServer(t, canned)
+func TestOpenAICompatProvider_NonJSONContentIsError(t *testing.T) {
+	// A refusal / non-JSON body must surface a clear parse error, not a panic
+	// or a silent zero-value recipe.
+	srv := newMockOpenAIServer(t, structuredJSONResponse("I cannot help."))
 	defer srv.Close()
 
 	p := NewOpenAICompatProvider("test-key", srv.URL, "gpt-4o-mini", "openai", testPrompts())
 
 	if _, err := p.ExtractRecipeFromText(context.Background(), "text", "metric"); err == nil {
-		t.Error("expected error when response has no tool call, got nil")
+		t.Error("expected error for non-JSON structured response, got nil")
 	}
 }
 
-// TestOpenAICompatProvider_ExtractRecipeFromText_Live hits the real OpenAI API.
-// Gated behind OPENAI_LIVE_TEST (plus a real OPENAI_API_KEY) so it never runs in
-// CI / the offline suite.
+func TestOpenAICompatProvider_EmptyContentIsError(t *testing.T) {
+	// An empty body (e.g. the thinking budget consumed everything) must error
+	// after the resample, not succeed silently.
+	srv := newMockOpenAIServer(t, structuredJSONResponse(""))
+	defer srv.Close()
+
+	p := NewOpenAICompatProvider("test-key", srv.URL, "gpt-4o-mini", "openai", testPrompts())
+
+	if _, err := p.ExtractRecipeFromText(context.Background(), "text", "metric"); err == nil {
+		t.Error("expected error for empty structured response, got nil")
+	}
+}
+
+func TestStripCodeFences(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{`{"a":1}`, `{"a":1}`},
+		{"```json\n{\"a\":1}\n```", `{"a":1}`},
+		{"```\n{\"a\":1}\n```", `{"a":1}`},
+		{"  {\"a\":1}  ", `{"a":1}`},
+	}
+	for _, c := range cases {
+		if got := stripCodeFences(c.in); got != c.want {
+			t.Errorf("stripCodeFences(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+// TestOpenAICompatProvider_ExtractRecipeFromText_Live hits a real
+// OpenAI-compatible endpoint. Gated behind OPENAI_LIVE_TEST so it never runs
+// in CI / the offline suite. Defaults to OpenAI gpt-4o-mini; set
+// LIGHT_API_KEY/LIGHT_BASE_URL/LIGHT_MODEL to run it against the prod light
+// tier (Gemini) — the config whose function-call parser motivated the
+// json_schema output path this test now covers.
 func TestOpenAICompatProvider_ExtractRecipeFromText_Live(t *testing.T) {
 	if os.Getenv("OPENAI_LIVE_TEST") == "" {
-		t.Skip("set OPENAI_LIVE_TEST=1 (and OPENAI_API_KEY) to run the live OpenAI extraction test")
+		t.Skip("set OPENAI_LIVE_TEST=1 (and an API key) to run the live extraction test")
 	}
-	apiKey := os.Getenv("OPENAI_API_KEY")
+	apiKey := firstNonEmptyEnv("LIGHT_API_KEY", "GEMINI_API_KEY", "OPENAI_API_KEY")
 	if apiKey == "" {
-		t.Skip("OPENAI_API_KEY not set; skipping live test")
+		t.Skip("no API key (LIGHT_API_KEY / GEMINI_API_KEY / OPENAI_API_KEY) set; skipping live test")
+	}
+	model := os.Getenv("LIGHT_MODEL")
+	if model == "" {
+		model = "gpt-4o-mini"
 	}
 
-	p := NewOpenAICompatProvider(apiKey, "", "gpt-4o-mini", "openai", testPrompts())
+	p := NewOpenAICompatProvider(apiKey, os.Getenv("LIGHT_BASE_URL"), model, "gemini", testPrompts())
 
 	const text = `Classic Guacamole
 
