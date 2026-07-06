@@ -33,6 +33,23 @@ func NewImportHandler(importService *service.ImportService) *ImportHandler {
 	return &ImportHandler{Service: importService}
 }
 
+// GetCanonicalSource handles GET /v1/recipes/canonical/:id/source — resolves
+// a public recipe-page id (saltybytes.ai/r/<id>) to its source URL so the app
+// can open a shared link through its normal preview flow.
+func (h *ImportHandler) GetCanonicalSource(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		return
+	}
+	title, sourceURL, err := h.Service.CanonicalSource(uint(id))
+	if err != nil || sourceURL == "" {
+		c.JSON(http.StatusNotFound, gin.H{"error": "recipe not found"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"title": title, "source_url": sourceURL})
+}
+
 // ImportFromURL handles POST /v1/recipes/import/url
 func (h *ImportHandler) ImportFromURL(c *gin.Context) {
 	user, err := util.GetUserFromContext(c)
