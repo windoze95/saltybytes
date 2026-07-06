@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	htmlpkg "html"
 	"html/template"
 	"net/http"
 	"net/url"
@@ -188,6 +189,7 @@ func (h *Handler) Recipe(c *gin.Context) {
 	}
 
 	def := canonical.RecipeData
+	def = decodeEntities(def)
 	sourceURL := def.SourceURL
 	if sourceURL == "" {
 		sourceURL = canonical.OriginalURL
@@ -233,6 +235,23 @@ func (h *Handler) RecipeByURL(c *gin.Context) {
 		return
 	}
 	c.Redirect(http.StatusFound, fmt.Sprintf("/r/%d", canonical.ID))
+}
+
+// decodeEntities unescapes HTML entities that some source pages leave inside
+// extracted text ("&#8211;", "&amp;"). Rendering escapes everything again, so
+// without this the entity shows up literally on the page.
+func decodeEntities(def models.RecipeDef) models.RecipeDef {
+	def.Title = htmlpkg.UnescapeString(def.Title)
+	def.PortionSize = htmlpkg.UnescapeString(def.PortionSize)
+	for i := range def.Ingredients {
+		def.Ingredients[i].Name = htmlpkg.UnescapeString(def.Ingredients[i].Name)
+		def.Ingredients[i].OriginalText = htmlpkg.UnescapeString(def.Ingredients[i].OriginalText)
+		def.Ingredients[i].Unit = htmlpkg.UnescapeString(def.Ingredients[i].Unit)
+	}
+	for i := range def.Instructions {
+		def.Instructions[i] = htmlpkg.UnescapeString(def.Instructions[i])
+	}
+	return def
 }
 
 func ingredientLines(ingredients models.Ingredients) []ingredientLine {
