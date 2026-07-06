@@ -139,6 +139,27 @@ func TestRecipePage(t *testing.T) {
 	}
 }
 
+func TestRecipePage_DecodesSourceEntities(t *testing.T) {
+	entry := testCanonical()
+	entry.RecipeData.Ingredients = models.Ingredients{
+		{OriginalText: "1-2 tablespoons seasoning mix (the one I use &#8211; see notes)"},
+	}
+	entry.RecipeData.Title = "Salmon &amp; Salsa"
+	repo := &testutil.MockCanonicalRecipeRepo{
+		GetByIDFunc: func(id uint) (*models.CanonicalRecipe, error) { return entry, nil },
+	}
+	body := get(testRouter(repo), "/r/42").Body.String()
+	if strings.Contains(body, "&amp;#8211;") || strings.Contains(body, "#8211") {
+		t.Error("stored HTML entity leaked into the page text")
+	}
+	if !strings.Contains(body, "–") {
+		t.Error("expected the en dash to render")
+	}
+	if !strings.Contains(body, "Salmon &amp; Salsa") {
+		t.Error("decoded ampersand should re-escape exactly once on output")
+	}
+}
+
 func TestRecipePage_EscapesUntrustedContent(t *testing.T) {
 	entry := testCanonical()
 	entry.RecipeData.Title = `<script>alert("pwn")</script> Salmon`
