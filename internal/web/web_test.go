@@ -130,8 +130,8 @@ func TestRecipePage(t *testing.T) {
 		`application/ld+json`,
 		`"cookTime":"PT25M"`,
 		`<link rel="canonical" href="https://saltybytes.ai/r/42">`,
-		`data-rid="42"`,   // feeds the open-in-app deep-link script
-		`saltybytes://r/`, // the scheme the script attempts
+		`data-src="https://pinchofyum.com/bang-bang-salmon"`, // feeds the open-in-app deep link
+		`saltybytes://app/preview`,                           // the scheme the script attempts
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("recipe page missing %q", want)
