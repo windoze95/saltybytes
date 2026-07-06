@@ -46,6 +46,21 @@ func (r *CanonicalRecipeRepository) Upsert(entry *models.CanonicalRecipe) error 
 	}).Create(entry).Error
 }
 
+// ListServableSummaries returns lightweight summaries of canonical entries
+// that can be rendered as public recipe pages: single-recipe extractions
+// (never IsMultiPage markers, which hold empty RecipeData) with a title,
+// newest first. Used by the public site's homepage strip and sitemap.
+func (r *CanonicalRecipeRepository) ListServableSummaries(limit int) ([]CanonicalSummary, error) {
+	var rows []CanonicalSummary
+	err := r.DB.Model(&models.CanonicalRecipe{}).
+		Select("id, original_url, updated_at, recipe_data->>'title' AS title").
+		Where("is_multi_page = false AND recipe_data->>'title' <> ''").
+		Order("updated_at DESC").
+		Limit(limit).
+		Scan(&rows).Error
+	return rows, err
+}
+
 // IncrementHitCount atomically increments hit_count and updates last_accessed_at.
 func (r *CanonicalRecipeRepository) IncrementHitCount(id uint) error {
 	return r.DB.Model(&models.CanonicalRecipe{}).

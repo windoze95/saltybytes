@@ -48,6 +48,16 @@ type CanonicalRecipeRepo interface {
 	GetByNormalizedURL(normalizedURL string) (*models.CanonicalRecipe, error)
 	Upsert(entry *models.CanonicalRecipe) error
 	IncrementHitCount(id uint) error
+	ListServableSummaries(limit int) ([]CanonicalSummary, error)
+}
+
+// CanonicalSummary is a projection of a servable canonical recipe used where
+// full RecipeData decoding would be wasteful (public site homepage, sitemap).
+type CanonicalSummary struct {
+	ID          uint
+	Title       string
+	OriginalURL string
+	UpdatedAt   time.Time
 }
 
 // VideoImportRepo is the interface for the video extraction cache and async
