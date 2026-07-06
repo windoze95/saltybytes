@@ -1,5 +1,5 @@
 {{template "page_head" .Meta}}
-<body class="recipepage" data-rid="{{.ID}}" data-ios="{{.IOSURL}}" data-android="{{.AndroidURL}}">
+<body class="recipepage" data-rid="{{.ID}}" data-src="{{.SourceURL}}" data-ios="{{.IOSURL}}" data-android="{{.AndroidURL}}">
 
 <nav class="site-nav">
   <div class="wrap nav-row">
@@ -74,18 +74,21 @@
 <script>
 function openInApp() {
   var body = document.body;
-  var rid = body.getAttribute('data-rid');
+  var src = body.getAttribute('data-src');
   var ios = body.getAttribute('data-ios');
   var android = body.getAttribute('data-android');
   var ua = navigator.userAgent || '';
   var store = /android/i.test(ua) ? android : (/iphone|ipad|ipod/i.test(ua) ? ios : (ios || android));
   var fallback = store || '/#get';
+  if (!src) { window.location.href = fallback; return; }
   var timer = setTimeout(function () {
     if (!document.hidden) { window.location.href = fallback; }
   }, 1400);
   window.addEventListener('pagehide', function () { clearTimeout(timer); }, { once: true });
-  // If the app is installed it claims this scheme; otherwise the timer fires.
-  window.location.href = 'saltybytes://r/' + rid;
+  // The app registers the saltybytes:// scheme and routes /preview?u=<url>
+  // into its recipe-preview flow (instant for anything already extracted).
+  // The "app" authority is a dummy so the path parses the same everywhere.
+  window.location.href = 'saltybytes://app/preview?u=' + encodeURIComponent(src);
 }
 </script>
 </body>
