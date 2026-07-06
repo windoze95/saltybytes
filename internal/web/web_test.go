@@ -287,6 +287,30 @@ func TestStaticAssets(t *testing.T) {
 	}
 }
 
+func TestWellKnownAssociationFiles(t *testing.T) {
+	r := testRouter(&testutil.MockCanonicalRecipeRepo{})
+
+	aasa := get(r, "/.well-known/apple-app-site-association")
+	if aasa.Code != http.StatusOK || !strings.Contains(aasa.Header().Get("Content-Type"), "application/json") {
+		t.Fatalf("AASA: expected 200 json, got %d %s", aasa.Code, aasa.Header().Get("Content-Type"))
+	}
+	for _, want := range []string{"2M54LKDR89.codes.julian.saltybytes", `"/r/*"`, "webcredentials"} {
+		if !strings.Contains(aasa.Body.String(), want) {
+			t.Errorf("AASA missing %q", want)
+		}
+	}
+
+	links := get(r, "/.well-known/assetlinks.json")
+	if links.Code != http.StatusOK || !strings.Contains(links.Header().Get("Content-Type"), "application/json") {
+		t.Fatalf("assetlinks: expected 200 json, got %d %s", links.Code, links.Header().Get("Content-Type"))
+	}
+	for _, want := range []string{"codes.julian.saltybytes", "delegate_permission/common.handle_all_urls", "6E:E1:3B:60"} {
+		if !strings.Contains(links.Body.String(), want) {
+			t.Errorf("assetlinks missing %q", want)
+		}
+	}
+}
+
 func TestPrivacyPage(t *testing.T) {
 	w := get(testRouter(&testutil.MockCanonicalRecipeRepo{}), "/privacy")
 	if w.Code != http.StatusOK {

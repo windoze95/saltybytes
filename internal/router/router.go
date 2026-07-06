@@ -339,6 +339,9 @@ func SetupRouter(cfg *config.Config, database *gorm.DB) *gin.Engine {
 
 		// Recipe preview route (cheap extraction for pre-import preview)
 		apiProtected.POST("/recipes/preview/url", middleware.AttachUserToContext(userService), aiBudget, importHandler.PreviewFromURL)
+		// Universal-link resolution: saltybytes.ai/r/<id> carries only the
+		// canonical id; the app trades it for the source URL, then previews.
+		apiProtected.GET("/recipes/canonical/:id/source", importHandler.GetCanonicalSource)
 
 		// Recipe tree/branching routes
 		treeService := service.NewRecipeTreeService(cfg, recipeRepo)

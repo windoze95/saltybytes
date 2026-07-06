@@ -1039,3 +1039,45 @@ func TestCreateImportedRecipe_KeepsExistingPortions(t *testing.T) {
 		t.Errorf("Portions = %d, want 4 (unchanged)", repo.Recipes[recipeID].Portions)
 	}
 }
+
+func TestCanonicalSource(t *testing.T) {
+	entry := &models.CanonicalRecipe{
+		OriginalURL: "https://pinchofyum.com/bang-bang-salmon",
+		RecipeData: models.RecipeDef{
+			Title:     "Bang Bang Salmon",
+			SourceURL: "https://pinchofyum.com/bang-bang-salmon?utm=x",
+		},
+	}
+	entry.ID = 42
+	marker := &models.CanonicalRecipe{IsMultiPage: true}
+	marker.ID = 7
+
+	svc := &ImportService{CanonicalRepo: &testutil.MockCanonicalRecipeRepo{
+		GetByIDFunc: func(id uint) (*models.CanonicalRecipe, error) {
+			switch id {
+			case 42:
+				return entry, nil
+			case 7:
+				return marker, nil
+			}
+			return nil, fmt.Errorf("not found")
+		},
+	}}
+
+	title, source, err := svc.CanonicalSource(42)
+	if err != nil || title != "Bang Bang Salmon" || source != "https://pinchofyum.com/bang-bang-salmon?utm=x" {
+		t.Fatalf("CanonicalSource(42) = %q %q %v", title, source, err)
+	}
+	if _, _, err := svc.CanonicalSource(7); err == nil {
+		t.Fatal("multi-page marker must not resolve")
+	}
+	if _, _, err := svc.CanonicalSource(999); err == nil {
+		t.Fatal("missing id must not resolve")
+	}
+
+	// Falls back to the original URL when the extraction lacks a source.
+	entry.RecipeData.SourceURL = ""
+	if _, source, _ := svc.CanonicalSource(42); source != "https://pinchofyum.com/bang-bang-salmon" {
+		t.Fatalf("fallback source = %q", source)
+	}
+}

@@ -843,6 +843,29 @@ type PreviewResult struct {
 	FromCache bool `json:"from_cache,omitempty"`
 }
 
+// CanonicalSource resolves a canonical cache id to its title and source URL.
+// This is the glue for universal links: the public site's recipe pages live at
+// saltybytes.ai/r/<canonical id>, so a link opened in the app carries only the
+// id, and the app resolves it here before running its normal URL preview flow.
+// Multi-page markers and empty extractions are not resolvable.
+func (s *ImportService) CanonicalSource(id uint) (title, sourceURL string, err error) {
+	if s.CanonicalRepo == nil {
+		return "", "", fmt.Errorf("canonical cache not configured")
+	}
+	canonical, err := s.CanonicalRepo.GetByID(id)
+	if err != nil {
+		return "", "", err
+	}
+	if canonical.IsMultiPage || canonical.RecipeData.Title == "" {
+		return "", "", fmt.Errorf("canonical %d is not a servable recipe", id)
+	}
+	source := canonical.RecipeData.SourceURL
+	if source == "" {
+		source = canonical.OriginalURL
+	}
+	return canonical.RecipeData.Title, source, nil
+}
+
 // PreviewFromURL fetches a page and extracts recipe data without saving.
 // When a CanonicalRepo is configured, it checks the cache first and saves
 // extractions for future deduplication. Returns the recipe data and optional canonical ID.

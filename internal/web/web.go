@@ -64,6 +64,10 @@ func (h *Handler) Register(r *gin.Engine) {
 	r.GET("/robots.txt", h.Robots)
 	r.GET("/sitemap.xml", pages, h.Sitemap)
 	r.GET("/static/*filepath", h.Static)
+	// App association files (universal links / app links). The OAuth server
+	// owns the other /.well-known routes; these two are the app's.
+	r.GET("/.well-known/apple-app-site-association", h.AppleAASA)
+	r.GET("/.well-known/assetlinks.json", h.AssetLinks)
 	r.NoRoute(h.NotFound)
 }
 
