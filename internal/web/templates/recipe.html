@@ -1,0 +1,92 @@
+{{template "page_head" .Meta}}
+<body class="recipepage" data-rid="{{.ID}}" data-ios="{{.IOSURL}}" data-android="{{.AndroidURL}}">
+
+<nav class="site-nav">
+  <div class="wrap nav-row">
+    <a class="brand" href="/">{{template "wordmark"}}</a>
+    <button class="btn btn-coral btn-sm" type="button" onclick="openInApp()">Open in the app</button>
+  </div>
+</nav>
+
+<main class="wrap recipe-wrap">
+  <article class="recipe-card">
+    <header class="rhead">
+      {{if .Domain}}<p class="crumb">A real recipe from <a href="{{.SourceURL}}" rel="nofollow noopener" target="_blank">{{.Domain}}</a></p>{{end}}
+      <h1>{{.Title}}</h1>
+      <div class="chips">
+        {{if .CookTime}}<span class="chip chip-accent">⏱ {{.CookTime}} min</span>{{end}}
+        {{if .Portions}}<span class="chip">serves {{.Portions}}{{if .PortionSize}} · {{.PortionSize}}{{end}}</span>{{end}}
+        <span class="chip">{{len .Ingredients}} ingredients</span>
+      </div>
+    </header>
+
+    {{if .ImageURL}}
+    <figure class="rphoto"><img src="{{.ImageURL}}" alt="{{.Title}}" loading="lazy"></figure>
+    {{end}}
+
+    <div class="pinch" aria-hidden="true">∴</div>
+
+    <div class="cookgrid">
+      <section class="ingcol" aria-label="Ingredients">
+        <h2 class="sect-label">Ingredients</h2>
+        <ul class="ing">
+          {{range $i, $line := .Ingredients}}
+          <li>
+            <input type="checkbox" id="ing-{{$i}}">
+            <label for="ing-{{$i}}">{{if $line.Qty}}<strong>{{$line.Qty}}</strong> {{end}}{{$line.Body}}</label>
+          </li>
+          {{end}}
+        </ul>
+      </section>
+
+      <section class="stepcol" aria-label="Method">
+        <h2 class="sect-label">Method</h2>
+        <ol class="steps">
+          {{range .Steps}}<li>{{.}}</li>
+          {{end}}
+        </ol>
+      </section>
+    </div>
+
+    {{if .SourceURL}}
+    <aside class="source-card">
+      <p><strong>Cook's note.</strong> This recipe lives at {{if .Domain}}{{.Domain}}{{else}}its original home{{end}} — SaltyBytes tidied it up for cooking. The original, with its photos and story, is <a href="{{.SourceURL}}" rel="nofollow noopener" target="_blank">right here</a>.</p>
+    </aside>
+    {{end}}
+
+    <section class="cta-panel">
+      <div class="pinch" aria-hidden="true">∴</div>
+      <h2>Cook it in SaltyBytes</h2>
+      <p>Check off ingredients, cook hands-free with voice, convert every unit your way, and keep it forever — free.</p>
+      <button class="btn btn-coral" type="button" onclick="openInApp()">Open in the app</button>
+      {{template "store_buttons" .}}
+    </section>
+  </article>
+</main>
+
+<div class="appbar">
+  <span class="appbar-brand">{{template "wordmark"}}</span>
+  <button class="btn btn-cream btn-sm" type="button" onclick="openInApp()">Open in app</button>
+</div>
+
+{{template "site_footer" .}}
+
+<script>
+function openInApp() {
+  var body = document.body;
+  var rid = body.getAttribute('data-rid');
+  var ios = body.getAttribute('data-ios');
+  var android = body.getAttribute('data-android');
+  var ua = navigator.userAgent || '';
+  var store = /android/i.test(ua) ? android : (/iphone|ipad|ipod/i.test(ua) ? ios : (ios || android));
+  var fallback = store || '/#get';
+  var timer = setTimeout(function () {
+    if (!document.hidden) { window.location.href = fallback; }
+  }, 1400);
+  window.addEventListener('pagehide', function () { clearTimeout(timer); }, { once: true });
+  // If the app is installed it claims this scheme; otherwise the timer fires.
+  window.location.href = 'saltybytes://r/' + rid;
+}
+</script>
+</body>
+</html>

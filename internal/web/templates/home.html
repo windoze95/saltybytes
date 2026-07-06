@@ -1,0 +1,154 @@
+{{template "page_head" .Meta}}
+<body class="home">
+
+<nav class="site-nav">
+  <div class="wrap nav-row">
+    <a class="brand" href="/">{{template "wordmark"}}</a>
+    <div class="nav-links">
+      <a href="#how">How it works</a>
+      <a href="#connector">AI&nbsp;connector</a>
+      <a class="btn btn-coral btn-sm" href="#get">Get the app</a>
+    </div>
+  </div>
+</nav>
+
+<header class="hero">
+  <div class="wrap hero-grid">
+    <div class="hero-copy">
+      <h1 class="brandline" aria-label="SaltyBytes">
+        <span class="flavor" aria-hidden="true">
+          <span>Salty</span><span>Sweet</span><span>Sour</span><span>Bitter</span><span>Umami</span>
+        </span><span class="bytes-big" aria-hidden="true">Bytes</span>
+      </h1>
+      <p class="tagline">Real recipes, found for&nbsp;you.</p>
+      <p class="lede">That recipe from your TikTok feed? Probably already in here — paste the link and it opens instantly. Real recipes from across the web, with none of the ads, pop-ups, or life stories in the way.</p>
+      {{template "store_buttons" .}}
+      <p class="hero-note">Free to use · <a href="#connector">or add it straight to Claude&nbsp;or&nbsp;ChatGPT</a></p>
+    </div>
+    <div class="hero-visual" aria-hidden="true">
+      <div class="phone">
+        <img src="/static/app-search.jpg" alt="" width="405" height="880" loading="eager">
+      </div>
+      <span class="float-chip chip-a">🔗 Paste a TikTok</span>
+      <span class="float-chip chip-b">📸 Snap a cookbook page</span>
+      <span class="float-chip chip-c">🎙️ Just say it out loud</span>
+    </div>
+  </div>
+</header>
+
+<section class="how" id="how">
+  <div class="wrap">
+    <p class="kicker">How it works</p>
+    <h2 class="section-title">From “I saw it somewhere” to&nbsp;dinner.</h2>
+    <div class="trio">
+      <article class="tcard">
+        <span class="tnum">01</span>
+        <h3>Bring anything</h3>
+        <p>A link, a TikTok or reel, a photo of grandma's card, a PDF, or your own voice. If a recipe lives in it, SaltyBytes pulls it out.</p>
+      </article>
+      <article class="tcard">
+        <span class="tnum">02</span>
+        <h3>Get the recipe — just the recipe</h3>
+        <p>Ingredients and steps, cleanly extracted. Units read your way: “2 cups (480&nbsp;mL)”. Allergen flags for the whole family.</p>
+      </article>
+      <article class="tcard">
+        <span class="tnum">03</span>
+        <h3>Make it yours</h3>
+        <p>Fork it, tweak it, regenerate it. Your changes branch like a family tree, and the original is always one tap away.</p>
+      </article>
+    </div>
+  </div>
+</section>
+
+<section class="connector" id="connector">
+  <div class="wrap conn-grid">
+    <div class="conn-copy">
+      <p class="kicker kicker-light">The AI connector</p>
+      <h2 class="section-title">Your AI assistant can cook&nbsp;with&nbsp;it.</h2>
+      <p>SaltyBytes is a first-class connector for Claude and ChatGPT. Ask your assistant for dinner ideas and it searches real recipes, previews them, and saves keepers straight to your collection — no app-switching, no copy-paste.</p>
+      <div class="mcpurl">
+        <code id="mcp-url">{{.MCPURL}}</code>
+        <button class="btn btn-coral btn-sm" type="button" data-url="{{.MCPURL}}" onclick="copyMCP(this)">Copy</button>
+      </div>
+      <div class="conn-steps">
+        <div class="conn-step">
+          <h4>In Claude</h4>
+          <ol>
+            <li>Settings → Connectors</li>
+            <li>Add custom connector → paste the URL</li>
+            <li>Sign in with your SaltyBytes account</li>
+          </ol>
+        </div>
+        <div class="conn-step">
+          <h4>In ChatGPT</h4>
+          <ol>
+            <li>Settings → Connectors → Advanced</li>
+            <li>Enable developer mode, add the URL</li>
+            <li>Sign in — done</li>
+          </ol>
+        </div>
+      </div>
+    </div>
+    <figure class="chatcard">
+      <div class="chat-bubble user">Find me a cozy weeknight dinner recipe — something like creamy tuscan chicken</div>
+      <div class="chat-tool">
+        <span class="tool-tile">S</span>
+        <span class="tool-name">SaltyBytes <strong>search_recipes</strong></span>
+        <span class="tool-tick">✓</span>
+      </div>
+      <div class="chat-reply">
+        <p>Pulled some solid options into SaltyBytes for you. For a true weeknight cook, the Simply Recipes version is the fastest path — one pan, about 30 minutes, no surprises.</p>
+        <p>Tap a card to preview the full ingredients and steps, and if one looks like a keeper, say the word and I'll save it to your collection.</p>
+      </div>
+      <figcaption>A real exchange — Claude, with the SaltyBytes connector.</figcaption>
+    </figure>
+  </div>
+</section>
+
+{{if .Recent}}
+<section class="fresh">
+  <div class="wrap">
+    <p class="kicker">Fresh out of the extractor</p>
+    <h2 class="section-title">Recipes people just&nbsp;pulled&nbsp;in.</h2>
+    <div class="fresh-grid">
+      {{range .Recent}}
+      <a class="fcard" href="/r/{{.ID}}">
+        <span class="fdomain">{{.Domain}}</span>
+        <span class="ftitle">{{.Title}}</span>
+        <span class="fgo">Read it →</span>
+      </a>
+      {{end}}
+    </div>
+  </div>
+</section>
+{{end}}
+
+<section class="get" id="get">
+  <div class="wrap get-panel">
+    <div class="pinch" aria-hidden="true">∴</div>
+    <h2 class="section-title">Put your recipes somewhere that respects&nbsp;them.</h2>
+    <p class="lede center">Free on iPhone and Android. Sign-up needs only an email address.</p>
+    {{template "store_buttons" .}}
+  </div>
+</section>
+
+{{template "site_footer" .}}
+
+<script>
+function copyMCP(btn) {
+  var url = btn.getAttribute('data-url');
+  function done() { btn.textContent = 'Copied ✓'; setTimeout(function () { btn.textContent = 'Copy'; }, 1600); }
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(url).then(done);
+  } else {
+    var range = document.createRange();
+    range.selectNodeContents(document.getElementById('mcp-url'));
+    var sel = window.getSelection();
+    sel.removeAllRanges(); sel.addRange(range);
+    document.execCommand('copy'); sel.removeAllRanges();
+    done();
+  }
+}
+</script>
+</body>
+</html>

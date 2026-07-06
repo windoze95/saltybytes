@@ -1,0 +1,15 @@
+{{template "page_head" .Meta}}
+<body class="errorpage">
+{{template "site_nav" .}}
+<main class="wrap error-wrap">
+  <div class="pinch big" aria-hidden="true">∴</div>
+  <h1>404 — this page boiled&nbsp;over.</h1>
+  <p class="lede center">{{.Message}}</p>
+  <p class="error-actions">
+    <a class="btn btn-coral" href="/">Back to the kitchen</a>
+    <a class="btn btn-ghost" href="/#get">Get the app</a>
+  </p>
+</main>
+{{template "site_footer" .}}
+</body>
+</html>

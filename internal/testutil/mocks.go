@@ -1158,10 +1158,11 @@ func (m *MockFinderSessionRepo) Created() []models.FinderSession {
 
 // MockCanonicalRecipeRepo mocks repository.CanonicalRecipeRepo for testing.
 type MockCanonicalRecipeRepo struct {
-	GetByIDFunc            func(id uint) (*models.CanonicalRecipe, error)
-	GetByNormalizedURLFunc func(normalizedURL string) (*models.CanonicalRecipe, error)
-	UpsertFunc             func(entry *models.CanonicalRecipe) error
-	IncrementHitCountFunc  func(id uint) error
+	GetByIDFunc               func(id uint) (*models.CanonicalRecipe, error)
+	GetByNormalizedURLFunc    func(normalizedURL string) (*models.CanonicalRecipe, error)
+	UpsertFunc                func(entry *models.CanonicalRecipe) error
+	IncrementHitCountFunc     func(id uint) error
+	ListServableSummariesFunc func(limit int) ([]repository.CanonicalSummary, error)
 }
 
 func (m *MockCanonicalRecipeRepo) GetByID(id uint) (*models.CanonicalRecipe, error) {
@@ -1191,6 +1192,13 @@ func (m *MockCanonicalRecipeRepo) IncrementHitCount(id uint) error {
 		return m.IncrementHitCountFunc(id)
 	}
 	return nil
+}
+
+func (m *MockCanonicalRecipeRepo) ListServableSummaries(limit int) ([]repository.CanonicalSummary, error) {
+	if m.ListServableSummariesFunc != nil {
+		return m.ListServableSummariesFunc(limit)
+	}
+	return nil, nil
 }
 
 // --- MockVideoImportRepo ---

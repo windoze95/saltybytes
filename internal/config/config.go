@@ -113,6 +113,17 @@ type EnvVars struct {
 	// nothing is gated, so the feature can ship dark and be flipped on once
 	// the SES domain identity and production access are in place.
 	EmailVerificationEnabled bool `env:"EMAIL_VERIFICATION_ENABLED" optional:"true"`
+	// SiteBaseURL is the public marketing/recipe site origin (the apex domain),
+	// used for canonical URLs, Open Graph tags, and sitemap entries. The site is
+	// served by this same binary; the apex and api hostnames both route here.
+	SiteBaseURL string `env:"SITE_BASE_URL" envDefault:"https://saltybytes.ai" optional:"true"`
+	// SiteIOSAppURL / SiteAndroidAppURL activate the store badges on the public
+	// site. While empty the badges render as "coming soon". Once the store
+	// listings are live, set these (App Store: https://apps.apple.com/app/id<N>;
+	// Play: https://play.google.com/store/apps/details?id=codes.julian.saltybytes)
+	// — no code change needed.
+	SiteIOSAppURL     string `env:"SITE_IOS_APP_URL" optional:"true"`
+	SiteAndroidAppURL string `env:"SITE_ANDROID_APP_URL" optional:"true"`
 }
 
 // EmailVerificationActive reports whether the signup email-verification flow

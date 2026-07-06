@@ -18,6 +18,7 @@ import (
 	"github.com/windoze95/saltybytes-api/internal/repository"
 	"github.com/windoze95/saltybytes-api/internal/service"
 	"github.com/windoze95/saltybytes-api/internal/video"
+	"github.com/windoze95/saltybytes-api/internal/web"
 	"github.com/windoze95/saltybytes-api/internal/ws"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
@@ -488,6 +489,14 @@ func SetupRouter(cfg *config.Config, database *gorm.DB) *gin.Engine {
 	voiceService := service.NewVoiceService(cfg, previewProvider, speechProvider)
 	cookingHandler := ws.NewCookingHandler(hub, cfg.EnvVars.JwtSecretKey, voiceService, recipeRepo)
 	r.GET("/v1/ws/cook/:recipe_id", cookingHandler.HandleCookingSession)
+
+	// --- Public website (saltybytes.ai) ---
+	// Marketing front page plus a shareable server-rendered page for every
+	// recipe in the canonical extraction cache. Registered on the bare engine
+	// (browsers cannot send the shared ID header); the apex domain resolves to
+	// the same ALB/service as the API, so one binary serves both.
+	webHandler := web.NewHandler(cfg, canonicalRepo)
+	webHandler.Register(r)
 
 	return r
 }

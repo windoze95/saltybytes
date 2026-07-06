@@ -1,0 +1,82 @@
+{{define "page_head"}}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{.Title}}</title>
+<meta name="description" content="{{.Description}}">
+<link rel="canonical" href="{{.Canonical}}">
+<meta property="og:site_name" content="SaltyBytes">
+<meta property="og:title" content="{{.Title}}">
+<meta property="og:description" content="{{.Description}}">
+<meta property="og:url" content="{{.Canonical}}">
+<meta property="og:type" content="{{.OGType}}">
+<meta property="og:image" content="{{.OGImage}}">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="theme-color" content="#FF3B5C">
+<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
+<link rel="preload" href="/static/fonts/raleway-var.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/static/fonts/inter-var.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/static/fonts/pacifico.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="/static/site.css?v={{.CSSTag}}">
+{{if .JSONLD}}<script type="application/ld+json">{{.JSONLD}}</script>
+{{end}}</head>
+{{end}}
+
+{{define "wordmark"}}<span class="wordmark" aria-label="SaltyBytes"><span class="salty" aria-hidden="true">Salty</span><span class="bytes" aria-hidden="true">Bytes</span></span>{{end}}
+
+{{define "site_nav"}}
+<nav class="site-nav">
+  <div class="wrap nav-row">
+    <a class="brand" href="/">{{template "wordmark"}}</a>
+    <a class="btn btn-coral btn-sm" href="/#get">Get the app</a>
+  </div>
+</nav>
+{{end}}
+
+{{define "store_buttons"}}
+<div class="stores">
+  {{if .IOSURL}}
+  <a class="store" href="{{.IOSURL}}">
+    <span class="store-sub">Download on the</span>
+    <span class="store-big">App&nbsp;Store</span>
+  </a>
+  {{else}}
+  <span class="store soon" aria-disabled="true">
+    <span class="store-sub">App Store</span>
+    <span class="store-big">iPhone</span>
+    <span class="soon-chip">soon</span>
+  </span>
+  {{end}}
+  {{if .AndroidURL}}
+  <a class="store" href="{{.AndroidURL}}">
+    <span class="store-sub">Get it on</span>
+    <span class="store-big">Google&nbsp;Play</span>
+  </a>
+  {{else}}
+  <span class="store soon" aria-disabled="true">
+    <span class="store-sub">Google Play</span>
+    <span class="store-big">Android</span>
+    <span class="soon-chip">soon</span>
+  </span>
+  {{end}}
+</div>
+{{end}}
+
+{{define "site_footer"}}
+<footer class="site-footer">
+  <div class="wrap foot-row">
+    <div>
+      <a class="brand" href="/">{{template "wordmark"}}</a>
+      <p class="foot-tag">Real recipes, found for you.</p>
+    </div>
+    <div class="foot-links">
+      <a href="/privacy">Privacy</a>
+      <a href="mailto:windoze95@proton.me">Support</a>
+      <a href="/#connector">AI&nbsp;connector</a>
+    </div>
+  </div>
+  <div class="wrap foot-small">© {{.Year}} Julian Dice · No ads. No pop-ups. No life stories.</div>
+</footer>
+{{end}}
