@@ -61,6 +61,7 @@ func (h *Handler) Register(r *gin.Engine) {
 	r.GET("/r/:id", pages, h.Recipe)
 	r.GET("/r", pages, h.RecipeByURL)
 	r.GET("/privacy", pages, h.Privacy)
+	r.GET("/terms", pages, h.Terms)
 	r.GET("/robots.txt", h.Robots)
 	r.GET("/sitemap.xml", pages, h.Sitemap)
 	r.GET("/static/*filepath", h.Static)
@@ -387,6 +388,15 @@ func (h *Handler) Privacy(c *gin.Context) {
 		Year: time.Now().Year(),
 	}
 	h.render(c, http.StatusOK, "privacy.html", data, 3600)
+}
+
+// Terms renders the terms of service.
+func (h *Handler) Terms(c *gin.Context) {
+	data := simplePage{
+		Meta: h.meta("Terms — SaltyBytes", "The terms for using SaltyBytes: your account, your content, AI and food-safety disclaimers, and the usual legal basics.", "/terms"),
+		Year: time.Now().Year(),
+	}
+	h.render(c, http.StatusOK, "terms.html", data, 3600)
 }
 
 type notFoundData struct {
