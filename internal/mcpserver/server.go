@@ -69,7 +69,12 @@ func registerWidget(server *mcp.Server, cfg *config.Config) {
 // Exported for tests.
 func BuildServer(cfg *config.Config, deps *Deps) *mcp.Server {
 	server := mcp.NewServer(
-		&mcp.Implementation{Name: "saltybytes", Version: "1.0.0"},
+		&mcp.Implementation{
+			Name:       "saltybytes",
+			Title:      "SaltyBytes",
+			Version:    "1.0.0",
+			WebsiteURL: "https://saltybytes.ai",
+		},
 		&mcp.ServerOptions{Instructions: serverInstructions},
 	)
 	registerTools(server, deps)
