@@ -38,6 +38,9 @@ func widgetResourceMeta(cfg *config.Config) mcp.Meta {
 			"connectDomains":  []string{},
 			"resourceDomains": resourceDomains,
 		},
+		// domain is the app's canonical origin; ChatGPT's Apps SDK requires it on
+		// the widget resource for directory submission.
+		"domain":        cfg.EnvVars.SiteBaseURL,
 		"prefersBorder": true,
 	}}
 }
