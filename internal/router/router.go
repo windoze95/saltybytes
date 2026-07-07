@@ -10,6 +10,7 @@ import (
 	"github.com/windoze95/saltybytes-api/internal/config"
 	"github.com/windoze95/saltybytes-api/internal/email"
 	"github.com/windoze95/saltybytes-api/internal/handlers"
+	"github.com/windoze95/saltybytes-api/internal/iap"
 	"github.com/windoze95/saltybytes-api/internal/logger"
 	"github.com/windoze95/saltybytes-api/internal/mcpserver"
 	"github.com/windoze95/saltybytes-api/internal/middleware"
@@ -445,6 +446,39 @@ func SetupRouter(cfg *config.Config, database *gorm.DB) *gin.Engine {
 	apiProtected.GET("/subscription", middleware.AttachUserToContext(userService), subHandler.GetSubscription)
 	apiProtected.POST("/subscription/upgrade", middleware.AttachUserToContext(userService), subHandler.UpgradeSubscription)
 
+	// Store billing (IAP): the app verifies App Store / Play purchases here;
+	// store servers push lifecycle events to the bare-engine webhooks below.
+	// Apple verification is local (pinned root CA) so it is always on; google
+	// needs the Play service-account key.
+	storeSubRepo := repository.NewStoreSubscriptionRepository(database)
+	iapService := service.NewIAPService(cfg, userRepo, storeSubRepo, subService)
+	iapService.Apple = iap.NewAppleVerifier(cfg.EnvVars.AppleBundleID)
+	if cfg.EnvVars.PlayServiceAccountJSON != "" {
+		gv, err := iap.NewGoogleVerifier(context.Background(), []byte(cfg.EnvVars.PlayServiceAccountJSON), cfg.EnvVars.PlayPackageName)
+		if err != nil {
+			logger.Get().Error("google play billing verification unavailable", zap.Error(err))
+		} else {
+			iapService.Google = gv
+			logger.Get().Info("google play billing verification enabled")
+		}
+	} else {
+		logger.Get().Info("google play billing verification disabled (PLAY_SERVICE_ACCOUNT_JSON unset)")
+	}
+	if cfg.AppleIAPPollingConfigured() {
+		poller, err := iap.NewAppleAPIClient(cfg.EnvVars.AppleIAPKeyID, cfg.EnvVars.AppleIAPIssuerID,
+			cfg.EnvVars.AppleIAPPrivateKeyB64, cfg.EnvVars.AppleBundleID)
+		if err != nil {
+			logger.Get().Error("apple IAP polling unavailable", zap.Error(err))
+		} else {
+			iapService.ApplePoller = poller
+			logger.Get().Info("apple IAP polling enabled (App Store Server API)")
+		}
+	}
+	subService.StaleRefresher = iapService.RefreshUserIfStale
+	subHandler.IAP = iapService
+	iapHandler := handlers.NewIAPHandler(iapService, cfg)
+	apiProtected.POST("/iap/verify", middleware.AttachUserToContext(userService), iapHandler.VerifyPurchase)
+
 	// Image upload
 	imageHandler := handlers.NewImageHandler(cfg)
 	apiProtected.POST("/images/upload", middleware.AttachUserToContext(userService), imageHandler.UploadImage)
@@ -472,6 +506,13 @@ func SetupRouter(cfg *config.Config, database *gorm.DB) *gin.Engine {
 	// The token endpoint is called from MCP hosts' shared cloud egress IPs
 	// (many users behind few IPs), so its ceiling is much higher.
 	r.POST("/oauth/token", middleware.RateLimitByIP(60, 120, 5*time.Minute, 15*time.Minute), oauthHandler.Token)
+
+	// Store-server webhooks (bare engine: Apple/Google cannot send the shared
+	// ID header). Both are self-authenticating — Apple payloads are verified
+	// against the pinned Apple root, google events are re-read from the Play
+	// API (plus the ?token= shared secret) — so forged posts grant nothing.
+	r.POST("/webhooks/apple", middleware.RateLimitByIP(30, 60, 5*time.Minute, 15*time.Minute), iapHandler.AppleWebhook)
+	r.POST("/webhooks/google", middleware.RateLimitByIP(30, 60, 5*time.Minute, 15*time.Minute), iapHandler.GoogleWebhook)
 
 	// The MCP endpoint itself: bearer-auth (tokens minted above) wrapping a
 	// stateless Streamable HTTP handler. Tools reuse the same service layer

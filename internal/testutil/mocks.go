@@ -918,6 +918,19 @@ func (m *MockUserRepo) DecrementSubscriptionUsage(userID uint, column string) er
 	return nil
 }
 
+func (m *MockUserRepo) UpdateSubscriptionTier(userID uint, tier models.SubscriptionTier, expiresAt *time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	u, ok := m.Users[userID]
+	if !ok || u.Subscription == nil {
+		return fmt.Errorf("no subscription found for user")
+	}
+	u.Subscription.Tier = tier
+	u.Subscription.ExpiresAt = expiresAt
+	return nil
+}
+
 func (m *MockUserRepo) ResetSubscriptionUsage(userID uint, nextReset time.Time) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -931,6 +944,60 @@ func (m *MockUserRepo) ResetSubscriptionUsage(userID uint, nextReset time.Time) 
 	u.Subscription.AIGenerationsUsed = 0
 	u.Subscription.VideoImportsUsed = 0
 	u.Subscription.MonthlyResetAt = nextReset
+	return nil
+}
+
+// --- MockStoreSubscriptionRepo ---
+
+// MockStoreSubscriptionRepo is an in-memory repository.StoreSubscriptionRepo.
+type MockStoreSubscriptionRepo struct {
+	mu     sync.Mutex
+	Rows   map[string]*models.StoreSubscription // keyed by ExternalKey
+	NextID uint
+	// SaveErr, when set, is returned by Save to simulate DB failures.
+	SaveErr error
+}
+
+// NewMockStoreSubscriptionRepo creates an initialized MockStoreSubscriptionRepo.
+func NewMockStoreSubscriptionRepo() *MockStoreSubscriptionRepo {
+	return &MockStoreSubscriptionRepo{Rows: make(map[string]*models.StoreSubscription), NextID: 1}
+}
+
+func (m *MockStoreSubscriptionRepo) GetByExternalKey(key string) (*models.StoreSubscription, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	row, ok := m.Rows[key]
+	if !ok {
+		return nil, nil
+	}
+	cp := *row
+	return &cp, nil
+}
+
+func (m *MockStoreSubscriptionRepo) ListByUser(userID uint) ([]models.StoreSubscription, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []models.StoreSubscription
+	for _, row := range m.Rows {
+		if row.UserID == userID {
+			out = append(out, *row)
+		}
+	}
+	return out, nil
+}
+
+func (m *MockStoreSubscriptionRepo) Save(sub *models.StoreSubscription) error {
+	if m.SaveErr != nil {
+		return m.SaveErr
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if sub.ID == 0 {
+		sub.ID = m.NextID
+		m.NextID++
+	}
+	cp := *sub
+	m.Rows[sub.ExternalKey] = &cp
 	return nil
 }
 

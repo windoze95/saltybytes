@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"github.com/windoze95/saltybytes-api/internal/iap"
 	"github.com/windoze95/saltybytes-api/internal/logger"
 	"github.com/windoze95/saltybytes-api/internal/service"
 	"github.com/windoze95/saltybytes-api/internal/util"
@@ -13,6 +14,9 @@ import (
 // SubscriptionHandler handles subscription-related requests.
 type SubscriptionHandler struct {
 	Service *service.SubscriptionService
+	// IAP, when wired, enriches GET /v1/subscription with the store-side
+	// subscription state and the account token the app attaches to purchases.
+	IAP *service.IAPService
 }
 
 // NewSubscriptionHandler creates a new SubscriptionHandler.
@@ -36,8 +40,14 @@ func (h *SubscriptionHandler) GetSubscription(c *gin.Context) {
 	}
 
 	// Include the tier's caps so the app can render allowances without
-	// hardcoding them. Additive field; older clients ignore it.
-	c.JSON(http.StatusOK, gin.H{"subscription": sub, "limits": sub.Limits()})
+	// hardcoding them, plus (additive, older clients ignore them) the store
+	// subscription backing the tier and the account token the app passes as
+	// appAccountToken / obfuscated account ID on store purchases.
+	resp := gin.H{"subscription": sub, "limits": sub.Limits(), "account_token": iap.AccountTokenForUser(user.ID)}
+	if h.IAP != nil {
+		resp["store"] = h.IAP.StoreStateForUser(user.ID)
+	}
+	c.JSON(http.StatusOK, resp)
 }
 
 // UpgradeSubscription handles POST /v1/subscription/upgrade

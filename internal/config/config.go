@@ -131,6 +131,34 @@ type EnvVars struct {
 	// — no code change needed.
 	SiteIOSAppURL     string `env:"SITE_IOS_APP_URL" optional:"true"`
 	SiteAndroidAppURL string `env:"SITE_ANDROID_APP_URL" optional:"true"`
+	// --- Store billing (IAP) ---
+	// PlayServiceAccountJSON is the Google Play service-account key (raw
+	// JSON) used to verify Play purchase tokens. While unset, google-side
+	// verification is disabled and google purchases 503.
+	PlayServiceAccountJSON string `env:"PLAY_SERVICE_ACCOUNT_JSON" optional:"true"`
+	// PlayPackageName is the Android application ID purchases must belong to.
+	PlayPackageName string `env:"PLAY_PACKAGE_NAME" envDefault:"codes.julian.saltybytes" optional:"true"`
+	// AppleBundleID is the iOS bundle ID StoreKit transactions must carry.
+	// Apple verification is local (pinned Apple root CA) and needs no key.
+	AppleBundleID string `env:"APPLE_BUNDLE_ID" envDefault:"codes.julian.saltybytes" optional:"true"`
+	// RTDNPushSecret authenticates Google Pub/Sub pushes to /webhooks/google
+	// (configured as ?token=<secret> on the push endpoint URL). While unset,
+	// the webhook accepts unauthenticated posts (rate-limited; events are
+	// verified against the Play API anyway, so forgery grants nothing).
+	RTDNPushSecret string `env:"RTDN_PUSH_SECRET" optional:"true"`
+	// AppleIAPKeyID/IssuerID/PrivateKeyB64 optionally enable the App Store
+	// Server API (an ASC key with the In-App Purchase or Admin role) so
+	// expired-looking apple subscriptions are re-polled instead of relying on
+	// notifications alone.
+	AppleIAPKeyID         string `env:"APPLE_IAP_KEY_ID" optional:"true"`
+	AppleIAPIssuerID      string `env:"APPLE_IAP_ISSUER_ID" optional:"true"`
+	AppleIAPPrivateKeyB64 string `env:"APPLE_IAP_PRIVATE_KEY_B64" optional:"true"`
+}
+
+// AppleIAPPollingConfigured reports whether the optional App Store Server API
+// credentials are fully set.
+func (c *Config) AppleIAPPollingConfigured() bool {
+	return c.EnvVars.AppleIAPKeyID != "" && c.EnvVars.AppleIAPIssuerID != "" && c.EnvVars.AppleIAPPrivateKeyB64 != ""
 }
 
 // EmailVerificationActive reports whether the signup email-verification flow
