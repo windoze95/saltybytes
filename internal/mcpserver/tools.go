@@ -83,6 +83,10 @@ func widgetMeta() mcp.Meta {
 	return mcp.Meta{"ui": map[string]any{"resourceUri": widgetURI}}
 }
 
+// boolPtr returns a pointer to b, for the optional *bool tool annotations
+// (DestructiveHint / OpenWorldHint) whose spec defaults are true.
+func boolPtr(b bool) *bool { return &b }
+
 // --- search_recipes ---
 
 type searchRecipesIn struct {
@@ -323,6 +327,11 @@ func registerTools(server *mcp.Server, deps *Deps) {
 		Title:       "Search for recipes",
 		Description: "Search the web for real recipes (not AI-generated) matching what the user wants to cook. Call this whenever the user asks for recipe ideas, dinner suggestions, or something specific to cook. Results render as interactive cards the user can preview and save.",
 		Meta:        widgetMeta(),
+		// Read-only: queries the open web; makes no changes to the user's account.
+		Annotations: &mcp.ToolAnnotations{
+			ReadOnlyHint:  true,
+			OpenWorldHint: boolPtr(true),
+		},
 	}, deps.searchRecipes)
 
 	mcp.AddTool(server, &mcp.Tool{
@@ -330,6 +339,11 @@ func registerTools(server *mcp.Server, deps *Deps) {
 		Title:       "Preview a recipe",
 		Description: "Extract and preview the full recipe (ingredients, steps, times) from a recipe page URL without saving it. Call this when the user picks a search result or pastes a recipe link. Renders an interactive card with a save button.",
 		Meta:        widgetMeta(),
+		// Read-only: fetches and extracts an external URL; saves nothing.
+		Annotations: &mcp.ToolAnnotations{
+			ReadOnlyHint:  true,
+			OpenWorldHint: boolPtr(true),
+		},
 	}, deps.previewRecipe)
 
 	mcp.AddTool(server, &mcp.Tool{
@@ -337,6 +351,13 @@ func registerTools(server *mcp.Server, deps *Deps) {
 		Title:       "Save a recipe to SaltyBytes",
 		Description: "Import a recipe from a URL into the user's SaltyBytes collection so it appears in their app. Call this when the user says to save, keep, or import a recipe they previewed or linked.",
 		Meta:        widgetMeta(),
+		// Writes: imports a recipe into the user's collection. Additive and
+		// reversible (the user can delete it), so not destructive; fetches an
+		// external URL, so open-world.
+		Annotations: &mcp.ToolAnnotations{
+			DestructiveHint: boolPtr(false),
+			OpenWorldHint:   boolPtr(true),
+		},
 	}, deps.saveRecipe)
 
 	mcp.AddTool(server, &mcp.Tool{
@@ -344,6 +365,11 @@ func registerTools(server *mcp.Server, deps *Deps) {
 		Title:       "Browse saved recipes",
 		Description: "List or search the user's own saved SaltyBytes recipes. Call this when the user asks what they've saved, wants to find one of their recipes, or asks 'what should I cook from my collection?'.",
 		Meta:        widgetMeta(),
+		// Read-only: reads the user's own saved collection only (closed world).
+		Annotations: &mcp.ToolAnnotations{
+			ReadOnlyHint:  true,
+			OpenWorldHint: boolPtr(false),
+		},
 	}, deps.listMyRecipes)
 
 	mcp.AddTool(server, &mcp.Tool{
@@ -351,5 +377,10 @@ func registerTools(server *mcp.Server, deps *Deps) {
 		Title:       "Open a saved recipe",
 		Description: "Fetch one saved SaltyBytes recipe by id with full ingredients and instructions, rendered as an interactive cooking card.",
 		Meta:        widgetMeta(),
+		// Read-only: reads one recipe from the user's own collection (closed world).
+		Annotations: &mcp.ToolAnnotations{
+			ReadOnlyHint:  true,
+			OpenWorldHint: boolPtr(false),
+		},
 	}, deps.getRecipe)
 }
