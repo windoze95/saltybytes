@@ -32,3 +32,14 @@ func (r *AIUsageRepository) SumCostSince(since time.Time) (float64, error) {
 		Scan(&total).Error
 	return total, err
 }
+
+// SumCostByUserSince returns one user's attributed AI cost recorded at or
+// after the given instant. Backs the unlimited-tier runaway guard.
+func (r *AIUsageRepository) SumCostByUserSince(userID uint, since time.Time) (float64, error) {
+	var total float64
+	err := r.DB.Model(&models.AIUsageLog{}).
+		Where("user_id = ? AND created_at >= ?", userID, since).
+		Select("COALESCE(SUM(cost_usd), 0)").
+		Scan(&total).Error
+	return total, err
+}

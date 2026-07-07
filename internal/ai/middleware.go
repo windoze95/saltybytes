@@ -36,6 +36,27 @@ type usageKeyType struct{}
 // usageKey marks the per-call usage sink stored in the context.
 var usageKey usageKeyType
 
+type userIDKeyType struct{}
+
+// userIDKey carries the requesting user's ID through the context so metered
+// calls can be attributed per account.
+var userIDKey userIDKeyType
+
+// WithUserID tags a context with the requesting user, attributing every AI
+// call made under it in ai_usage_logs. System-initiated work (warming,
+// detached jobs) simply never tags, recording user_id 0.
+func WithUserID(ctx context.Context, userID uint) context.Context {
+	return context.WithValue(ctx, userIDKey, userID)
+}
+
+// userIDFrom extracts the tagged user, 0 when untagged.
+func userIDFrom(ctx context.Context) uint {
+	if id, ok := ctx.Value(userIDKey).(uint); ok {
+		return id
+	}
+	return 0
+}
+
 // recordUsage reports a provider call's token usage to the in-flight sink so the
 // middleware can meter cost. A no-op if no sink is in the context.
 func recordUsage(ctx context.Context, u TokenUsage) {
@@ -128,6 +149,7 @@ func runWithMiddleware[T any](ctx context.Context, mw AIMiddleware, op AIOperati
 
 // UsageRecord is one metered AI call handed to a CostMiddleware sink.
 type UsageRecord struct {
+	UserID           uint
 	Operation        string
 	Provider         string
 	Model            string
@@ -164,6 +186,7 @@ func (m *CostMiddleware) After(ctx context.Context, result AIOperationResult) {
 		pricing = DefaultPricing
 	}
 	m.Sink(UsageRecord{
+		UserID:           userIDFrom(ctx),
 		Operation:        result.Operation.Name,
 		Provider:         result.Operation.Provider,
 		Model:            result.Operation.Model,

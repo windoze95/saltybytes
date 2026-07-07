@@ -291,6 +291,22 @@ func (r *UserRepository) ResetSubscriptionUsage(userID uint, nextReset time.Time
 	return nil
 }
 
+// LockUser administratively locks an account (runaway guard / suspected
+// compromise): every authenticated request 403s until locked_at is cleared
+// manually.
+func (r *UserRepository) LockUser(userID uint, reason string) error {
+	err := r.DB.Model(&models.User{}).
+		Where("id = ?", userID).
+		Updates(map[string]interface{}{
+			"locked_at":   time.Now(),
+			"lock_reason": reason,
+		}).Error
+	if err != nil {
+		logger.Get().Error("failed to lock user", zap.Uint("user_id", userID), zap.Error(err))
+	}
+	return err
+}
+
 // DeleteAbandonedUnverifiedUsers hard-deletes "empty husk" accounts: never
 // email-verified, older than the cutoff, and with zero durable content (no
 // recipes created or collected, no family owned). These are abandoned
