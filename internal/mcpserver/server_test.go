@@ -219,9 +219,14 @@ func TestServerLifecycle_ToolsAndWidget(t *testing.T) {
 	if len(res.Contents) != 1 || res.Contents[0].MIMEType != mcpAppMIMEType {
 		t.Fatalf("unexpected widget resource: %+v", res.Contents)
 	}
-	for _, marker := range []string{"ui/initialize", "ui/notifications/tool-result", "tools/call"} {
-		if !strings.Contains(res.Contents[0].Text, marker) {
-			t.Fatalf("widget HTML missing protocol marker %q", marker)
+	// The widget loads its JS externally (ChatGPT's sandbox blocks inline
+	// scripts), so the HTML references the script and the markers live in the JS.
+	if !strings.Contains(res.Contents[0].Text, "mcp-widget.js") {
+		t.Fatal("widget HTML should load its JS via <script src> (mcp-widget.js)")
+	}
+	for _, marker := range []string{"ui/initialize", "ui/notifications/tool-result", "tools/call", "window.openai"} {
+		if !strings.Contains(widgetJS, marker) {
+			t.Fatalf("widget JS missing protocol marker %q", marker)
 		}
 	}
 
