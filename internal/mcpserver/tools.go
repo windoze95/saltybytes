@@ -78,9 +78,17 @@ func textResult(summary string) *mcp.CallToolResult {
 	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: summary}}}
 }
 
-// widgetMeta is the MCP Apps declaration attached to every tool.
-func widgetMeta() mcp.Meta {
-	return mcp.Meta{"ui": map[string]any{"resourceUri": widgetURI}}
+// toolMeta is the per-tool metadata attached to every tool: the MCP Apps widget
+// pointer (both Claude and ChatGPT read _meta.ui.resourceUri) plus ChatGPT Apps
+// SDK niceties — a one-line widget description and the status text ChatGPT shows
+// while the tool is running / once it finishes. Hosts ignore keys they don't use.
+func toolMeta(description, invoking, invoked string) mcp.Meta {
+	return mcp.Meta{
+		"ui":                             map[string]any{"resourceUri": widgetURI},
+		"openai/widgetDescription":       description,
+		"openai/toolInvocation/invoking": invoking,
+		"openai/toolInvocation/invoked":  invoked,
+	}
 }
 
 // boolPtr returns a pointer to b, for the optional *bool tool annotations
@@ -326,7 +334,11 @@ func registerTools(server *mcp.Server, deps *Deps) {
 		Name:        "search_recipes",
 		Title:       "Search for recipes",
 		Description: "Search the web for real recipes (not AI-generated) matching what the user wants to cook. Call this whenever the user asks for recipe ideas, dinner suggestions, or something specific to cook. Results render as interactive cards the user can preview and save.",
-		Meta:        widgetMeta(),
+		Meta: toolMeta(
+			"Interactive cards of real recipes found around the web.",
+			"Searching the web for recipes…",
+			"Found recipes",
+		),
 		// Read-only: queries the open web; makes no changes to the user's account.
 		Annotations: &mcp.ToolAnnotations{
 			ReadOnlyHint:  true,
@@ -338,7 +350,11 @@ func registerTools(server *mcp.Server, deps *Deps) {
 		Name:        "preview_recipe",
 		Title:       "Preview a recipe",
 		Description: "Extract and preview the full recipe (ingredients, steps, times) from a recipe page URL without saving it. Call this when the user picks a search result or pastes a recipe link. Renders an interactive card with a save button.",
-		Meta:        widgetMeta(),
+		Meta: toolMeta(
+			"A full recipe preview — ingredients, steps, and a Save button.",
+			"Reading the recipe…",
+			"Recipe ready",
+		),
 		// Read-only: fetches and extracts an external URL; saves nothing.
 		Annotations: &mcp.ToolAnnotations{
 			ReadOnlyHint:  true,
@@ -350,7 +366,11 @@ func registerTools(server *mcp.Server, deps *Deps) {
 		Name:        "save_recipe",
 		Title:       "Save a recipe to SaltyBytes",
 		Description: "Import a recipe from a URL into the user's SaltyBytes collection so it appears in their app. Call this when the user says to save, keep, or import a recipe they previewed or linked.",
-		Meta:        widgetMeta(),
+		Meta: toolMeta(
+			"Confirmation that the recipe was saved to your SaltyBytes collection.",
+			"Saving to your collection…",
+			"Saved to SaltyBytes",
+		),
 		// Writes: imports a recipe into the user's collection. Additive and
 		// reversible (the user can delete it), so not destructive; fetches an
 		// external URL, so open-world.
@@ -364,7 +384,11 @@ func registerTools(server *mcp.Server, deps *Deps) {
 		Name:        "list_my_recipes",
 		Title:       "Browse saved recipes",
 		Description: "List or search the user's own saved SaltyBytes recipes. Call this when the user asks what they've saved, wants to find one of their recipes, or asks 'what should I cook from my collection?'.",
-		Meta:        widgetMeta(),
+		Meta: toolMeta(
+			"Cards of your saved SaltyBytes recipes.",
+			"Opening your collection…",
+			"Your saved recipes",
+		),
 		// Read-only: reads the user's own saved collection only (closed world).
 		Annotations: &mcp.ToolAnnotations{
 			ReadOnlyHint:  true,
@@ -376,7 +400,11 @@ func registerTools(server *mcp.Server, deps *Deps) {
 		Name:        "get_recipe",
 		Title:       "Open a saved recipe",
 		Description: "Fetch one saved SaltyBytes recipe by id with full ingredients and instructions, rendered as an interactive cooking card.",
-		Meta:        widgetMeta(),
+		Meta: toolMeta(
+			"A full recipe card with ingredients and instructions.",
+			"Opening the recipe…",
+			"Recipe card",
+		),
 		// Read-only: reads one recipe from the user's own collection (closed world).
 		Annotations: &mcp.ToolAnnotations{
 			ReadOnlyHint:  true,
