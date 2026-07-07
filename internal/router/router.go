@@ -527,6 +527,9 @@ func SetupRouter(cfg *config.Config, database *gorm.DB) *gin.Engine {
 		Subs:          subService,
 	}
 	r.Any("/mcp", gin.WrapH(mcpserver.NewHandler(cfg, mcpDeps)))
+	// The widget's JS, served standalone so ChatGPT's sandbox (which blocks inline
+	// scripts) can load it via <script src>. Public, no ID header, no auth.
+	r.GET("/mcp-widget.js", gin.WrapF(mcpserver.WidgetScript()))
 
 	// WebSocket routes (authenticated via query param token)
 	hub := ws.NewHub()
