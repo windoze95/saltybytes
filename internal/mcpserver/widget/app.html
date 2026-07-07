@@ -700,6 +700,31 @@ const resizeObserver = new ResizeObserver(() => {
   }).catch(() => { /* not an MCP Apps postMessage host */ });
   resizeObserver.observe(document.body);
 })();
+
+// ChatGPT can set window.openai.toolOutput a tick after mount without firing
+// "openai:set_globals" — poll briefly so we don't miss a late delivery. If nothing
+// has rendered after a few seconds, surface what the host actually exposes instead
+// of sitting on the loading note. (Diagnostic string removed once ChatGPT render
+// is confirmed.)
+(function watchOpenAI() {
+  let n = 0;
+  const timer = setInterval(() => {
+    n++;
+    const oa = openAIHost();
+    if (oa && oa.toolOutput) { clearInterval(timer); applyOpenAIGlobals(oa); return; }
+    if (n >= 24) {
+      clearInterval(timer);
+      if (root.textContent.indexOf("Warming up") !== -1) {
+        const o = openAIHost();
+        const info = o
+          ? "openai present; keys: " + Object.keys(o).slice(0, 14).join(", ") + "; toolOutput " + (o.toolOutput ? "set" : "absent")
+          : "window.openai ABSENT in this iframe";
+        clearRoot();
+        root.appendChild(el("div", "note", "SaltyBytes debug — " + info));
+      }
+    }
+  }, 250);
+})();
 </script>
 </body>
 </html>
