@@ -40,7 +40,7 @@ func (h *RecipeHandler) checkAIGenerationLimit(c *gin.Context, userID uint) bool
 		return false
 	}
 	if !allowed {
-		c.JSON(http.StatusForbidden, gin.H{"error": "AI generation limit reached; upgrade to premium for unlimited generations"})
+		c.JSON(http.StatusForbidden, gin.H{"error": "AI generation limit reached for your plan — upgrade for a bigger monthly allowance"})
 		return false
 	}
 	return true

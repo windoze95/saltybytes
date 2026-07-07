@@ -165,12 +165,12 @@ func TestAnalyzeRecipe_Handler_FreeUserAtLimit_403(t *testing.T) {
 	}
 }
 
-func TestAnalyzeRecipe_Handler_PremiumBypassesLimit(t *testing.T) {
+func TestAnalyzeRecipe_Handler_UnlimitedTierBypassesLimit(t *testing.T) {
 	user := testutil.TestUser()
 	user.Subscription = &models.Subscription{
 		Model:                gorm.Model{ID: 1},
 		UserID:               user.ID,
-		Tier:                 models.TierPremium,
+		Tier:                 models.TierUnlimited,
 		AllergenAnalysesUsed: 100,
 		MonthlyResetAt:       time.Now().Add(time.Hour),
 	}

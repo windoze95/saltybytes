@@ -59,6 +59,7 @@ func (s *SubscriptionService) GetSubscription(userID uint) (*models.Subscription
 		user.Subscription.WebSearchesUsed = 0
 		user.Subscription.AIGenerationsUsed = 0
 		user.Subscription.VideoImportsUsed = 0
+		user.Subscription.AIImportsUsed = 0
 		user.Subscription.MonthlyResetAt = nextReset
 	}
 
@@ -84,13 +85,15 @@ func usageColumn(usageType string) (string, error) {
 		return "ai_generations_used", nil
 	case "video_import":
 		return "video_imports_used", nil
+	case "ai_import":
+		return "ai_imports_used", nil
 	default:
 		return "", fmt.Errorf("unknown usage type: %s", usageType)
 	}
 }
 
 // IncrementUsage atomically increments a usage counter in the database.
-// Valid usageType values: "allergen", "search", "ai_generation", "video_import".
+// Valid usageType values: "allergen", "search", "ai_generation", "video_import", "ai_import".
 func (s *SubscriptionService) IncrementUsage(userID uint, usageType string) error {
 	column, err := usageColumn(usageType)
 	if err != nil {
@@ -125,6 +128,8 @@ func (s *SubscriptionService) CheckLimit(userID uint, usageType string) (bool, e
 		return sub.CanUseAIGeneration(), nil
 	case "video_import":
 		return sub.CanUseVideoImport(), nil
+	case "ai_import":
+		return sub.CanUseAIImport(), nil
 	default:
 		return false, fmt.Errorf("unknown usage type: %s", usageType)
 	}

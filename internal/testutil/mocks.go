@@ -846,6 +846,8 @@ func (m *MockUserRepo) IncrementSubscriptionUsage(userID uint, column string) er
 		u.Subscription.AIGenerationsUsed++
 	case "video_imports_used":
 		u.Subscription.VideoImportsUsed++
+	case "ai_imports_used":
+		u.Subscription.AIImportsUsed++
 	default:
 		return fmt.Errorf("unknown usage column: %s", column)
 	}

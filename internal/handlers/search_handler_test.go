@@ -117,12 +117,12 @@ func TestSearchRecipes_StaleCounterResets(t *testing.T) {
 	}
 }
 
-func TestSearchRecipes_PremiumUnlimited(t *testing.T) {
+func TestSearchRecipes_UnlimitedTierBypassesCap(t *testing.T) {
 	user := testutil.TestUser()
 	user.Subscription = &models.Subscription{
 		Model:           gorm.Model{ID: 1},
 		UserID:          user.ID,
-		Tier:            models.TierPremium,
+		Tier:            models.TierUnlimited,
 		WebSearchesUsed: 999,
 		MonthlyResetAt:  time.Now().Add(time.Hour),
 	}

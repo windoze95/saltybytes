@@ -161,23 +161,24 @@ func TestGetSubscription_UserNotFound(t *testing.T) {
 	}
 }
 
-func TestCheckLimit_PremiumUnlimited(t *testing.T) {
+func TestCheckLimit_UnlimitedTierBypasses(t *testing.T) {
 	repo := testutil.NewMockUserRepo()
 	user := testutil.TestUser()
 	user.Subscription = &models.Subscription{
 		Model:                gorm.Model{ID: 1},
 		UserID:               user.ID,
-		Tier:                 models.TierPremium,
+		Tier:                 models.TierUnlimited,
 		AllergenAnalysesUsed: 1000,
 		WebSearchesUsed:      1000,
 		AIGenerationsUsed:    1000,
+		AIImportsUsed:        1000,
 		MonthlyResetAt:       time.Now().Add(time.Hour),
 	}
 	repo.Users[user.ID] = user
 
 	svc := newTestSubscriptionService(repo)
 
-	for _, usageType := range []string{"allergen", "search", "ai_generation"} {
+	for _, usageType := range []string{"allergen", "search", "ai_generation", "ai_import"} {
 		allowed, err := svc.CheckLimit(user.ID, usageType)
 		if err != nil {
 			t.Fatalf("CheckLimit(%q) error: %v", usageType, err)

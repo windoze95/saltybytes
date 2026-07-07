@@ -6,7 +6,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/windoze95/saltybytes-api/internal/logger"
-	"github.com/windoze95/saltybytes-api/internal/models"
 	"github.com/windoze95/saltybytes-api/internal/repository"
 	"github.com/windoze95/saltybytes-api/internal/service"
 	"github.com/windoze95/saltybytes-api/internal/util"
@@ -50,7 +49,7 @@ func (h *AllergenHandler) AnalyzeRecipe(c *gin.Context) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to check subscription limits"})
 			return
 		}
-		isPremium = sub.Tier == models.TierPremium
+		isPremium = sub.IsPremiumGrade()
 
 		allowed, err := h.Service.SubService.CheckLimit(user.ID, "allergen")
 		if err != nil {

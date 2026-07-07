@@ -106,8 +106,53 @@ type SubscriptionTier string
 // SubscriptionTier enum values.
 const (
 	TierFree    SubscriptionTier = "free"
+	TierPlus    SubscriptionTier = "plus"
 	TierPremium SubscriptionTier = "premium"
+	// TierUnlimited is the hidden operator tier: no caps at all. It is never
+	// offered as an upgrade option anywhere (not in the app, not via the
+	// upgrade endpoint) — it is assigned manually, directly in the database,
+	// for select accounts. The app-wide daily AI budget is its only bound.
+	TierUnlimited SubscriptionTier = "unlimited"
 )
+
+// TierLimits is a tier's monthly allowance per metered feature. -1 means
+// unlimited.
+type TierLimits struct {
+	AIGenerations    int `json:"ai_generations"`
+	WebSearches      int `json:"web_searches"`
+	AllergenAnalyses int `json:"allergen_analyses"`
+	VideoImports     int `json:"video_imports"`
+	AIImports        int `json:"ai_imports"`
+}
+
+// limitsByTier sets each tier's caps so a subscriber maxing every counter
+// still costs less than the tier's net revenue (after the app-store cut),
+// using worst-case per-op model costs: generation/fork/regen ≈ $0.05
+// (Sonnet), agent search ≈ $0.012 (Flash + CSE), allergen ≈ $0.02 (Sonnet),
+// video ≈ $0.02 blended (native Gemini; frame fallback is rare and bounded
+// by the video daily budget), AI import ≈ $0.012 (Flash vision / Whisper).
+// Free maxes out around $0.83/mo (acquisition cost), plus ≈ $1.43 against
+// ~$1.40 net of $1.99, premium ≈ $3.46 against ~$3.49 net of $4.99.
+var limitsByTier = map[SubscriptionTier]TierLimits{
+	TierFree:      {AIGenerations: 10, WebSearches: 10, AllergenAnalyses: 3, VideoImports: 1, AIImports: 10},
+	TierPlus:      {AIGenerations: 15, WebSearches: 20, AllergenAnalyses: 5, VideoImports: 2, AIImports: 25},
+	TierPremium:   {AIGenerations: 30, WebSearches: 50, AllergenAnalyses: 12, VideoImports: 20, AIImports: 60},
+	TierUnlimited: {AIGenerations: -1, WebSearches: -1, AllergenAnalyses: -1, VideoImports: -1, AIImports: -1},
+}
+
+// LimitsForTier returns the caps for a tier, defaulting unknown tiers to
+// free-tier limits (fail-closed).
+func LimitsForTier(tier SubscriptionTier) TierLimits {
+	if l, ok := limitsByTier[tier]; ok {
+		return l
+	}
+	return limitsByTier[TierFree]
+}
+
+// withinLimit reports whether used is under the cap; -1 means no cap.
+func withinLimit(used, limit int) bool {
+	return limit < 0 || used < limit
+}
 
 // Subscription is the model for a user's subscription.
 type Subscription struct {
@@ -119,47 +164,56 @@ type Subscription struct {
 	WebSearchesUsed      int `gorm:"default:0"`
 	AIGenerationsUsed    int `gorm:"default:0"`
 	VideoImportsUsed     int `gorm:"default:0"`
-	MonthlyResetAt       time.Time
+	// AIImportsUsed meters the AI-powered import paths (photo, files, voice,
+	// text). URL/manual imports stay unmetered — they're cache-heavy and
+	// cheap.
+	AIImportsUsed  int `gorm:"default:0"`
+	MonthlyResetAt time.Time
+}
+
+// Limits returns this subscription's tier caps.
+func (s *Subscription) Limits() TierLimits {
+	return LimitsForTier(s.Tier)
 }
 
 // CanUseAllergenAnalysis checks if the user can use allergen analysis.
 func (s *Subscription) CanUseAllergenAnalysis() bool {
-	if s.Tier == TierPremium {
-		return true
-	}
-	return s.AllergenAnalysesUsed < 5
+	return withinLimit(s.AllergenAnalysesUsed, s.Limits().AllergenAnalyses)
 }
 
-// CanUseWebSearch checks if the user can use web search.
+// CanUseWebSearch checks if the user can use web/agent search.
 func (s *Subscription) CanUseWebSearch() bool {
-	if s.Tier == TierPremium {
-		return true
-	}
-	return s.WebSearchesUsed < 20
+	return withinLimit(s.WebSearchesUsed, s.Limits().WebSearches)
 }
 
-// CanUseAIGeneration checks if the user can use AI generation.
+// CanUseAIGeneration checks if the user can use AI generation (generate,
+// regenerate, fork — the flagship-model calls).
 func (s *Subscription) CanUseAIGeneration() bool {
-	if s.Tier == TierPremium {
-		return true
-	}
-	return s.AIGenerationsUsed < 50
+	return withinLimit(s.AIGenerationsUsed, s.Limits().AIGenerations)
 }
 
 // CanUseVideoImport checks if the user can import a recipe from a video link.
-// Both tiers are capped (premium included) to bound per-video AI cost:
-// free = 2/month, premium = 20/month.
 func (s *Subscription) CanUseVideoImport() bool {
-	if s.Tier == TierPremium {
-		return s.VideoImportsUsed < 20
-	}
-	return s.VideoImportsUsed < 2
+	return withinLimit(s.VideoImportsUsed, s.Limits().VideoImports)
+}
+
+// CanUseAIImport checks if the user can run an AI-powered import
+// (photo/files/voice/text).
+func (s *Subscription) CanUseAIImport() bool {
+	return withinLimit(s.AIImportsUsed, s.Limits().AIImports)
+}
+
+// IsPremiumGrade reports whether the tier gets premium-quality treatment
+// (e.g. the deeper allergen analysis): premium and the hidden unlimited
+// tier. Plus is a budget tier and stays on standard quality.
+func (s *Subscription) IsPremiumGrade() bool {
+	return s.Tier == TierPremium || s.Tier == TierUnlimited
 }
 
 // IsValidSubscriptionTier checks if the SubscriptionTier is valid.
 func (s *Subscription) IsValidSubscriptionTier() bool {
 	switch s.Tier {
-	case TierFree, TierPremium:
+	case TierFree, TierPlus, TierPremium, TierUnlimited:
 		return true
 	default:
 		return false
