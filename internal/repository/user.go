@@ -281,6 +281,7 @@ func (r *UserRepository) ResetSubscriptionUsage(userID uint, nextReset time.Time
 			"web_searches_used":      0,
 			"ai_generations_used":    0,
 			"video_imports_used":     0,
+			"ai_imports_used":        0,
 			"monthly_reset_at":       nextReset,
 		})
 	if result.Error != nil {

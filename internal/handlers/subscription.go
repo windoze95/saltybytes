@@ -35,7 +35,9 @@ func (h *SubscriptionHandler) GetSubscription(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"subscription": sub})
+	// Include the tier's caps so the app can render allowances without
+	// hardcoding them. Additive field; older clients ignore it.
+	c.JSON(http.StatusOK, gin.H{"subscription": sub, "limits": sub.Limits()})
 }
 
 // UpgradeSubscription handles POST /v1/subscription/upgrade

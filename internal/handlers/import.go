@@ -97,10 +97,45 @@ func (h *ImportHandler) ImportFromURL(c *gin.Context) {
 }
 
 // ImportFromPhoto handles POST /v1/recipes/import/photo
+// checkAIImportLimit verifies the user is within their AI-import allowance
+// (photo/files/voice/text — the AI-powered import paths). Writes the error
+// response and returns false when over limit or the check fails.
+func (h *ImportHandler) checkAIImportLimit(c *gin.Context, userID uint) bool {
+	if h.SubService == nil {
+		return true
+	}
+	allowed, err := h.SubService.CheckLimit(userID, "ai_import")
+	if err != nil {
+		logger.Get().Error("failed to check AI import limit", zap.Uint("user_id", userID), zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to check subscription limits"})
+		return false
+	}
+	if !allowed {
+		c.JSON(http.StatusForbidden, gin.H{"error": "AI import limit reached for your plan — upgrade for a bigger monthly allowance", "error_code": "quota_exhausted"})
+		return false
+	}
+	return true
+}
+
+// incrementAIImportUsage records one AI import against the user's monthly
+// quota. Failures are logged but never block the response.
+func (h *ImportHandler) incrementAIImportUsage(userID uint) {
+	if h.SubService == nil {
+		return
+	}
+	if err := h.SubService.IncrementUsage(userID, "ai_import"); err != nil {
+		logger.Get().Error("failed to increment AI import usage", zap.Uint("user_id", userID), zap.Error(err))
+	}
+}
+
 func (h *ImportHandler) ImportFromPhoto(c *gin.Context) {
 	user, err := util.GetUserFromContext(c)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	if !h.checkAIImportLimit(c, user.ID) {
 		return
 	}
 
@@ -138,6 +173,10 @@ func (h *ImportHandler) ImportFromFiles(c *gin.Context) {
 	user, err := util.GetUserFromContext(c)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	if !h.checkAIImportLimit(c, user.ID) {
 		return
 	}
 
@@ -221,6 +260,10 @@ func (h *ImportHandler) ImportFromVoice(c *gin.Context) {
 	user, err := util.GetUserFromContext(c)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	if !h.checkAIImportLimit(c, user.ID) {
 		return
 	}
 
@@ -381,6 +424,10 @@ func (h *ImportHandler) ImportFromText(c *gin.Context) {
 	user, err := util.GetUserFromContext(c)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	if !h.checkAIImportLimit(c, user.ID) {
 		return
 	}
 

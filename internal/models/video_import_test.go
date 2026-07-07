@@ -9,12 +9,15 @@ func TestSubscription_CanUseVideoImport(t *testing.T) {
 		used int
 		want bool
 	}{
-		{"free under cap", TierFree, 1, true},
-		{"free at cap", TierFree, 2, false},
+		{"free under cap", TierFree, 0, true},
+		{"free at cap", TierFree, 1, false},
 		{"free over cap", TierFree, 5, false},
+		{"plus under cap", TierPlus, 1, true},
+		{"plus at cap", TierPlus, 2, false},
 		{"premium under cap", TierPremium, 19, true},
 		{"premium at cap", TierPremium, 20, false},
 		{"premium over cap", TierPremium, 25, false},
+		{"unlimited never gates", TierUnlimited, 10000, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
