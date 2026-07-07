@@ -84,6 +84,13 @@ type EnvVars struct {
 	// this bounds the fleet — the last line against runaway AI cost. 0
 	// disables the guard.
 	AIDailyBudgetUSD float64 `env:"AI_DAILY_BUDGET_USD" envDefault:"0" optional:"true"`
+	// UnlimitedDailySpendCapUSD is the per-account runaway guard for the
+	// hidden unlimited tier: when one unlimited account's attributed AI spend
+	// over the trailing 24h exceeds this, the account is LOCKED (suspected
+	// compromise — unlimited accounts are operator accounts) and the operator
+	// is paged. Unlock manually: UPDATE users SET locked_at = NULL. 0
+	// disables the guard.
+	UnlimitedDailySpendCapUSD float64 `env:"UNLIMITED_DAILY_SPEND_CAP_USD" envDefault:"10" optional:"true"`
 	// Ntfy operational alerting (budget trips, AI-provider failures, email
 	// send failures). Disabled while NtfyURL or NtfyTopic is empty. NtfyToken
 	// is the optional Bearer token for authenticated/self-hosted servers.

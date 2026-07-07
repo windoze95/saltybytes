@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"github.com/windoze95/saltybytes-api/internal/ai"
 	"github.com/windoze95/saltybytes-api/internal/logger"
 	"github.com/windoze95/saltybytes-api/internal/service"
 	"github.com/windoze95/saltybytes-api/internal/util"
@@ -30,7 +31,20 @@ func AttachUserToContext(userService *service.UserService) gin.HandlerFunc {
 			return
 		}
 
+		// Locked accounts (runaway guard / suspected compromise) are dead in
+		// the water everywhere, with a distinct code so the app can explain.
+		if user.Locked() {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
+				"error":      "This account has been locked. Contact support.",
+				"error_code": "account_locked",
+			})
+			return
+		}
+
 		c.Set("user", user)
+		// Tag the request context so every AI call this request makes is
+		// attributed to the user in ai_usage_logs.
+		c.Request = c.Request.WithContext(ai.WithUserID(c.Request.Context(), user.ID))
 		c.Next()
 	}
 }

@@ -66,6 +66,9 @@ func (d *Deps) userForRequest(req *mcp.CallToolRequest, scope string) (*models.U
 	if err != nil {
 		return nil, fmt.Errorf("unauthorized: account not found")
 	}
+	if user.Locked() {
+		return nil, fmt.Errorf("this account has been locked; contact support")
+	}
 	return user, nil
 }
 

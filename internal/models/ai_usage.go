@@ -10,6 +10,11 @@ type AIUsageLog struct {
 	ID        uint      `gorm:"primarykey"`
 	CreatedAt time.Time `gorm:"index"`
 
+	// UserID attributes the call to the requesting user (0 = system-initiated
+	// work like cache warming, or a path that runs outside a request context).
+	// Powers the per-account runaway guard.
+	UserID uint `gorm:"index;default:0"`
+
 	Operation string `gorm:"size:64;index"` // e.g. "ExtractRecipeFromText"
 	Provider  string `gorm:"size:32;index"` // e.g. "anthropic"
 	Model     string `gorm:"size:96;index"` // e.g. "claude-haiku-4-5-20251001"

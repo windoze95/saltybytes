@@ -19,7 +19,13 @@ type User struct {
 	// immediately at signup while email verification is disabled). Nil means
 	// unverified: AI-cost endpoints are gated and a stale signup releases its
 	// email address for reuse.
-	EmailVerifiedAt  *time.Time
+	EmailVerifiedAt *time.Time
+	// LockedAt, when set, disables the account entirely (every authenticated
+	// request 403s, including MCP). Set automatically by the unlimited-tier
+	// runaway guard on suspected compromise; cleared manually
+	// (UPDATE users SET locked_at = NULL, lock_reason = '').
+	LockedAt         *time.Time
+	LockReason       string
 	Auth             *UserAuth        `gorm:"foreignKey:UserID"`
 	Subscription     *Subscription    `gorm:"foreignKey:UserID"`
 	Settings         *UserSettings    `gorm:"foreignKey:UserID"`
@@ -30,6 +36,11 @@ type User struct {
 // EmailVerified reports whether the user's email address is verified.
 func (u *User) EmailVerified() bool {
 	return u.EmailVerifiedAt != nil
+}
+
+// Locked reports whether the account is administratively locked.
+func (u *User) Locked() bool {
+	return u.LockedAt != nil
 }
 
 // EmailVerification holds the pending 6-digit signup verification code for a

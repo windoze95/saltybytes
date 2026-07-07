@@ -154,6 +154,7 @@ func SetupRouter(cfg *config.Config, database *gorm.DB) *gin.Engine {
 		Sink: func(rec ai.UsageRecord) {
 			go func() {
 				if err := aiUsageRepo.Insert(&models.AIUsageLog{
+					UserID:           rec.UserID,
 					Operation:        rec.Operation,
 					Provider:         rec.Provider,
 					Model:            rec.Model,
@@ -174,6 +175,10 @@ func SetupRouter(cfg *config.Config, database *gorm.DB) *gin.Engine {
 	// the UTC day rolls over (0 = disabled). Complements the per-user quotas
 	// and the video-specific budget.
 	aiBudget := middleware.AIBudgetGuard(cfg.EnvVars.AIDailyBudgetUSD, cfg.EnvVars.DashboardURL, aiUsageRepo.SumCostSince)
+
+	// Per-account runaway lock for the hidden unlimited tier (suspected
+	// credential compromise). Capped tiers pass straight through.
+	runawayGuard := middleware.UnlimitedRunawayGuard(cfg.EnvVars.UnlimitedDailySpendCapUSD, aiUsageRepo.SumCostByUserSince, userRepo.LockUser)
 
 	aiMW := ai.NewMiddlewareChain(&ai.LoggingMiddleware{}, costMW, &ai.ErrorAlertMiddleware{})
 	textProvider.WithMiddleware(aiMW)
@@ -322,23 +327,23 @@ func SetupRouter(cfg *config.Config, database *gorm.DB) *gin.Engine {
 		// List the authenticated user's recipes
 		apiProtected.GET("/recipes", middleware.AttachUserToContext(userService), recipeHandler.ListRecipes)
 		// Regenerate a recipe in place based on a previous recipe and the user's chat
-		apiProtected.PUT("/recipes/:recipe_id/chat", middleware.AttachUserToContext(userService), verifiedOnly, aiBudget, recipeHandler.RegenerateRecipe)
+		apiProtected.PUT("/recipes/:recipe_id/chat", middleware.AttachUserToContext(userService), verifiedOnly, aiBudget, runawayGuard, recipeHandler.RegenerateRecipe)
 
-		apiProtected.POST("/recipes/:recipe_id/fork", middleware.AttachUserToContext(userService), verifiedOnly, aiBudget, recipeHandler.GenerateRecipeWithFork)
+		apiProtected.POST("/recipes/:recipe_id/fork", middleware.AttachUserToContext(userService), verifiedOnly, aiBudget, runawayGuard, recipeHandler.GenerateRecipeWithFork)
 
 		// Recipe import routes
-		apiProtected.POST("/recipes/import/url", middleware.AttachUserToContext(userService), aiBudget, importHandler.ImportFromURL)
-		apiProtected.POST("/recipes/import/photo", middleware.AttachUserToContext(userService), verifiedOnly, aiBudget, importHandler.ImportFromPhoto)
-		apiProtected.POST("/recipes/import/files", middleware.AttachUserToContext(userService), verifiedOnly, aiBudget, importHandler.ImportFromFiles)
-		apiProtected.POST("/recipes/import/voice", middleware.AttachUserToContext(userService), verifiedOnly, aiBudget, importHandler.ImportFromVoice)
-		apiProtected.POST("/recipes/import/video", middleware.AttachUserToContext(userService), verifiedOnly, aiBudget, importHandler.ImportFromVideo)
+		apiProtected.POST("/recipes/import/url", middleware.AttachUserToContext(userService), aiBudget, runawayGuard, importHandler.ImportFromURL)
+		apiProtected.POST("/recipes/import/photo", middleware.AttachUserToContext(userService), verifiedOnly, aiBudget, runawayGuard, importHandler.ImportFromPhoto)
+		apiProtected.POST("/recipes/import/files", middleware.AttachUserToContext(userService), verifiedOnly, aiBudget, runawayGuard, importHandler.ImportFromFiles)
+		apiProtected.POST("/recipes/import/voice", middleware.AttachUserToContext(userService), verifiedOnly, aiBudget, runawayGuard, importHandler.ImportFromVoice)
+		apiProtected.POST("/recipes/import/video", middleware.AttachUserToContext(userService), verifiedOnly, aiBudget, runawayGuard, importHandler.ImportFromVideo)
 		apiProtected.GET("/recipes/import/video/:id", middleware.AttachUserToContext(userService), importHandler.GetVideoImportStatus)
-		apiProtected.POST("/recipes/import/text", middleware.AttachUserToContext(userService), verifiedOnly, aiBudget, importHandler.ImportFromText)
+		apiProtected.POST("/recipes/import/text", middleware.AttachUserToContext(userService), verifiedOnly, aiBudget, runawayGuard, importHandler.ImportFromText)
 		apiProtected.POST("/recipes/import/manual", middleware.AttachUserToContext(userService), importHandler.ImportManual)
 		apiProtected.POST("/recipes/import/canonical", middleware.AttachUserToContext(userService), importHandler.ImportFromCanonical)
 
 		// Recipe preview route (cheap extraction for pre-import preview)
-		apiProtected.POST("/recipes/preview/url", middleware.AttachUserToContext(userService), aiBudget, importHandler.PreviewFromURL)
+		apiProtected.POST("/recipes/preview/url", middleware.AttachUserToContext(userService), aiBudget, runawayGuard, importHandler.PreviewFromURL)
 		// Universal-link resolution: saltybytes.ai/r/<id> carries only the
 		// canonical id; the app trades it for the source URL, then previews.
 		apiProtected.GET("/recipes/canonical/:id/source", importHandler.GetCanonicalSource)
@@ -365,16 +370,16 @@ func SetupRouter(cfg *config.Config, database *gorm.DB) *gin.Engine {
 	apiProtected.PUT("/family/members/:member_id", middleware.AttachUserToContext(userService), familyHandler.UpdateMember)
 	apiProtected.DELETE("/family/members/:member_id", middleware.AttachUserToContext(userService), familyHandler.DeleteMember)
 	apiProtected.PUT("/family/members/:member_id/dietary", middleware.AttachUserToContext(userService), familyHandler.UpdateDietaryProfile)
-	apiProtected.POST("/family/members/:member_id/dietary/interview", middleware.AttachUserToContext(userService), verifiedOnly, aiBudget, familyHandler.DietaryInterview)
+	apiProtected.POST("/family/members/:member_id/dietary/interview", middleware.AttachUserToContext(userService), verifiedOnly, aiBudget, runawayGuard, familyHandler.DietaryInterview)
 
 	// Allergen analysis routes setup
 	allergenRepo := repository.NewAllergenRepository(database)
 	allergenService := service.NewAllergenService(cfg, allergenRepo, familyRepo, recipeRepo, mainTextProvider, subService)
 	allergenHandler := handlers.NewAllergenHandler(allergenService)
 
-	apiProtected.POST("/recipes/:recipe_id/allergens/analyze", middleware.AttachUserToContext(userService), verifiedOnly, aiBudget, allergenHandler.AnalyzeRecipe)
+	apiProtected.POST("/recipes/:recipe_id/allergens/analyze", middleware.AttachUserToContext(userService), verifiedOnly, aiBudget, runawayGuard, allergenHandler.AnalyzeRecipe)
 	apiProtected.GET("/recipes/:recipe_id/allergens", middleware.AttachUserToContext(userService), allergenHandler.GetAnalysis)
-	apiProtected.POST("/recipes/:recipe_id/allergens/check-family", middleware.AttachUserToContext(userService), verifiedOnly, aiBudget, allergenHandler.CheckFamily)
+	apiProtected.POST("/recipes/:recipe_id/allergens/check-family", middleware.AttachUserToContext(userService), verifiedOnly, aiBudget, runawayGuard, allergenHandler.CheckFamily)
 
 	// User update routes
 	apiProtected.PUT("/users/me", middleware.AttachUserToContext(userService), userHandler.UpdateUser)
@@ -407,8 +412,8 @@ func SetupRouter(cfg *config.Config, database *gorm.DB) *gin.Engine {
 	searchHandler := &handlers.SearchHandler{Service: searchService, MultiResolver: multiResolver, WarmService: warmService}
 	apiProtected.GET("/recipes/search", middleware.AttachUserToContext(userService), searchHandler.SearchRecipes)
 	apiProtected.GET("/recipes/search/resolve/:multi_id", middleware.AttachUserToContext(userService), searchHandler.ResolveMultiRecipe)
-	apiProtected.POST("/recipes/search/check-multi", middleware.AttachUserToContext(userService), aiBudget, searchHandler.CheckMultiRecipe)
-	apiProtected.POST("/recipes/search/warm", middleware.AttachUserToContext(userService), aiBudget, searchHandler.WarmRecipes)
+	apiProtected.POST("/recipes/search/check-multi", middleware.AttachUserToContext(userService), aiBudget, runawayGuard, searchHandler.CheckMultiRecipe)
+	apiProtected.POST("/recipes/search/warm", middleware.AttachUserToContext(userService), aiBudget, runawayGuard, searchHandler.WarmRecipes)
 
 	// Recipe finder — a guided agent that finds REAL recipes by driving search +
 	// a single cheap ranking call (light tier), streamed over SSE. Gated by the
@@ -426,7 +431,7 @@ func SetupRouter(cfg *config.Config, database *gorm.DB) *gin.Engine {
 	finderService.Runs = repository.NewFinderRunRepository(database)
 	importService.Events = repository.NewExtractionEventRepository(database)
 	finderHandler := &handlers.FinderHandler{Service: finderService, SubService: subService}
-	apiProtected.POST("/recipes/find", middleware.AttachUserToContext(userService), verifiedOnly, aiBudget, finderHandler.FindRecipes)
+	apiProtected.POST("/recipes/find", middleware.AttachUserToContext(userService), verifiedOnly, aiBudget, runawayGuard, finderHandler.FindRecipes)
 	apiProtected.GET("/recipes/finder/sessions", middleware.AttachUserToContext(userService), finderSessionHandler.ListSessions)
 	apiProtected.GET("/recipes/finder/sessions/:session_id", middleware.AttachUserToContext(userService), finderSessionHandler.GetSession)
 	apiProtected.DELETE("/recipes/finder/sessions/:session_id", middleware.AttachUserToContext(userService), finderSessionHandler.DeleteSession)

@@ -762,6 +762,20 @@ func (m *MockUserRepo) EmailExists(email string) (bool, error) {
 	return false, nil
 }
 
+func (m *MockUserRepo) LockUser(userID uint, reason string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	u, ok := m.Users[userID]
+	if !ok {
+		return fmt.Errorf("user not found")
+	}
+	now := time.Now()
+	u.LockedAt = &now
+	u.LockReason = reason
+	return nil
+}
+
 func (m *MockUserRepo) DeleteAbandonedUnverifiedUsers(olderThan time.Time) (int64, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
