@@ -49,6 +49,7 @@ func connectToDatabaseWithRetry(databaseURL string) (*gorm.DB, error) {
 		&models.UserAuth{},
 		&models.EmailVerification{},
 		&models.Subscription{},
+		&models.StoreSubscription{},
 		&models.UserSettings{},
 		&models.Personalization{},
 		&models.Tag{},

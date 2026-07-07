@@ -47,11 +47,11 @@ func TestGetSubscription_Handler_Envelope(t *testing.T) {
 		t.Fatalf("status = %d, want %d. body: %s", w.Code, http.StatusOK, w.Body.String())
 	}
 
-	var resp map[string]map[string]interface{}
+	var resp map[string]interface{}
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("failed to parse response: %v", err)
 	}
-	sub, ok := resp["subscription"]
+	sub, ok := resp["subscription"].(map[string]interface{})
 	if !ok {
 		t.Fatalf("response missing 'subscription' envelope key. body: %s", w.Body.String())
 	}
@@ -61,6 +61,12 @@ func TestGetSubscription_Handler_Envelope(t *testing.T) {
 	}
 	if sub["AllergenAnalysesUsed"] != float64(2) {
 		t.Errorf("subscription.AllergenAnalysesUsed = %v, want 2", sub["AllergenAnalysesUsed"])
+	}
+	// Additive IAP fields: the account token the app passes to store
+	// purchases is always present; "store" appears once the IAP service is
+	// wired (not in this bare-handler test).
+	if tok, _ := resp["account_token"].(string); tok == "" {
+		t.Error("account_token missing from subscription envelope")
 	}
 }
 
@@ -80,12 +86,13 @@ func TestGetSubscription_Handler_NilSubscription_CreatesFreeRow(t *testing.T) {
 		t.Fatalf("status = %d, want %d. body: %s", w.Code, http.StatusOK, w.Body.String())
 	}
 
-	var resp map[string]map[string]interface{}
+	var resp map[string]interface{}
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("failed to parse response: %v", err)
 	}
-	if resp["subscription"]["Tier"] != "free" {
-		t.Errorf("subscription.Tier = %v, want default 'free'", resp["subscription"]["Tier"])
+	sub, _ := resp["subscription"].(map[string]interface{})
+	if sub["Tier"] != "free" {
+		t.Errorf("subscription.Tier = %v, want default 'free'", sub["Tier"])
 	}
 	if userRepo.Users[user.ID].Subscription == nil {
 		t.Error("free-tier subscription row should have been created on the fly")

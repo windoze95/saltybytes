@@ -15,6 +15,10 @@ import (
 type SubscriptionService struct {
 	Cfg  *config.Config
 	Repo repository.UserRepo
+	// StaleRefresher, when set (wired to IAPService.RefreshUserIfStale),
+	// re-verifies a paid tier whose store-side expiry has passed before the
+	// tier is used for gating. It must not call back into GetSubscription.
+	StaleRefresher func(userID uint)
 }
 
 // NewSubscriptionService creates a new SubscriptionService.
@@ -49,6 +53,24 @@ func (s *SubscriptionService) GetSubscription(userID uint) (*models.Subscription
 		return sub, nil
 	}
 
+	// A paid tier past its store-side expiry gets one lazy re-verification
+	// before it is trusted: renewals normally arrive via store webhooks, but
+	// those can lag or be missed, and expiry must eventually downgrade even
+	// if they never come. The refresher rate-limits itself, so this is cheap
+	// on the hot path.
+	if (user.Subscription.Tier == models.TierPlus || user.Subscription.Tier == models.TierPremium) &&
+		user.Subscription.ExpiresAt != nil && time.Now().After(*user.Subscription.ExpiresAt) &&
+		s.StaleRefresher != nil {
+		s.StaleRefresher(userID)
+		user, err = s.Repo.GetUserByID(userID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to reload user after entitlement refresh: %w", err)
+		}
+		if user.Subscription == nil {
+			return &models.Subscription{UserID: userID, Tier: models.TierFree, MonthlyResetAt: time.Now().AddDate(0, 1, 0)}, nil
+		}
+	}
+
 	// Reset monthly usage if needed and persist to DB
 	if time.Now().After(user.Subscription.MonthlyResetAt) {
 		nextReset := time.Now().AddDate(0, 1, 0)
@@ -66,12 +88,12 @@ func (s *SubscriptionService) GetSubscription(userID uint) (*models.Subscription
 	return user.Subscription, nil
 }
 
-// UpgradeSubscription upgrades a user to premium.
-// TODO: Integrate payment provider (Stripe/RevenueCat) and persist the
-// subscription change to the database. Until paid plans are wired up,
-// this endpoint returns an error to avoid silently faking premium state.
+// UpgradeSubscription is the legacy pre-IAP upgrade endpoint. Paid plans are
+// now purchased through the App Store / Google Play and verified via
+// POST /v1/iap/verify; this stays only so old app builds get an honest error
+// instead of a 404.
 func (s *SubscriptionService) UpgradeSubscription(userID uint) (*models.Subscription, error) {
-	return nil, fmt.Errorf("paid plans are not yet available")
+	return nil, fmt.Errorf("subscriptions are now handled through the App Store and Google Play — update the app to subscribe")
 }
 
 // usageColumn maps a usage type to its subscription counter column.

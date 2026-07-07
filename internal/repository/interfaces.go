@@ -144,6 +144,15 @@ type UserRepo interface {
 	IncrementSubscriptionUsage(userID uint, column string) error
 	DecrementSubscriptionUsage(userID uint, column string) error
 	ResetSubscriptionUsage(userID uint, nextReset time.Time) error
+	UpdateSubscriptionTier(userID uint, tier models.SubscriptionTier, expiresAt *time.Time) error
+}
+
+// StoreSubscriptionRepo persists store-side (App Store / Google Play)
+// subscription state.
+type StoreSubscriptionRepo interface {
+	GetByExternalKey(key string) (*models.StoreSubscription, error)
+	ListByUser(userID uint) ([]models.StoreSubscription, error)
+	Save(sub *models.StoreSubscription) error
 }
 
 // EmailVerificationRepo persists pending signup email-verification codes.
@@ -156,6 +165,7 @@ type EmailVerificationRepo interface {
 
 // Compile-time check that the concrete repository satisfies the interface.
 var _ UserRepo = (*UserRepository)(nil)
+var _ StoreSubscriptionRepo = (*StoreSubscriptionRepository)(nil)
 var _ EmailVerificationRepo = (*EmailVerificationRepository)(nil)
 var _ FamilyRepo = (*FamilyRepository)(nil)
 var _ AllergenRepo = (*AllergenRepository)(nil)
