@@ -498,6 +498,15 @@ func SetupRouter(cfg *config.Config, database *gorm.DB) *gin.Engine {
 	r.GET("/.well-known/oauth-protected-resource", oauthHandler.ProtectedResourceMetadata)
 	r.GET("/.well-known/oauth-protected-resource/mcp", oauthHandler.ProtectedResourceMetadata)
 
+	// OpenAI ChatGPT Apps domain-ownership challenge: OpenAI's app submission
+	// requires this token served at the origin-root well-known URL to prove we own
+	// api.saltybytes.ai. Not a secret (it only proves domain control). Update the
+	// value if OpenAI regenerates the challenge.
+	r.GET("/.well-known/openai-apps-challenge", func(c *gin.Context) {
+		c.Header("Cache-Control", "public, max-age=300")
+		c.String(200, "4SSk8_oTN5kuGjpWyiU2wO4yEHrbg_vL6k23-kRhtvs")
+	})
+
 	// Dynamic client registration + login/consent get the same tight per-IP
 	// limits as the public auth endpoints (credential stuffing / spam guard).
 	r.POST("/oauth/register", middleware.RateLimitByIP(5, 10, 5*time.Minute, 15*time.Minute), oauthHandler.RegisterClient)
