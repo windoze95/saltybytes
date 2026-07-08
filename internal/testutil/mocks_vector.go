@@ -14,8 +14,10 @@ import (
 // (or an error where a result is required).
 type MockVectorRepo struct {
 	FindSimilarFunc                  func(embeddingLiteral string, excludeRecipeID uint, limit int) ([]models.Recipe, error)
+	FindSimilarCanonicalsFunc        func(embeddingLiteral string, excludeCanonicalID uint, limit int) ([]models.CanonicalRecipe, error)
 	GetRecipeEmbeddingFunc           func(recipeID uint) (*string, error)
 	UpdateEmbeddingFunc              func(recipeID uint, embedding []float32) error
+	UpdateCanonicalEmbeddingFunc     func(canonicalID uint, embedding []float32) error
 	SearchUserRecipesByEmbeddingFunc func(userID uint, embeddingLiteral string, limit int) ([]models.Recipe, error)
 	SearchUserRecipesByTitleFunc     func(userID uint, query string, onlyMissingEmbedding bool, limit int) ([]models.Recipe, error)
 
@@ -52,6 +54,20 @@ func (m *MockVectorRepo) FindSimilar(embeddingLiteral string, excludeRecipeID ui
 		return m.FindSimilarFunc(embeddingLiteral, excludeRecipeID, limit)
 	}
 	return []models.Recipe{}, nil
+}
+
+func (m *MockVectorRepo) FindSimilarCanonicals(embeddingLiteral string, excludeCanonicalID uint, limit int) ([]models.CanonicalRecipe, error) {
+	if m.FindSimilarCanonicalsFunc != nil {
+		return m.FindSimilarCanonicalsFunc(embeddingLiteral, excludeCanonicalID, limit)
+	}
+	return []models.CanonicalRecipe{}, nil
+}
+
+func (m *MockVectorRepo) UpdateCanonicalEmbedding(canonicalID uint, embedding []float32) error {
+	if m.UpdateCanonicalEmbeddingFunc != nil {
+		return m.UpdateCanonicalEmbeddingFunc(canonicalID, embedding)
+	}
+	return nil
 }
 
 func (m *MockVectorRepo) GetRecipeEmbedding(recipeID uint) (*string, error) {

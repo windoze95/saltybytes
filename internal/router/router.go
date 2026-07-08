@@ -438,8 +438,11 @@ func SetupRouter(cfg *config.Config, database *gorm.DB) *gin.Engine {
 	apiProtected.DELETE("/recipes/finder/sessions/:session_id", middleware.AttachUserToContext(userService), finderSessionHandler.DeleteSession)
 
 	// Vector similarity routes
-	similarityHandler := handlers.NewSimilarityHandler(vectorRepo, embedProvider, recipeService)
+	similarityHandler := handlers.NewSimilarityHandler(vectorRepo, canonicalRepo, embedProvider, recipeService)
 	apiProtected.GET("/recipes/similar/:recipe_id", middleware.AttachUserToContext(userService), similarityHandler.FindSimilar)
+	// Similar recipes for a not-yet-saved page (the preview screen), computed
+	// against the extraction pool. No user context needed — it's read-only.
+	apiProtected.GET("/recipes/similar-by-url", similarityHandler.FindSimilarByURL)
 
 	// Subscription routes
 	subHandler := handlers.NewSubscriptionHandler(subService)

@@ -41,8 +41,10 @@ type RecipeRepo interface {
 // VectorRepo is the interface for pgvector similarity search operations.
 type VectorRepo interface {
 	FindSimilar(embeddingLiteral string, excludeRecipeID uint, limit int) ([]models.Recipe, error)
+	FindSimilarCanonicals(embeddingLiteral string, excludeCanonicalID uint, limit int) ([]models.CanonicalRecipe, error)
 	GetRecipeEmbedding(recipeID uint) (*string, error)
 	UpdateEmbedding(recipeID uint, embedding []float32) error
+	UpdateCanonicalEmbedding(canonicalID uint, embedding []float32) error
 	SearchUserRecipesByEmbedding(userID uint, embeddingLiteral string, limit int) ([]models.Recipe, error)
 	SearchUserRecipesByTitle(userID uint, query string, onlyMissingEmbedding bool, limit int) ([]models.Recipe, error)
 }
