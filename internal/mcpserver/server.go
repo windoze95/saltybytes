@@ -19,9 +19,6 @@ const mcpAppMIMEType = "text/html;profile=mcp-app"
 //go:embed widget/app.html
 var widgetHTML string
 
-//go:embed widget/app.js
-var widgetJS string
-
 // serverInstructions is surfaced to connected MCP hosts to guide tool use.
 const serverInstructions = `SaltyBytes finds REAL recipes from around the web and manages the user's saved recipe collection.
 Typical flow: search_recipes to find candidates -> preview_recipe on the chosen result -> save_recipe when the user wants to keep it.
@@ -33,9 +30,6 @@ Every tool renders an interactive widget in the conversation; prefer letting the
 // CSP blocks an external image.
 func widgetResourceMeta(cfg *config.Config) mcp.Meta {
 	resourceDomains := []string{
-		// The widget's own JavaScript is served from the API origin (ChatGPT's
-		// sandbox blocks inline scripts, so app.html loads it via <script src>).
-		strings.TrimRight(cfg.EnvVars.PublicBaseURL, "/"),
 		fmt.Sprintf("https://%s.s3.amazonaws.com", cfg.EnvVars.S3Bucket),
 		fmt.Sprintf("https://%s.s3.%s.amazonaws.com", cfg.EnvVars.S3Bucket, cfg.EnvVars.AWSRegion),
 	}
@@ -117,17 +111,4 @@ func NewHandler(cfg *config.Config, deps *Deps) http.Handler {
 	return auth.RequireBearerToken(verifier, &auth.RequireBearerTokenOptions{
 		ResourceMetadataURL: deps.OAuth.Issuer() + "/.well-known/oauth-protected-resource/mcp",
 	})(mcpHandler)
-}
-
-// WidgetScript serves the widget's JavaScript as a standalone, public asset.
-// ChatGPT's widget sandbox does not execute inline scripts, so the widget HTML
-// loads this via <script src> from the API origin (which is allow-listed in the
-// widget CSP's resourceDomains). No auth; short cache.
-func WidgetScript() http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
-		w.Header().Set("Cache-Control", "public, max-age=300")
-		w.Header().Set("X-Content-Type-Options", "nosniff")
-		_, _ = w.Write([]byte(widgetJS))
-	}
 }
