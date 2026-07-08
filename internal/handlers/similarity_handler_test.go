@@ -3,8 +3,10 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -27,7 +29,15 @@ func newSimilarityFixture(vectorRepo *testutil.MockVectorRepo, embedProvider *te
 	repo.Recipes[recipe.ID] = recipe
 
 	svc := service.NewRecipeService(&config.Config{}, repo, &testutil.MockTextProvider{}, &testutil.MockImageProvider{})
-	return NewSimilarityHandler(vectorRepo, embedProvider, svc)
+	return NewSimilarityHandler(vectorRepo, nil, embedProvider, svc)
+}
+
+// newSimilarByURLFixture builds a SimilarityHandler wired with a canonical
+// repo for the preview-screen similarity endpoint.
+func newSimilarByURLFixture(vectorRepo *testutil.MockVectorRepo, canonicalRepo *testutil.MockCanonicalRecipeRepo, embedProvider *testutil.MockEmbeddingProvider) *SimilarityHandler {
+	repo := testutil.NewMockRecipeRepo()
+	svc := service.NewRecipeService(&config.Config{}, repo, &testutil.MockTextProvider{}, &testutil.MockImageProvider{})
+	return NewSimilarityHandler(vectorRepo, canonicalRepo, embedProvider, svc)
 }
 
 func similarRecipe(id uint, title string) models.Recipe {
@@ -221,5 +231,115 @@ func TestFindSimilar_InvalidID(t *testing.T) {
 
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want %d", w.Code, http.StatusBadRequest)
+	}
+}
+
+func TestFindSimilarByURL_UsesStoredCanonicalEmbedding(t *testing.T) {
+	stored := "[0.4,0.5,0.6]"
+	src := &models.CanonicalRecipe{
+		OriginalURL: "https://pinchofyum.com/bang-bang-salmon",
+		Embedding:   &stored,
+		RecipeData: models.RecipeDef{
+			Title:     "Bang Bang Salmon",
+			SourceURL: "https://pinchofyum.com/bang-bang-salmon",
+		},
+	}
+	src.ID = 42
+
+	match := models.CanonicalRecipe{
+		OriginalURL: "https://pinchofyum.com/miso-ramen",
+		RecipeData: models.RecipeDef{
+			Title:     "Miso Peanut Ramen Bowls",
+			SourceURL: "https://www.pinchofyum.com/miso-ramen",
+		},
+	}
+	match.ID = 43
+
+	embedCalled := false
+	vectorRepo := &testutil.MockVectorRepo{
+		FindSimilarCanonicalsFunc: func(lit string, exclude uint, limit int) ([]models.CanonicalRecipe, error) {
+			if lit != stored {
+				t.Errorf("used embedding %q, want stored %q", lit, stored)
+			}
+			if exclude != 42 {
+				t.Errorf("excluded %d, want 42", exclude)
+			}
+			return []models.CanonicalRecipe{match}, nil
+		},
+	}
+	canonicalRepo := &testutil.MockCanonicalRecipeRepo{
+		GetByNormalizedURLFunc: func(string) (*models.CanonicalRecipe, error) { return src, nil },
+	}
+	embedProvider := &testutil.MockEmbeddingProvider{
+		GenerateEmbeddingFunc: func(context.Context, string) ([]float32, error) { embedCalled = true; return nil, nil },
+	}
+
+	handler := newSimilarByURLFixture(vectorRepo, canonicalRepo, embedProvider)
+	r := gin.New()
+	r.GET("/recipes/similar-by-url", handler.FindSimilarByURL)
+
+	req := httptest.NewRequest("GET", "/recipes/similar-by-url?u=https://pinchofyum.com/bang-bang-salmon", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	if embedCalled {
+		t.Error("should not generate an embedding when one is stored")
+	}
+	var body struct {
+		SimilarRecipes []struct {
+			Title        string `json:"title"`
+			SourceURL    string `json:"source_url"`
+			SourceDomain string `json:"source_domain"`
+		} `json:"similar_recipes"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.SimilarRecipes) != 1 {
+		t.Fatalf("got %d items, want 1", len(body.SimilarRecipes))
+	}
+	got := body.SimilarRecipes[0]
+	if got.Title != "Miso Peanut Ramen Bowls" || got.SourceDomain != "pinchofyum.com" {
+		t.Errorf("item = %+v", got)
+	}
+}
+
+func TestFindSimilarByURL_CacheMissReturnsEmpty(t *testing.T) {
+	canonicalRepo := &testutil.MockCanonicalRecipeRepo{
+		GetByNormalizedURLFunc: func(string) (*models.CanonicalRecipe, error) {
+			return nil, fmt.Errorf("not found")
+		},
+	}
+	handler := newSimilarByURLFixture(&testutil.MockVectorRepo{}, canonicalRepo, &testutil.MockEmbeddingProvider{})
+	r := gin.New()
+	r.GET("/recipes/similar-by-url", handler.FindSimilarByURL)
+
+	req := httptest.NewRequest("GET", "/recipes/similar-by-url?u=https://example.com/never-seen", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	// A miss is not an error: the section just hides.
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), `"similar_recipes":[]`) {
+		t.Errorf("body = %s, want empty list", w.Body.String())
+	}
+}
+
+func TestFindSimilarByURL_MissingURL(t *testing.T) {
+	handler := newSimilarByURLFixture(&testutil.MockVectorRepo{}, &testutil.MockCanonicalRecipeRepo{}, &testutil.MockEmbeddingProvider{})
+	r := gin.New()
+	r.GET("/recipes/similar-by-url", handler.FindSimilarByURL)
+
+	req := httptest.NewRequest("GET", "/recipes/similar-by-url", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", w.Code)
 	}
 }

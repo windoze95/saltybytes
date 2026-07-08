@@ -59,6 +59,36 @@ func (r *VectorRepository) FindSimilar(embeddingLiteral string, excludeRecipeID 
 	return recipes, nil
 }
 
+// FindSimilarCanonicals finds canonical (extracted) recipes similar to the
+// given embedding, using cosine distance. Multi-page markers and untitled
+// entries are excluded, along with the source canonical itself. This powers
+// the "similar recipes" strip on the preview screen, where the viewed recipe
+// is not (yet) a saved recipe but the extraction pool is a rich pool of real
+// web recipes.
+func (r *VectorRepository) FindSimilarCanonicals(embeddingLiteral string, excludeCanonicalID uint, limit int) ([]models.CanonicalRecipe, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+
+	distanceExpr := fmt.Sprintf("embedding <=> '%s'", embeddingLiteral)
+
+	var entries []models.CanonicalRecipe
+	err := r.DB.
+		Where("embedding IS NOT NULL").
+		Where("id != ?", excludeCanonicalID).
+		Where("is_multi_page = ?", false).
+		Where("recipe_data->>'title' <> ''").
+		Where(distanceExpr+" < ?", SimilarRecipeDistanceThreshold).
+		Order(distanceExpr).
+		Limit(limit).
+		Find(&entries).Error
+	if err != nil {
+		return nil, fmt.Errorf("failed to find similar canonicals: %w", err)
+	}
+
+	return entries, nil
+}
+
 // GetRecipeEmbedding returns the stored embedding literal for a recipe, or nil
 // when the recipe has no embedding.
 func (r *VectorRepository) GetRecipeEmbedding(recipeID uint) (*string, error) {

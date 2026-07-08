@@ -2,7 +2,9 @@ package handlers
 
 import (
 	"net/http"
+	"net/url"
 	"strconv"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/windoze95/saltybytes-api/internal/ai"
@@ -20,17 +22,122 @@ const (
 // SimilarityHandler handles vector similarity search requests.
 type SimilarityHandler struct {
 	VectorRepo    repository.VectorRepo
+	CanonicalRepo repository.CanonicalRecipeRepo
 	EmbedProvider ai.EmbeddingProvider
 	RecipeService *service.RecipeService
 }
 
 // NewSimilarityHandler creates a new SimilarityHandler.
-func NewSimilarityHandler(vectorRepo repository.VectorRepo, embedProvider ai.EmbeddingProvider, recipeService *service.RecipeService) *SimilarityHandler {
+func NewSimilarityHandler(vectorRepo repository.VectorRepo, canonicalRepo repository.CanonicalRecipeRepo, embedProvider ai.EmbeddingProvider, recipeService *service.RecipeService) *SimilarityHandler {
 	return &SimilarityHandler{
 		VectorRepo:    vectorRepo,
+		CanonicalRepo: canonicalRepo,
 		EmbedProvider: embedProvider,
 		RecipeService: recipeService,
 	}
+}
+
+// similarWebRecipe is a lightweight card for a canonical (extracted) recipe:
+// enough to render and to re-open its preview by source URL. Canonicals carry
+// no image, so none is returned.
+type similarWebRecipe struct {
+	Title        string `json:"title"`
+	SourceURL    string `json:"source_url"`
+	SourceDomain string `json:"source_domain"`
+}
+
+// FindSimilarByURL handles GET /v1/recipes/similar-by-url?u=<url>&limit=N.
+// It powers the preview screen's "similar recipes" strip: the previewed page
+// isn't a saved recipe, so similarity is computed against the canonical
+// extraction pool using the page's cached embedding (generated on demand and
+// persisted when absent). A cache miss is not an error — it just yields an
+// empty list so the section quietly hides.
+func (h *SimilarityHandler) FindSimilarByURL(c *gin.Context) {
+	rawURL := c.Query("u")
+	if rawURL == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "missing url"})
+		return
+	}
+	if h.CanonicalRepo == nil {
+		c.JSON(http.StatusOK, gin.H{"similar_recipes": []similarWebRecipe{}})
+		return
+	}
+
+	limit := defaultSimilarLimit
+	if l := c.Query("limit"); l != "" {
+		if v, convErr := strconv.Atoi(l); convErr == nil && v > 0 {
+			limit = v
+		}
+	}
+	if limit > maxSimilarLimit {
+		limit = maxSimilarLimit
+	}
+
+	normalizedURL, err := service.NormalizeURL(rawURL)
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{"similar_recipes": []similarWebRecipe{}})
+		return
+	}
+	canonical, err := h.CanonicalRepo.GetByNormalizedURL(normalizedURL)
+	if err != nil || canonical == nil || canonical.IsMultiPage || canonical.RecipeData.Title == "" {
+		c.JSON(http.StatusOK, gin.H{"similar_recipes": []similarWebRecipe{}})
+		return
+	}
+
+	// Reuse the page's stored embedding; generate + persist one only when the
+	// extraction hasn't been embedded yet (the backfill usually has).
+	var embeddingLiteral string
+	if canonical.Embedding != nil && *canonical.Embedding != "" {
+		embeddingLiteral = *canonical.Embedding
+	} else if h.EmbedProvider != nil {
+		text := canonical.RecipeData.Title
+		for _, ing := range canonical.RecipeData.Ingredients {
+			text += " " + ing.Name
+		}
+		embedding, genErr := h.EmbedProvider.GenerateEmbedding(c.Request.Context(), text)
+		if genErr != nil {
+			logger.Get().Warn("similar-by-url: embedding generation failed", zap.Uint("canonical_id", canonical.ID), zap.Error(genErr))
+			c.JSON(http.StatusOK, gin.H{"similar_recipes": []similarWebRecipe{}})
+			return
+		}
+		if storeErr := h.VectorRepo.UpdateCanonicalEmbedding(canonical.ID, embedding); storeErr != nil {
+			logger.Get().Warn("similar-by-url: failed to persist embedding", zap.Uint("canonical_id", canonical.ID), zap.Error(storeErr))
+		}
+		embeddingLiteral = repository.PgvectorLiteral(embedding)
+	} else {
+		c.JSON(http.StatusOK, gin.H{"similar_recipes": []similarWebRecipe{}})
+		return
+	}
+
+	similar, err := h.VectorRepo.FindSimilarCanonicals(embeddingLiteral, canonical.ID, limit)
+	if err != nil {
+		logger.Get().Error("similar-by-url: query failed", zap.Uint("canonical_id", canonical.ID), zap.Error(err))
+		c.JSON(http.StatusOK, gin.H{"similar_recipes": []similarWebRecipe{}})
+		return
+	}
+
+	items := make([]similarWebRecipe, 0, len(similar))
+	for _, entry := range similar {
+		source := entry.RecipeData.SourceURL
+		if source == "" {
+			source = entry.OriginalURL
+		}
+		items = append(items, similarWebRecipe{
+			Title:        entry.RecipeData.Title,
+			SourceURL:    source,
+			SourceDomain: similarDomainOf(source),
+		})
+	}
+	c.JSON(http.StatusOK, gin.H{"similar_recipes": items})
+}
+
+// similarDomainOf extracts a bare hostname for display.
+func similarDomainOf(raw string) string {
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Host == "" {
+		return ""
+	}
+	return strings.TrimPrefix(parsed.Host, "www.")
 }
 
 // FindSimilar handles GET /v1/recipes/similar/:recipe_id?limit=N
