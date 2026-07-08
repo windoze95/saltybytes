@@ -11,6 +11,11 @@ import (
 type RecipeRepo interface {
 	GetUserRecipes(userID uint, page, pageSize int) ([]models.Recipe, int64, error)
 	GetRecipeByID(recipeID uint) (*models.Recipe, error)
+	// GetUserRecipeByCanonical returns the user's existing non-deleted recipe for
+	// the given canonical entry, or (nil, nil) if none. Used to keep URL imports
+	// idempotent per-user (saving the same recipe twice returns the original
+	// instead of creating a duplicate).
+	GetUserRecipeByCanonical(userID, canonicalID uint) (*models.Recipe, error)
 	CreateRecipe(recipe *models.Recipe) error
 	DeleteRecipe(recipeID uint) error
 	UpdateRecipeTitle(recipe *models.Recipe, title string) error
