@@ -110,5 +110,5 @@ func NewHandler(cfg *config.Config, deps *Deps) http.Handler {
 
 	return auth.RequireBearerToken(verifier, &auth.RequireBearerTokenOptions{
 		ResourceMetadataURL: deps.OAuth.Issuer() + "/.well-known/oauth-protected-resource/mcp",
-	})(mcpHandler)
+	})(ensureReadOnlyHint(mcpHandler))
 }
