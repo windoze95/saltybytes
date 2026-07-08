@@ -79,6 +79,29 @@ func (r *RecipeRepository) GetRecipeByID(recipeID uint) (*models.Recipe, error) 
 	return &recipe, nil
 }
 
+// GetUserRecipeByCanonical returns the user's oldest non-deleted recipe for the
+// given canonical entry, or (nil, nil) if none. Preloads the same associations as
+// GetRecipeByID so the result can be passed straight to ToRecipeResponse. Used to
+// make URL imports idempotent per-user (no duplicate rows on a repeat save).
+func (r *RecipeRepository) GetUserRecipeByCanonical(userID, canonicalID uint) (*models.Recipe, error) {
+	var recipe models.Recipe
+	err := r.DB.Preload("Hashtags").
+		Preload("Canonical").
+		Preload("CreatedBy", func(db *gorm.DB) *gorm.DB {
+			return db.Select("ID", "Username")
+		}).
+		Where("created_by_id = ? AND canonical_id = ?", userID, canonicalID).
+		Order("created_at ASC").
+		First(&recipe).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &recipe, nil
+}
+
 // CreateRecipe creates a new recipe.
 func (r *RecipeRepository) CreateRecipe(recipe *models.Recipe) error {
 	// Start a new transaction

@@ -78,6 +78,51 @@ func TestImportFromText_Success(t *testing.T) {
 	}
 }
 
+// TestImportIdempotent_SameCanonicalNoDuplicate guards the per-user save-dedup:
+// saving the same URL/canonical twice must return the existing recipe, not create
+// a second row (e.g. an agent calling save_recipe more than once).
+func TestImportIdempotent_SameCanonicalNoDuplicate(t *testing.T) {
+	repo := testutil.NewMockRecipeRepo()
+	svc := newTestImportService(repo, nil, nil)
+	user := testutil.TestUser()
+
+	def := &models.RecipeDef{
+		Title:        "One Pan Salmon Dinner",
+		Ingredients:  models.Ingredients{{Name: "salmon"}, {Name: "potatoes"}},
+		Instructions: []string{"Roast everything on a sheet pan."},
+	}
+	canonicalID := uint(4242)
+
+	resp1, id1, err := svc.createImportedRecipe(context.Background(), def, user, models.RecipeTypeImportLink, "https://example.com/salmon", "", &canonicalID, nil, "")
+	if err != nil {
+		t.Fatalf("first import error: %v", err)
+	}
+	if len(repo.Recipes) != 1 {
+		t.Fatalf("after first import, recipes = %d, want 1", len(repo.Recipes))
+	}
+
+	// Same canonical again → existing recipe returned, no new row.
+	resp2, id2, err := svc.createImportedRecipe(context.Background(), def, user, models.RecipeTypeImportLink, "https://example.com/salmon", "", &canonicalID, nil, "")
+	if err != nil {
+		t.Fatalf("second import error: %v", err)
+	}
+	if len(repo.Recipes) != 1 {
+		t.Errorf("after second import, recipes = %d, want 1 (no duplicate)", len(repo.Recipes))
+	}
+	if id2 != id1 || resp2.ID != resp1.ID {
+		t.Errorf("second import returned id %d / %q, want the existing %d / %q", id2, resp2.ID, id1, resp1.ID)
+	}
+
+	// A different canonical for the same user still creates a new recipe.
+	otherCanonical := uint(9999)
+	if _, _, err := svc.createImportedRecipe(context.Background(), def, user, models.RecipeTypeImportLink, "https://example.com/other", "", &otherCanonical, nil, ""); err != nil {
+		t.Fatalf("third import error: %v", err)
+	}
+	if len(repo.Recipes) != 2 {
+		t.Errorf("after a different canonical, recipes = %d, want 2", len(repo.Recipes))
+	}
+}
+
 func TestImportFromText_MetricUser(t *testing.T) {
 	repo := testutil.NewMockRecipeRepo()
 	mockText := &testutil.MockTextProvider{

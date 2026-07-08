@@ -282,6 +282,20 @@ func (m *MockRecipeRepo) GetRecipeByID(recipeID uint) (*models.Recipe, error) {
 	return r, nil
 }
 
+func (m *MockRecipeRepo) GetUserRecipeByCanonical(userID, canonicalID uint) (*models.Recipe, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var match *models.Recipe
+	for _, r := range m.Recipes {
+		if r.CreatedByID == userID && r.CanonicalID != nil && *r.CanonicalID == canonicalID {
+			if match == nil || r.ID < match.ID {
+				match = r
+			}
+		}
+	}
+	return match, nil
+}
+
 func (m *MockRecipeRepo) CreateRecipe(recipe *models.Recipe) error {
 	if m.CreateRecipeErr != nil {
 		return m.CreateRecipeErr
@@ -289,6 +303,11 @@ func (m *MockRecipeRepo) CreateRecipe(recipe *models.Recipe) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	// Mirror GORM: populate the FK from the association so lookups by
+	// created_by_id (e.g. GetUserRecipeByCanonical) behave like the real DB.
+	if recipe.CreatedByID == 0 && recipe.CreatedBy != nil {
+		recipe.CreatedByID = recipe.CreatedBy.ID
+	}
 	recipe.ID = m.NextID
 	m.NextID++
 	m.Recipes[recipe.ID] = recipe

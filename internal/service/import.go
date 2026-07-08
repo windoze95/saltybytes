@@ -1222,6 +1222,21 @@ func (s *ImportService) createImportedRecipe(ctx context.Context, recipeDef *mod
 		return nil, 0, fmt.Errorf("recipe title is required")
 	}
 
+	// Idempotent URL import: if this user already saved this canonical recipe,
+	// return the existing one instead of creating a duplicate. URL imports carry a
+	// canonicalID; vision/copypasta/video imports pass nil (each is a distinct
+	// capture) and fork/regen/generate don't come through here — so this only
+	// dedupes true URL re-saves (e.g. an agent calling save_recipe twice).
+	if canonicalID != nil {
+		if existing, err := s.RecipeRepo.GetUserRecipeByCanonical(user.ID, *canonicalID); err != nil {
+			log.Warn("dedup lookup failed; proceeding with import", zap.Error(err))
+		} else if existing != nil {
+			log.Info("import matches an existing saved recipe; returning it (no duplicate)",
+				zap.Uint("recipe_id", existing.ID), zap.Uint("canonical_id", *canonicalID))
+			return s.RecipeService.ToRecipeResponse(existing), existing.ID, nil
+		}
+	}
+
 	// Idempotent safety net: ensure every imported recipe carries normalized
 	// measurement fields even if it reached here without going through a
 	// builder (e.g. the manual path). Detach the ingredient slice first so a
