@@ -341,8 +341,9 @@ func registerTools(server *mcp.Server, deps *Deps) {
 		),
 		// Read-only: queries the open web; makes no changes to the user's account.
 		Annotations: &mcp.ToolAnnotations{
-			ReadOnlyHint:  true,
-			OpenWorldHint: boolPtr(true),
+			ReadOnlyHint:    true,
+			DestructiveHint: boolPtr(false),
+			OpenWorldHint:   boolPtr(true),
 		},
 	}, deps.searchRecipes)
 
@@ -357,8 +358,9 @@ func registerTools(server *mcp.Server, deps *Deps) {
 		),
 		// Read-only: fetches and extracts an external URL; saves nothing.
 		Annotations: &mcp.ToolAnnotations{
-			ReadOnlyHint:  true,
-			OpenWorldHint: boolPtr(true),
+			ReadOnlyHint:    true,
+			DestructiveHint: boolPtr(false),
+			OpenWorldHint:   boolPtr(true),
 		},
 	}, deps.previewRecipe)
 
@@ -391,8 +393,9 @@ func registerTools(server *mcp.Server, deps *Deps) {
 		),
 		// Read-only: reads the user's own saved collection only (closed world).
 		Annotations: &mcp.ToolAnnotations{
-			ReadOnlyHint:  true,
-			OpenWorldHint: boolPtr(false),
+			ReadOnlyHint:    true,
+			DestructiveHint: boolPtr(false),
+			OpenWorldHint:   boolPtr(false),
 		},
 	}, deps.listMyRecipes)
 
@@ -407,8 +410,9 @@ func registerTools(server *mcp.Server, deps *Deps) {
 		),
 		// Read-only: reads one recipe from the user's own collection (closed world).
 		Annotations: &mcp.ToolAnnotations{
-			ReadOnlyHint:  true,
-			OpenWorldHint: boolPtr(false),
+			ReadOnlyHint:    true,
+			DestructiveHint: boolPtr(false),
+			OpenWorldHint:   boolPtr(false),
 		},
 	}, deps.getRecipe)
 }
