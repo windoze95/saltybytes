@@ -27,6 +27,7 @@ const (
 	viewRecipeCard    = "recipe_card"
 	viewPreview       = "preview"
 	viewRecipeList    = "recipe_list"
+	viewCookMode      = "cook_mode"
 )
 
 // Deps carries the service-layer dependencies for the MCP tools. The tools
@@ -85,6 +86,8 @@ func textResult(summary string) *mcp.CallToolResult {
 func toolMeta(description, invoking, invoked string) mcp.Meta {
 	return mcp.Meta{
 		"ui":                             map[string]any{"resourceUri": widgetURI},
+		"openai/outputTemplate":          chatGPTWidgetURI,
+		"openai/widgetAccessible":        true,
 		"openai/widgetDescription":       description,
 		"openai/toolInvocation/invoking": invoking,
 		"openai/toolInvocation/invoked":  invoked,
@@ -170,6 +173,7 @@ type previewRecipeIn struct {
 type previewRecipeOut struct {
 	View        string                    `json:"view"`
 	SourceURL   string                    `json:"source_url"`
+	ImageURL    string                    `json:"image_url,omitempty"`
 	Recipe      *models.RecipeDef         `json:"recipe,omitempty"`
 	CanonicalID *uint                     `json:"canonical_id,omitempty"`
 	IsMulti     bool                      `json:"is_multi"`
@@ -191,6 +195,7 @@ func (d *Deps) previewRecipe(ctx context.Context, req *mcp.CallToolRequest, in p
 		return nil, out, fmt.Errorf("could not extract a recipe from that page — the site may be blocking access; try another result")
 	}
 	out.Recipe = preview.Recipe
+	out.ImageURL = preview.ImageURL
 	out.CanonicalID = preview.CanonicalID
 	out.IsMulti = preview.IsMulti
 	out.Recipes = preview.MultiCards
@@ -311,7 +316,8 @@ type getRecipeOut struct {
 
 func (d *Deps) getRecipe(ctx context.Context, req *mcp.CallToolRequest, in getRecipeIn) (*mcp.CallToolResult, getRecipeOut, error) {
 	out := getRecipeOut{View: viewRecipeCard, Saved: true}
-	if _, err := d.userForRequest(req, "recipes:read"); err != nil {
+	user, err := d.userForRequest(req, "recipes:read")
+	if err != nil {
 		return nil, out, err
 	}
 	id, err := strconv.ParseUint(strings.TrimSpace(in.RecipeID), 10, 64)
@@ -319,12 +325,45 @@ func (d *Deps) getRecipe(ctx context.Context, req *mcp.CallToolRequest, in getRe
 		return nil, out, fmt.Errorf("recipe_id must be a numeric id")
 	}
 	recipe, err := d.Recipes.GetRecipeByID(uint(id))
-	if err != nil {
+	if err != nil || recipe.OwnerID != strconv.FormatUint(uint64(user.ID), 10) {
 		return nil, out, fmt.Errorf("recipe %s not found", in.RecipeID)
 	}
 	out.Recipe = recipe
 	return textResult(fmt.Sprintf("Showing %q (%d ingredients, %d steps, ~%d min) as an interactive recipe card.",
 		recipe.Title, len(recipe.Ingredients), len(recipe.Instructions), recipe.CookTimeMinutes)), out, nil
+}
+
+// --- start_cooking ---
+
+type startCookingIn struct {
+	RecipeID string `json:"recipe_id" jsonschema:"the saved SaltyBytes recipe id to cook"`
+}
+
+type startCookingOut struct {
+	View        string                  `json:"view"`
+	Recipe      *service.RecipeResponse `json:"recipe,omitempty"`
+	CurrentStep int                     `json:"current_step"`
+}
+
+func (d *Deps) startCooking(ctx context.Context, req *mcp.CallToolRequest, in startCookingIn) (*mcp.CallToolResult, startCookingOut, error) {
+	out := startCookingOut{View: viewCookMode}
+	user, err := d.userForRequest(req, "recipes:read")
+	if err != nil {
+		return nil, out, err
+	}
+	id, err := strconv.ParseUint(strings.TrimSpace(in.RecipeID), 10, 64)
+	if err != nil {
+		return nil, out, fmt.Errorf("recipe_id must be a numeric id")
+	}
+	recipe, err := d.Recipes.GetRecipeByID(uint(id))
+	if err != nil || recipe.OwnerID != strconv.FormatUint(uint64(user.ID), 10) {
+		return nil, out, fmt.Errorf("recipe %s not found", in.RecipeID)
+	}
+	if len(recipe.Instructions) == 0 {
+		return nil, out, fmt.Errorf("%q has no cooking instructions yet", recipe.Title)
+	}
+	out.Recipe = recipe
+	return textResult(fmt.Sprintf("Starting cook mode for %q at step 1 of %d. The interactive card keeps the user focused on one instruction at a time.", recipe.Title, len(recipe.Instructions))), out, nil
 }
 
 // registerTools adds every SaltyBytes tool (with its MCP Apps widget
@@ -415,4 +454,20 @@ func registerTools(server *mcp.Server, deps *Deps) {
 			OpenWorldHint:   boolPtr(false),
 		},
 	}, deps.getRecipe)
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "start_cooking",
+		Title:       "Start cooking a saved recipe",
+		Description: "Open a saved SaltyBytes recipe in focused cook mode with one instruction at a time. Call this when the user says they are ready to cook, asks to start cooking, or wants step-by-step guidance for a saved recipe.",
+		Meta: toolMeta(
+			"A focused one-step-at-a-time cooking guide with ingredients and progress.",
+			"Setting up cook mode...",
+			"Ready to cook",
+		),
+		Annotations: &mcp.ToolAnnotations{
+			ReadOnlyHint:    true,
+			DestructiveHint: boolPtr(false),
+			OpenWorldHint:   boolPtr(false),
+		},
+	}, deps.startCooking)
 }

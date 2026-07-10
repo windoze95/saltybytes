@@ -175,7 +175,8 @@ func (s *ImportService) ImportFromURL(ctx context.Context, rawURL string, user *
 				log.Info("import from canonical cache hit")
 				go s.CanonicalRepo.IncrementHitCount(canonical.ID)
 				canonicalID := canonical.ID
-				recipeResp, _, createErr := s.createImportedRecipe(ctx, &canonical.RecipeData, user, models.RecipeTypeImportLink, rawURL, "", &canonicalID, nil, canonical.PromptVersion)
+				imageURL := s.repairCanonicalImage(ctx, canonical)
+				recipeResp, _, createErr := s.createImportedRecipe(ctx, &canonical.RecipeData, user, models.RecipeTypeImportLink, rawURL, imageURL, &canonicalID, nil, canonical.PromptVersion)
 				return recipeResp, createErr
 			}
 		}
@@ -195,6 +196,7 @@ func (s *ImportService) ImportFromURL(ctx context.Context, rawURL string, user *
 			entry := &models.CanonicalRecipe{
 				NormalizedURL:    normalizedURL,
 				OriginalURL:      rawURL,
+				ImageURL:         imageURL,
 				RecipeData:       *recipeDef,
 				ExtractionMethod: method,
 				FetchedAt:        now,
@@ -228,7 +230,8 @@ func (s *ImportService) ImportFromCanonical(ctx context.Context, canonicalID uin
 	go s.CanonicalRepo.IncrementHitCount(canonical.ID)
 
 	cID := canonical.ID
-	resp, _, createErr := s.createImportedRecipe(ctx, &canonical.RecipeData, user, models.RecipeTypeImportLink, canonical.OriginalURL, "", &cID, nil, canonical.PromptVersion)
+	imageURL := s.repairCanonicalImage(ctx, canonical)
+	resp, _, createErr := s.createImportedRecipe(ctx, &canonical.RecipeData, user, models.RecipeTypeImportLink, canonical.OriginalURL, imageURL, &cID, nil, canonical.PromptVersion)
 	return resp, createErr
 }
 
@@ -468,6 +471,7 @@ func (s *ImportService) extractFromURLInner(ctx context.Context, rawURL string) 
 	// Phase 2: Extract recipe from HTML
 	recipeDef, hashtags, imageURL, jsonLDErr := extractJSONLD(html)
 	if jsonLDErr == nil && recipeDef != nil {
+		imageURL = recipeImageURL(html, imageURL)
 		recipeDef.SourceURL = rawURL
 		method := models.ExtractionJSONLD
 		if usedFirecrawl {
@@ -510,7 +514,7 @@ func (s *ImportService) extractFromURLInner(ctx context.Context, rawURL string) 
 	if s.Policy != nil {
 		s.Policy.RecordOutcome(rawURL, method, true)
 	}
-	return &def, result.Hashtags, "", method, result.PromptVersion, nil
+	return &def, result.Hashtags, recipeImageURL(html, ""), method, result.PromptVersion, nil
 }
 
 // fetchAndExtractWithHTML fetches a URL once and returns both the extracted
@@ -833,6 +837,7 @@ func (s *ImportService) ImportManual(ctx context.Context, recipeDef *models.Reci
 // recipe or a multi-recipe page that needs resolution.
 type PreviewResult struct {
 	Recipe      *models.RecipeDef `json:"recipe,omitempty"`
+	ImageURL    string            `json:"image_url,omitempty"`
 	CanonicalID *uint             `json:"canonical_id,omitempty"`
 	IsMulti     bool              `json:"is_multi"`
 	MultiID     string            `json:"multi_id,omitempty"`
@@ -841,6 +846,56 @@ type PreviewResult struct {
 	// (an instant load), so the client can show "loading saved recipe" rather
 	// than an "extracting" state.
 	FromCache bool `json:"from_cache,omitempty"`
+}
+
+// recipeImageURL prefers the recipe's structured-data image and falls back to
+// the page's social-preview hero for sites whose JSON-LD omits an image.
+func recipeImageURL(html, structuredImageURL string) string {
+	if imageURL := strings.TrimSpace(structuredImageURL); imageURL != "" {
+		return imageURL
+	}
+	return pageImageURL(html)
+}
+
+// repairCanonicalImage best-effort repairs legacy canonical rows created
+// before image_url was persisted. Repair is bounded so a cache hit remains
+// responsive, and failure never prevents previewing or saving the recipe.
+func (s *ImportService) repairCanonicalImage(ctx context.Context, canonical *models.CanonicalRecipe) string {
+	if canonical == nil || strings.TrimSpace(canonical.ImageURL) != "" {
+		if canonical == nil {
+			return ""
+		}
+		return strings.TrimSpace(canonical.ImageURL)
+	}
+
+	sourceURL := canonical.OriginalURL
+	if sourceURL == "" {
+		sourceURL = canonical.RecipeData.SourceURL
+	}
+	if sourceURL == "" || ValidateExternalURL(sourceURL) != nil {
+		return ""
+	}
+
+	repairCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	html, err := s.fetchHTML(repairCtx, sourceURL)
+	if err != nil {
+		return ""
+	}
+	_, _, structuredImageURL, _ := s.extractRecipeFromHTML(html, sourceURL)
+	imageURL := recipeImageURL(html, structuredImageURL)
+	if imageURL == "" {
+		return ""
+	}
+
+	canonical.ImageURL = imageURL
+	if s.CanonicalRepo != nil {
+		if err := s.CanonicalRepo.Upsert(canonical); err != nil {
+			logger.Get().Warn("failed to repair canonical image",
+				zap.Uint("canonical_id", canonical.ID), zap.Error(err))
+		}
+	}
+	return imageURL
 }
 
 // CanonicalSource resolves a canonical cache id to its title and source URL.
@@ -884,6 +939,7 @@ func (s *ImportService) PreviewFromURL(ctx context.Context, rawURL string) (*mod
 			if canonical, err := s.CanonicalRepo.GetByNormalizedURL(normalizedURL); err == nil && !canonical.IsMultiPage {
 				log.Info("preview canonical cache hit")
 				go s.CanonicalRepo.IncrementHitCount(canonical.ID)
+				s.repairCanonicalImage(ctx, canonical)
 				data := canonical.RecipeData
 				if data.SourceURL == "" {
 					data.SourceURL = rawURL
@@ -894,7 +950,7 @@ func (s *ImportService) PreviewFromURL(ctx context.Context, rawURL string) (*mod
 		}
 	}
 
-	recipeDef, _, _, method, promptVersion, err := s.extractFromURL(ctx, rawURL)
+	recipeDef, _, imageURL, method, promptVersion, err := s.extractFromURL(ctx, rawURL)
 	if err != nil {
 		log.Error("preview extraction failed", zap.Error(err))
 		return nil, nil, err
@@ -908,6 +964,7 @@ func (s *ImportService) PreviewFromURL(ctx context.Context, rawURL string) (*mod
 			entry := &models.CanonicalRecipe{
 				NormalizedURL:    normalizedURL,
 				OriginalURL:      rawURL,
+				ImageURL:         imageURL,
 				RecipeData:       *recipeDef,
 				ExtractionMethod: method,
 				FetchedAt:        now,
@@ -986,7 +1043,8 @@ func (s *ImportService) WarmURL(ctx context.Context, resolver *MultiRecipeResolv
 	}
 
 	// A single JSON-LD recipe is the common, free case — cache it without AI.
-	recipeDef, _, _, method := s.extractRecipeFromHTML(html, rawURL)
+	recipeDef, _, imageURL, method := s.extractRecipeFromHTML(html, rawURL)
+	imageURL = recipeImageURL(html, imageURL)
 	if recipeDef == nil {
 		// No structured data. Only here do we spend AI: first confirm it isn't a
 		// link-style collection (so a listicle isn't mis-cached as one recipe),
@@ -1037,6 +1095,7 @@ func (s *ImportService) WarmURL(ctx context.Context, resolver *MultiRecipeResolv
 	return s.CanonicalRepo.Upsert(&models.CanonicalRecipe{
 		NormalizedURL:    normalizedURL,
 		OriginalURL:      rawURL,
+		ImageURL:         imageURL,
 		RecipeData:       *recipeDef,
 		ExtractionMethod: method,
 		FetchedAt:        now,
@@ -1079,12 +1138,13 @@ func (s *ImportService) PreviewFromURLWithMultiCheck(ctx context.Context, rawURL
 			if canonical, err := s.CanonicalRepo.GetByNormalizedURL(normalizedURL); err == nil && !canonical.IsMultiPage {
 				log.Info("preview canonical cache hit")
 				go s.CanonicalRepo.IncrementHitCount(canonical.ID)
+				imageURL := s.repairCanonicalImage(ctx, canonical)
 				data := canonical.RecipeData
 				if data.SourceURL == "" {
 					data.SourceURL = rawURL
 				}
 				canonicalID := canonical.ID
-				return &PreviewResult{Recipe: &data, CanonicalID: &canonicalID, FromCache: true}, nil
+				return &PreviewResult{Recipe: &data, ImageURL: imageURL, CanonicalID: &canonicalID, FromCache: true}, nil
 			}
 		}
 	}
@@ -1142,7 +1202,8 @@ func (s *ImportService) PreviewFromURLWithMultiCheck(ctx context.Context, rawURL
 	}
 
 	// Single recipe — extract from the HTML we already fetched
-	recipeDef, _, _, method := s.extractRecipeFromHTML(html, rawURL)
+	recipeDef, _, imageURL, method := s.extractRecipeFromHTML(html, rawURL)
+	imageURL = recipeImageURL(html, imageURL)
 	if recipeDef == nil {
 		// JSON-LD failed — try AI extraction from the same HTML
 		provider := s.PreviewProvider
@@ -1193,6 +1254,7 @@ func (s *ImportService) PreviewFromURLWithMultiCheck(ctx context.Context, rawURL
 			entry := &models.CanonicalRecipe{
 				NormalizedURL:    normalizedURL,
 				OriginalURL:      rawURL,
+				ImageURL:         imageURL,
 				RecipeData:       *recipeDef,
 				ExtractionMethod: method,
 				FetchedAt:        now,
@@ -1207,7 +1269,7 @@ func (s *ImportService) PreviewFromURLWithMultiCheck(ctx context.Context, rawURL
 		}
 	}
 
-	return &PreviewResult{Recipe: recipeDef, CanonicalID: canonicalID}, nil
+	return &PreviewResult{Recipe: recipeDef, ImageURL: imageURL, CanonicalID: canonicalID}, nil
 }
 
 // createImportedRecipe creates a recipe in the DB from a RecipeDef.

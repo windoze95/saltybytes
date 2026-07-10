@@ -21,6 +21,7 @@ type CanonicalRecipe struct {
 	gorm.Model
 	NormalizedURL    string           `gorm:"uniqueIndex;size:2048;not null"`
 	OriginalURL      string           `gorm:"size:2048;not null"`
+	ImageURL         string           `gorm:"size:2048" json:"image_url,omitempty"`
 	RecipeData       RecipeDef        `gorm:"type:jsonb;not null"`
 	ExtractionMethod ExtractionMethod `gorm:"type:text;not null"`
 	HitCount         int              `gorm:"default:0"`

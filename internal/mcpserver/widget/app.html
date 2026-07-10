@@ -254,6 +254,56 @@
   .multirow .n { font: 700 16px var(--serif); color: var(--salmon); min-width: 18px; text-align: right; }
   .multirow .t { font: 600 13.5px var(--serif); }
   .multirow .d { font: 400 11.5px var(--sans); color: var(--ink-soft); }
+
+  #root { position: relative; }
+  .busy-overlay {
+    position: absolute; inset: 0; z-index: 20;
+    display: flex; align-items: center; justify-content: center; gap: 9px;
+    min-height: 84px; border-radius: 14px;
+    background: color-mix(in srgb, var(--paper) 88%, transparent);
+    backdrop-filter: blur(3px);
+    color: var(--ink-soft); font: 650 12.5px var(--sans);
+  }
+  .busy-dot {
+    width: 15px; height: 15px; border-radius: 50%;
+    border: 2px solid var(--line); border-top-color: var(--teal);
+    animation: spin .75s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .cookbtn { background: var(--salmon); }
+  .cook-shell {
+    min-height: 410px; display: flex; flex-direction: column;
+    background: var(--card); border: 1px solid var(--line);
+    border-radius: 16px; box-shadow: var(--shadow-lift); overflow: hidden;
+  }
+  .cook-head { padding: 18px 20px 14px; border-bottom: 1px solid var(--line); }
+  .cook-head h2 { font: 700 clamp(21px, 4vw, 29px)/1.1 var(--serif); margin: 0 0 8px; }
+  .cook-progress { height: 5px; border-radius: 999px; background: var(--paper-deep); overflow: hidden; }
+  .cook-progress > span { display: block; height: 100%; width: 0; background: var(--teal); transition: width .25s ease; }
+  .cook-stage { min-height: 250px; flex: 1; padding: 22px 20px; }
+  .cook-count { color: var(--salmon); font: 750 11px var(--sans); letter-spacing: .14em; text-transform: uppercase; }
+  .cook-instruction { margin-top: 16px; font: 650 clamp(20px, 4.4vw, 30px)/1.35 var(--serif); }
+  .cook-ingredients { max-height: 230px; overflow: auto; }
+  .cook-ingredients[hidden], .cook-step[hidden] { display: none; }
+  .cook-controls {
+    display: grid; grid-template-columns: auto 1fr auto; gap: 9px;
+    padding: 14px 20px 18px; border-top: 1px solid var(--line);
+  }
+  .cook-control {
+    border: 1px solid var(--line); border-radius: 999px; padding: 10px 15px;
+    background: var(--paper); color: var(--ink); cursor: pointer;
+    font: 700 12.5px var(--sans);
+  }
+  .cook-control.primary { color: white; background: var(--teal); border-color: var(--teal); }
+  .cook-control:disabled { opacity: .38; cursor: default; }
+  @media (max-width: 460px) {
+    .cook-shell { min-height: 430px; }
+    .cook-controls { grid-template-columns: 1fr 1fr; }
+    .cook-control.ingredients-toggle { grid-column: 1 / -1; grid-row: 1; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; }
+  }
 </style>
 </head>
 <body>
@@ -308,6 +358,31 @@ const bridge = (() => {
  *  DOM helpers — data is third-party; only ever assign textContent.
  * ------------------------------------------------------------------ */
 const root = document.getElementById("root");
+let visibleResultKey = "";
+let hasCommittedView = false;
+let navigationSequence = 0;
+let inlineToolDepth = 0;
+let ignoreHostResultsUntil = 0;
+let ignoredHostResultKey = "";
+
+function resultKey(data) {
+  try { return JSON.stringify(data); } catch { return ""; }
+}
+function commitResult(data, source) {
+  if (!data || typeof data !== "object" || !data.view) return false;
+  const key = resultKey(data);
+  if (source === "host") {
+    if (inlineToolDepth > 0 && Date.now() < ignoreHostResultsUntil) return false;
+    if (key && key === ignoredHostResultKey && Date.now() < ignoreHostResultsUntil) return false;
+  }
+  if (key && key === visibleResultKey) {
+    setBusy(false);
+    return false;
+  }
+  setBusy(false);
+  render(data);
+  return true;
+}
 function el(tag, className, text) {
   const node = document.createElement(tag);
   if (className) node.className = className;
@@ -315,6 +390,20 @@ function el(tag, className, text) {
   return node;
 }
 function clearRoot() { root.textContent = ""; }
+function setBusy(busy, label) {
+  const existing = root.querySelector(".busy-overlay");
+  if (!busy) {
+    if (existing) existing.remove();
+    root.removeAttribute("aria-busy");
+    return;
+  }
+  if (existing) return;
+  root.setAttribute("aria-busy", "true");
+  const overlay = el("div", "busy-overlay");
+  overlay.appendChild(el("span", "busy-dot"));
+  overlay.appendChild(el("span", "", label || "Working..."));
+  root.appendChild(overlay);
+}
 function toast(message) {
   const t = el("div", "toast", message);
   document.body.appendChild(t);
@@ -374,11 +463,14 @@ let lastListView = null; // for back navigation from a detail card
 
 function render(data) {
   if (!data || typeof data !== "object" || !data.view) return;
+  visibleResultKey = resultKey(data);
+  hasCommittedView = true;
   switch (data.view) {
     case "search_results": lastListView = data; renderSearch(data); break;
     case "recipe_list": lastListView = data; renderMyRecipes(data); break;
     case "preview": renderPreview(data); break;
     case "recipe_card": renderRecipeCard(data); break;
+    case "cook_mode": renderCookMode(data); break;
   }
 }
 
@@ -449,7 +541,7 @@ function renderPreview(data) {
   if (!recipe) { renderEmpty("Couldn't read a recipe from that page."); return; }
   renderDetail({
     title: recipe.title,
-    imageURL: "",
+    imageURL: data.image_url || recipe.image_url || recipe.imageUrl || "",
     cookTime: recipe.cook_time,
     portions: recipe.portions,
     ingredients: recipe.ingredients || [],
@@ -464,6 +556,7 @@ function renderRecipeCard(data) {
   const recipe = data.recipe;
   if (!recipe) { renderEmpty("Recipe not found."); return; }
   renderDetail({
+    recipeID: recipe.id,
     title: recipe.title,
     imageURL: recipe.imageUrl,
     cookTime: recipe.cookTimeMinutes,
@@ -511,6 +604,11 @@ function renderDetail(view) {
   headings.appendChild(chips);
 
   const actions = el("div", "actions");
+  if (view.instructions.length) {
+    const cook = el("button", "savebtn cookbtn", "Start cooking");
+    cook.onclick = () => renderCook(view, 0);
+    actions.appendChild(cook);
+  }
   if (view.saved) {
     actions.appendChild(makeSavedBadge());
   } else if (view.saveURL) {
@@ -561,6 +659,125 @@ function renderDetail(view) {
   root.appendChild(detail);
 }
 
+function renderCookMode(data) {
+  const recipe = data.recipe;
+  if (!recipe) { renderEmpty("Recipe not found."); return; }
+  renderCook({
+    recipeID: recipe.id,
+    title: recipe.title,
+    imageURL: recipe.imageUrl,
+    cookTime: recipe.cookTimeMinutes,
+    portions: 0,
+    ingredients: recipe.ingredients || [],
+    instructions: recipe.instructions || [],
+    sourceURL: recipe.sourceUrl,
+    saved: true,
+    saveURL: "",
+  }, Number(data.current_step) || 0);
+}
+
+// Cook mode mounts once. Step changes update text and controls in place so the
+// iframe keeps a stable height and the conversation does not jump.
+function renderCook(view, initialStep) {
+  if (!view.instructions.length) {
+    toast("This recipe does not have cooking instructions yet.");
+    return;
+  }
+  clearRoot();
+  visibleResultKey = "";
+  brandline("Cook mode", true, () => renderDetail(view));
+  const shell = el("section", "cook-shell");
+  const head = el("div", "cook-head");
+  head.appendChild(el("h2", "", view.title || "Untitled recipe"));
+  const progress = el("div", "cook-progress");
+  const progressFill = el("span");
+  progress.appendChild(progressFill);
+  head.appendChild(progress);
+  shell.appendChild(head);
+
+  const stage = el("div", "cook-stage");
+  const stepPanel = el("div", "cook-step");
+  const count = el("div", "cook-count");
+  const instruction = el("div", "cook-instruction");
+  instruction.setAttribute("aria-live", "polite");
+  stepPanel.appendChild(count);
+  stepPanel.appendChild(instruction);
+  stage.appendChild(stepPanel);
+  const ingredientsPanel = el("div", "cook-ingredients");
+  ingredientsPanel.hidden = true;
+  ingredientsPanel.appendChild(el("div", "sect-label", "Ingredients"));
+  const ingredientList = el("ul", "ing");
+  view.ingredients.forEach((ing) => {
+    const li = el("li");
+    li.appendChild(el("span", "box"));
+    const text = el("span", "txt");
+    const quantity = qtyText(ing);
+    text.textContent = (quantity ? quantity + " " : "") + (ing.original_text || ing.originalText || ing.name || "");
+    li.appendChild(text);
+    li.onclick = () => li.classList.toggle("done");
+    ingredientList.appendChild(li);
+  });
+  ingredientsPanel.appendChild(ingredientList);
+  stage.appendChild(ingredientsPanel);
+  shell.appendChild(stage);
+
+  const controls = el("div", "cook-controls");
+  const previous = el("button", "cook-control", "Previous");
+  const ingredients = el("button", "cook-control ingredients-toggle", "Ingredients");
+  const next = el("button", "cook-control primary", "Next");
+  controls.appendChild(previous);
+  controls.appendChild(ingredients);
+  controls.appendChild(next);
+  shell.appendChild(controls);
+  root.appendChild(shell);
+
+  let stepIndex = Math.max(0, Math.min(view.instructions.length - 1, initialStep || 0));
+  let complete = false;
+  function showStep() {
+    complete = false;
+    ingredientsPanel.hidden = true;
+    stepPanel.hidden = false;
+    ingredients.textContent = "Ingredients";
+    count.textContent = "Step " + (stepIndex + 1) + " of " + view.instructions.length;
+    instruction.textContent = view.instructions[stepIndex];
+    progressFill.style.width = ((stepIndex + 1) / view.instructions.length * 100) + "%";
+    previous.disabled = stepIndex === 0;
+    next.textContent = stepIndex === view.instructions.length - 1 ? "Finish" : "Next";
+  }
+  previous.onclick = () => {
+    if (!ingredientsPanel.hidden) {
+      ingredientsPanel.hidden = true;
+      stepPanel.hidden = false;
+      ingredients.textContent = "Ingredients";
+      return;
+    }
+    if (stepIndex > 0) { stepIndex -= 1; showStep(); }
+  };
+  next.onclick = () => {
+    if (!ingredientsPanel.hidden) {
+      ingredientsPanel.hidden = true;
+      stepPanel.hidden = false;
+      ingredients.textContent = "Ingredients";
+      return;
+    }
+    if (complete) { stepIndex = 0; showStep(); return; }
+    if (stepIndex < view.instructions.length - 1) { stepIndex += 1; showStep(); return; }
+    complete = true;
+    count.textContent = "Finished";
+    instruction.textContent = "Ready to serve. Nice work.";
+    progressFill.style.width = "100%";
+    previous.disabled = false;
+    next.textContent = "Cook again";
+  };
+  ingredients.onclick = () => {
+    const opening = ingredientsPanel.hidden;
+    ingredientsPanel.hidden = !opening;
+    stepPanel.hidden = opening;
+    ingredients.textContent = opening ? "Back to step" : "Ingredients";
+  };
+  showStep();
+}
+
 function makeSavedBadge() {
   const badge = el("span", "savedbadge");
   badge.appendChild(el("span", "", "✓"));
@@ -605,23 +822,40 @@ function openLink(url) {
 
 async function openPreview(url) {
   if (!url) return;
-  skeleton();
-  try { render(await callTool("preview_recipe", { url })); }
-  catch (err) { renderEmpty(err.message); }
+  const requestID = ++navigationSequence;
+  if (hasCommittedView) setBusy(true, "Reading recipe..."); else skeleton();
+  try {
+    const data = await callTool("preview_recipe", { url });
+    if (requestID === navigationSequence) commitResult(data, "direct");
+  } catch (err) {
+    if (requestID === navigationSequence) renderEmpty(err.message);
+  } finally {
+    if (requestID === navigationSequence) setBusy(false);
+  }
 }
 
 async function openSaved(id) {
   if (!id) return;
-  skeleton();
-  try { render(await callTool("get_recipe", { recipe_id: String(id) })); }
-  catch (err) { renderEmpty(err.message); }
+  const requestID = ++navigationSequence;
+  if (hasCommittedView) setBusy(true, "Opening recipe..."); else skeleton();
+  try {
+    const data = await callTool("get_recipe", { recipe_id: String(id) });
+    if (requestID === navigationSequence) commitResult(data, "direct");
+  } catch (err) {
+    if (requestID === navigationSequence) renderEmpty(err.message);
+  } finally {
+    if (requestID === navigationSequence) setBusy(false);
+  }
 }
 
 async function saveRecipe(button, actions, url) {
   button.disabled = true;
   button.textContent = "Saving…";
+  inlineToolDepth += 1;
+  ignoreHostResultsUntil = Date.now() + 12000;
   try {
-    await callTool("save_recipe", { url });
+    const data = await callTool("save_recipe", { url });
+    ignoredHostResultKey = resultKey(data);
     button.classList.add("saved");
     button.textContent = "✓ Saved to SaltyBytes";
     toast("Saved — it's waiting in your app.");
@@ -629,6 +863,8 @@ async function saveRecipe(button, actions, url) {
     button.disabled = false;
     button.textContent = "Save to SaltyBytes";
     toast(err.message);
+  } finally {
+    inlineToolDepth = Math.max(0, inlineToolDepth - 1);
   }
 }
 
@@ -658,14 +894,17 @@ function applyOpenAIGlobals(globals) {
   if (globals.theme === "dark" || globals.theme === "light") {
     document.documentElement.setAttribute("data-theme", globals.theme);
   }
-  if (globals.toolOutput) render(globals.toolOutput);
+  if (globals.toolOutput) commitResult(globals.toolOutput, "host");
 }
 
 // MCP Apps postMessage host (Claude and other ext-apps hosts).
 bridge.on("ui/notifications/tool-result", (params) => {
-  if (params && params.structuredContent) render(params.structuredContent);
+  if (params && params.structuredContent) commitResult(params.structuredContent, "host");
 });
-bridge.on("ui/notifications/tool-input", () => { skeleton(); });
+bridge.on("ui/notifications/tool-input", () => {
+  if (inlineToolDepth > 0) return;
+  if (hasCommittedView) setBusy(true, "Updating..."); else skeleton();
+});
 bridge.on("ui/notifications/host-context-changed", (params) => {
   applyHostContext(params && params.hostContext);
 });
@@ -675,12 +914,23 @@ window.addEventListener("openai:set_globals", (event) => {
   applyOpenAIGlobals(event && event.detail && event.detail.globals);
 });
 
-const resizeObserver = new ResizeObserver(() => {
-  bridge.notify("ui/notifications/size-changed", {
-    width: document.documentElement.scrollWidth,
-    height: document.documentElement.scrollHeight,
+let resizeFrame = 0;
+let lastReportedSize = "";
+function scheduleSizeReport() {
+  if (resizeFrame) cancelAnimationFrame(resizeFrame);
+  resizeFrame = requestAnimationFrame(() => {
+    resizeFrame = requestAnimationFrame(() => {
+      resizeFrame = 0;
+      const width = Math.ceil(root.scrollWidth);
+      const height = Math.ceil(root.scrollHeight);
+      const key = width + "x" + height;
+      if (key === lastReportedSize) return;
+      lastReportedSize = key;
+      bridge.notify("ui/notifications/size-changed", { width, height });
+    });
   });
-});
+}
+const resizeObserver = new ResizeObserver(scheduleSizeReport);
 
 (function main() {
   // ChatGPT: window.openai is present at mount — render immediately from whatever
@@ -698,20 +948,13 @@ const resizeObserver = new ResizeObserver(() => {
     applyHostContext(init && init.hostContext);
     bridge.notify("ui/notifications/initialized");
   }).catch(() => { /* not an MCP Apps postMessage host */ });
-  resizeObserver.observe(document.body);
+  resizeObserver.observe(root);
+  scheduleSizeReport();
 })();
 
-// ChatGPT can set window.openai.toolOutput a tick after mount without firing
-// "openai:set_globals"; poll briefly so a late delivery still renders. (Kept as
-// groundwork; ChatGPT's sandbox does not currently execute this widget's script.)
-(function pollOpenAI() {
-  let n = 0;
-  const timer = setInterval(() => {
-    const oa = openAIHost();
-    if (oa && oa.toolOutput) { clearInterval(timer); applyOpenAIGlobals(oa); }
-    else if (++n >= 24) { clearInterval(timer); }
-  }, 250);
-})();
+// One deduplicated late read covers runtimes that attach toolOutput just after
+// mount without reintroducing the old polling/render loop.
+setTimeout(() => applyOpenAIGlobals(openAIHost()), 250);
 </script>
 </body>
 </html>

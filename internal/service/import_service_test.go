@@ -337,9 +337,10 @@ func TestPreviewFromURL_OldCanonicalStillServed(t *testing.T) {
 	}
 }
 
-func TestPreviewFromURLWithMultiCheck_ServesCachedSingle(t *testing.T) {
+func TestPreviewFromURLWithMultiCheck_ServesImageCompleteCachedSingle(t *testing.T) {
 	repo := testutil.NewMockRecipeRepo()
 	canonical := testutil.TestCanonicalRecipe() // IsMultiPage defaults to false
+	canonical.ImageURL = "https://example.com/pancakes.jpg"
 	fetched := false
 	svc := newTestImportService(repo, nil, nil)
 	svc.CanonicalRepo = &testutil.MockCanonicalRecipeRepo{
@@ -369,6 +370,44 @@ func TestPreviewFromURLWithMultiCheck_ServesCachedSingle(t *testing.T) {
 	}
 	if fetched {
 		t.Error("must NOT fetch when served from cache")
+	}
+}
+
+func TestPreviewFromURLWithMultiCheck_RepairsLegacyCachedImage(t *testing.T) {
+	repo := testutil.NewMockRecipeRepo()
+	canonical := testutil.TestCanonicalRecipe()
+	canonical.ImageURL = ""
+	fetched := false
+	upsertedImageURL := ""
+	svc := newTestImportService(repo, nil, nil)
+	svc.CanonicalRepo = &testutil.MockCanonicalRecipeRepo{
+		GetByNormalizedURLFunc: func(string) (*models.CanonicalRecipe, error) { return canonical, nil },
+		UpsertFunc: func(entry *models.CanonicalRecipe) error {
+			upsertedImageURL = entry.ImageURL
+			return nil
+		},
+	}
+	svc.HTTPFetchOverride = func(ctx context.Context, url string) ([]byte, int, error) {
+		fetched = true
+		return []byte(`<html><head><meta property="og:image" content="https://example.com/repaired-pancakes.jpg"></head></html>`), 200, nil
+	}
+
+	resolver := NewMultiRecipeResolver(NewMultiRecipeRegistry(), svc)
+	result, err := svc.PreviewFromURLWithMultiCheck(context.Background(), "https://example.com/classic-pancakes", resolver)
+	if err != nil {
+		t.Fatalf("PreviewFromURLWithMultiCheck error: %v", err)
+	}
+	if !result.FromCache {
+		t.Error("expected the cached recipe to remain the preview source")
+	}
+	if !fetched {
+		t.Error("expected a metadata fetch to repair the missing cached image")
+	}
+	if result.ImageURL != "https://example.com/repaired-pancakes.jpg" {
+		t.Errorf("image_url = %q, want repaired image", result.ImageURL)
+	}
+	if upsertedImageURL != result.ImageURL {
+		t.Errorf("upserted image_url = %q, want %q", upsertedImageURL, result.ImageURL)
 	}
 }
 
