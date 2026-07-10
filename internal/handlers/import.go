@@ -615,6 +615,9 @@ func (h *ImportHandler) PreviewFromURL(c *gin.Context) {
 	}
 
 	response := gin.H{"recipe": result.Recipe}
+	if result.ImageURL != "" {
+		response["image_url"] = result.ImageURL
+	}
 	if result.CanonicalID != nil {
 		response["canonical_id"] = *result.CanonicalID
 	}
