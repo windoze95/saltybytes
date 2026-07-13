@@ -63,7 +63,7 @@ func newResolverForTest(preview ai.TextProvider, canonicalRepo *testutil.MockCan
 // waitResolved polls the entry until background extraction finishes.
 func waitResolved(t *testing.T, entry *MultiRecipeEntry) {
 	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(testutil.AsyncDeadline)
 	for time.Now().Before(deadline) {
 		if entry.GetStatus() == "resolved" {
 			return

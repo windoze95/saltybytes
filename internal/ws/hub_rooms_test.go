@@ -3,6 +3,8 @@ package ws
 import (
 	"testing"
 	"time"
+
+	"github.com/windoze95/saltybytes-api/internal/testutil"
 )
 
 // roomExists checks the hub's room map under its lock.
@@ -16,7 +18,7 @@ func roomExists(h *Hub, roomID string) bool {
 // waitForRoomGone polls until the room disappears from the hub or times out.
 func waitForRoomGone(t *testing.T, h *Hub, roomID string) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(testutil.AsyncDeadline)
 	for roomExists(h, roomID) {
 		if time.Now().After(deadline) {
 			t.Fatalf("room %q was not removed from the hub", roomID)

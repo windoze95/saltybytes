@@ -185,7 +185,7 @@ func TestImportFromVideo_Accepted_AndPoll(t *testing.T) {
 
 	// Poll the status endpoint until the async job completes.
 	path := "/recipes/import/video/" + itoa(accepted.Job.ID)
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(testutil.AsyncDeadline)
 	var lastStatus string
 	for time.Now().Before(deadline) {
 		gw := httptest.NewRecorder()
