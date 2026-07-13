@@ -59,6 +59,12 @@ func (h *UserHandler) CreateUser(c *gin.Context) {
 		return
 	}
 
+	// Validate the optional display name
+	if err := h.Service.ValidateFirstName(newUser.FirstName); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
 	// Validate email
 	if err := h.Service.ValidateEmail(newUser.Email); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -354,13 +360,50 @@ func (h *UserHandler) UpdateUser(c *gin.Context) {
 		return
 	}
 
-	if err := h.Service.UpdateUser(user, req.FirstName, req.Email); err != nil {
-		logger.Get().Error("failed to update user", zap.Uint("user_id", user.ID), zap.Error(err))
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+	req.FirstName = strings.TrimSpace(req.FirstName)
+	req.Email = strings.TrimSpace(req.Email)
+
+	if err := h.Service.ValidateFirstName(req.FirstName); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "User updated successfully"})
+	// Note the address change before the update rewrites the in-memory user.
+	emailChanged := req.Email != "" && !strings.EqualFold(req.Email, user.Email)
+	if emailChanged {
+		if err := h.Service.ValidateEmail(req.Email); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+	}
+
+	if err := h.Service.UpdateUser(user, req.FirstName, req.Email); err != nil {
+		if errors.Is(err, repository.ErrEmailTaken) {
+			c.JSON(http.StatusConflict, gin.H{"error": "email already in use"})
+			return
+		}
+		logger.Get().Error("failed to update user", zap.Uint("user_id", user.ID), zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update user"})
+		return
+	}
+
+	// The address changed, so UpdateUser un-verified the account. Send a code to
+	// the new address — best-effort, exactly like signup: a mail hiccup must not
+	// fail the update, and the verify screen offers a resend.
+	verificationRequired := false
+	if emailChanged && h.EmailVerification != nil && h.EmailVerification.Enabled() {
+		verificationRequired = true
+		if err := h.EmailVerification.StartVerification(c.Request.Context(), user); err != nil {
+			logger.Get().Warn("failed to send verification email after address change",
+				zap.Uint("user_id", user.ID), zap.Error(err))
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "User updated successfully",
+		// Tells a client it has to collect a code before AI features work again.
+		"email_verification_required": verificationRequired,
+	})
 }
 
 // UpdateSettings updates a user's settings.

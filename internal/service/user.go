@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/asaskevich/govalidator"
 	"github.com/windoze95/saltybytes-api/internal/config"
@@ -18,11 +20,35 @@ import (
 	"gorm.io/gorm"
 )
 
+// EmailVerificationStatus is the sliver of EmailVerificationService that
+// UserService needs: whether verification is actually live (switched on in
+// config AND backed by a working sender). A nil implementation means not live.
+type EmailVerificationStatus interface {
+	Enabled() bool
+}
+
 // UserService is the business logic layer for user-related operations.
 type UserService struct {
 	Cfg  *config.Config
 	Repo repository.UserRepo
+	// Verification is assigned by the router once the verification service
+	// exists. Nil (in tests, or before wiring) reads as "not live".
+	Verification EmailVerificationStatus
 }
+
+// verificationLive reports whether an address has to be proved before it counts
+// as verified.
+func (s *UserService) verificationLive() bool {
+	return s.Verification != nil && s.Verification.Enabled()
+}
+
+// Profile field bounds. Both columns are unbounded text, so these are the only
+// thing between a client and a 5,000-character display name. Username bounds
+// live in username_policy.go.
+const (
+	maxFirstNameLength = 50
+	maxEmailLength     = 254 // RFC 5321 caps the whole path at 254
+)
 
 // UserResponse is the response object for user-related operations.
 type UserResponse struct {
@@ -282,20 +308,54 @@ func (s *UserService) UpdatePersonalization(user *models.User, update *models.Pe
 	return s.Repo.UpdatePersonalization(user.ID, update)
 }
 
-// UpdateUser updates a user's profile fields (first name, email).
+// UpdateUser updates a user's profile fields (first name, email). Callers are
+// expected to have validated both already.
+//
+// Changing the address un-verifies the account. EmailVerifiedAt is what gates
+// the AI-cost endpoints and what the stale-signup sweep keys off, so it has to
+// mean "we verified THIS address" — otherwise anyone could verify a throwaway
+// and then swap in an address nobody ever proved. The caller sends the fresh
+// code; when verification isn't live the new address is marked verified
+// immediately, mirroring what signup does in that mode.
+//
+// The in-memory user is updated to match, so the caller mails the new address
+// and not the old one.
 func (s *UserService) UpdateUser(user *models.User, firstName, email string) error {
-	if email != "" && email != user.Email {
+	// EqualFold: retyping the same address with different capitalisation is not
+	// a change, and must not cost the user their verified status.
+	if email != "" && !strings.EqualFold(email, user.Email) {
 		if err := s.ValidateEmail(email); err != nil {
 			return err
 		}
-		if err := s.Repo.UpdateUserEmail(user.ID, email); err != nil {
+
+		// Same question signup asks — is this address claimable? — including
+		// the release of one squatted by a stale unverified signup, which also
+		// keeps the unique constraint from firing underneath us.
+		taken, err := s.EmailTakenForSignup(email)
+		if err != nil {
 			return err
 		}
+		if taken {
+			return repository.ErrEmailTaken
+		}
+
+		var verifiedAt *time.Time
+		if !s.verificationLive() {
+			now := time.Now()
+			verifiedAt = &now
+		}
+		if err := s.Repo.UpdateUserEmail(user.ID, email, verifiedAt); err != nil {
+			return err
+		}
+		user.Email = email
+		user.EmailVerifiedAt = verifiedAt
 	}
+
 	if firstName != "" {
 		if err := s.Repo.UpdateUserFirstName(user.ID, firstName); err != nil {
 			return err
 		}
+		user.FirstName = firstName
 	}
 	return nil
 }
@@ -331,6 +391,49 @@ func (s *UserService) ValidateUsername(username string) error {
 func (s *UserService) ValidateEmail(email string) error {
 	if !govalidator.IsEmail(email) {
 		return fmt.Errorf("invalid email format")
+	}
+	// RFC 5321 caps a path at 254 characters. govalidator's pattern doesn't,
+	// and the column is unbounded text.
+	if utf8.RuneCountInString(email) > maxEmailLength {
+		return fmt.Errorf("email must be %d characters or less", maxEmailLength)
+	}
+	return nil
+}
+
+// ValidateFirstName validates the optional display name.
+//
+// Names are a minefield, so the rule is "any letter, plus the punctuation that
+// shows up in real names": Mary-Jane, O'Brien, J. R., José, Zoë, 李 all pass.
+// Everything else is rejected — digits, emoji, symbols, and control characters,
+// which is what makes a newline-stuffed or 5,000-character name impossible.
+//
+// Deliberately NOT profanity-checked. The name is private: the app only ever
+// shows it back to its owner (the settings screen prefers it over the username),
+// it is not published and never reaches an AI prompt. A filter would buy no
+// moderation here and would reject people genuinely named Dick or Fanny. If
+// first names ever become visible to other users — a family roster, an author
+// byline on a shared recipe — revisit this.
+func (s *UserService) ValidateFirstName(firstName string) error {
+	if firstName == "" {
+		return nil // optional
+	}
+	if utf8.RuneCountInString(firstName) > maxFirstNameLength {
+		return fmt.Errorf("first name must be %d characters or less", maxFirstNameLength)
+	}
+
+	hasLetter := false
+	for _, r := range firstName {
+		switch {
+		case unicode.IsLetter(r):
+			hasLetter = true
+		case unicode.IsMark(r): // combining accents
+		case r == ' ' || r == '-' || r == '\'' || r == '’' || r == '.':
+		default:
+			return fmt.Errorf("first name can only contain letters, spaces, hyphens, apostrophes and periods")
+		}
+	}
+	if !hasLetter {
+		return fmt.Errorf("first name must contain at least one letter")
 	}
 	return nil
 }
