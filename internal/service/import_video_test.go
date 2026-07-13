@@ -184,7 +184,7 @@ func newVideoTestService(repo *testutil.MockRecipeRepo, vrepo *testutil.MockVide
 // waitForVideoJob polls until the job reaches a terminal state or times out.
 func waitForVideoJob(t *testing.T, svc *ImportService, id uint) *models.VideoImport {
 	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(testutil.AsyncDeadline)
 	for time.Now().Before(deadline) {
 		job, err := svc.GetVideoImport(id)
 		if err == nil && (job.Status == models.VideoImportDone || job.Status == models.VideoImportFailed) {
@@ -470,7 +470,7 @@ func TestVideoImport_RefundsQuotaOnFailure(t *testing.T) {
 	}
 	// The refund runs in the goroutine after the job is marked failed; poll the
 	// lock-synchronized counter until it lands.
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(testutil.AsyncDeadline)
 	for time.Now().Before(deadline) && userRepo.SubscriptionUsage(user.ID, "video_imports_used") != 0 {
 		time.Sleep(5 * time.Millisecond)
 	}
