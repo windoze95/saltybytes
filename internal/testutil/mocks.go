@@ -713,12 +713,13 @@ func (m *MockUserRepo) UpdateUserFirstName(userID uint, firstName string) error 
 	return nil
 }
 
-func (m *MockUserRepo) UpdateUserEmail(userID uint, email string) error {
+func (m *MockUserRepo) UpdateUserEmail(userID uint, email string, verifiedAt *time.Time) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	if u, ok := m.Users[userID]; ok {
 		u.Email = email
+		u.EmailVerifiedAt = verifiedAt
 	}
 	return nil
 }

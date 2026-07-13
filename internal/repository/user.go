@@ -124,11 +124,18 @@ func (r *UserRepository) UpdateUserFirstName(userID uint, firstName string) erro
 	return err
 }
 
-// UpdateUserEmail updates a user's email address.
-func (r *UserRepository) UpdateUserEmail(userID uint, email string) error {
+// UpdateUserEmail updates a user's email address and, in the same statement,
+// its verification state: a nil verifiedAt marks the new address unverified.
+// Both columns move together so an account can never be left looking verified
+// on an address nobody proved. A map is used rather than a struct because GORM
+// skips zero values on struct updates, and nil is the value that matters here.
+func (r *UserRepository) UpdateUserEmail(userID uint, email string, verifiedAt *time.Time) error {
 	err := r.DB.Model(&models.User{}).
 		Where("id = ?", userID).
-		Update("Email", email).Error
+		Updates(map[string]interface{}{
+			"email":             email,
+			"email_verified_at": verifiedAt,
+		}).Error
 	if err != nil {
 		logger.Get().Error("failed to update user email", zap.Uint("user_id", userID), zap.Error(err))
 		return mapUserUniqueViolation(err)

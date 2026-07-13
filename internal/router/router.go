@@ -133,6 +133,8 @@ func SetupRouter(cfg *config.Config, database *gorm.DB) *gin.Engine {
 	emailVerificationService := service.NewEmailVerificationService(cfg, userRepo, emailVerificationRepo, emailSender)
 	emailVerificationHandler := handlers.NewEmailVerificationHandler(emailVerificationService)
 	userHandler.EmailVerification = emailVerificationService
+	// Lets UpdateUser decide whether a changed address starts out unverified.
+	userService.Verification = emailVerificationService
 
 	// Gate for AI-cost endpoints: throwaway signups must verify their email
 	// before they can spend AI quota. No-op while verification is disabled.

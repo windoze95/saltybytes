@@ -137,7 +137,7 @@ type UserRepo interface {
 	GetUserAuthByUsername(username string) (*models.User, error)
 	GetUserAuthByEmail(email string) (*models.User, error)
 	UpdateUserFirstName(userID uint, firstName string) error
-	UpdateUserEmail(userID uint, email string) error
+	UpdateUserEmail(userID uint, email string, verifiedAt *time.Time) error
 	UpdateUserSettingsKeepScreenAwake(userID uint, keepScreenAwake bool) error
 	UpdatePersonalization(userID uint, update *models.PersonalizationUpdate) error
 	UsernameExists(username string) (bool, error)
