@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	goaway "github.com/TwiN/go-away"
 	"github.com/asaskevich/govalidator"
 	"github.com/windoze95/saltybytes-api/internal/config"
 	"github.com/windoze95/saltybytes-api/internal/logger"
@@ -308,6 +307,13 @@ func (s *UserService) UpdateSettings(user *models.User, keepScreenAwake bool) er
 
 // ValidateUsername validates a username against a set of rules.
 func (s *UserService) ValidateUsername(username string) error {
+	// Format, reserved words and profanity first — see username_policy.go. All
+	// of it is local, and the uniqueness check below is a database round trip:
+	// don't spend one on input that can never be valid.
+	if err := checkUsernamePolicy(username); err != nil {
+		return err
+	}
+
 	// Check if the username already exists.
 	// This is also caught as a known error in the repository.
 	exists, err := s.Repo.UsernameExists(username)
@@ -318,73 +324,6 @@ func (s *UserService) ValidateUsername(username string) error {
 		return fmt.Errorf("username is already taken")
 	}
 
-	// Check if the username is long enough
-	minLength := 3
-	if len(username) < minLength {
-		return fmt.Errorf("username must be at least %d characters", minLength)
-	}
-
-	// Check if the username is alphanumeric
-	if !govalidator.IsAlphanumeric(username) {
-		return fmt.Errorf("username can only contain alphanumeric characters")
-	}
-
-	// Define a list of forbidden usernames
-	var forbiddenUsernames = []string{
-		"admin",
-		"administrator",
-		"root",
-		// "julian",
-		"awfulbits",
-		"windoze95",
-		// "yana",
-		"russianminx",
-		"russianminxx",
-		"sys",
-		"sysadmin",
-		"system",
-		"test",
-		"testuser",
-		"test-user",
-		"test_user",
-		"login",
-		"logout",
-		"register",
-		"password",
-		"user",
-		"newuser",
-		"yourapp",
-		"yourcompany",
-		"yourbrand",
-		"support",
-		"help",
-		"faq",
-		"saltybytes",
-		"saltybytes_ai",
-		"saltybytes-ai",
-		"saltybytesadmin",
-		"saltybytes_admin",
-		"saltybytes-admin",
-		"saltybytesroot",
-		"saltybytes_root",
-		"saltybytes-root",
-	}
-
-	// Check if the username is in the forbidden list
-	lowercaseUsername := strings.ToLower(username)
-	for _, forbiddenUsername := range forbiddenUsernames {
-		if strings.EqualFold(lowercaseUsername, forbiddenUsername) {
-			return fmt.Errorf("username '%s' is not allowed", username)
-		}
-	}
-
-	// Profanity check
-	profanityDetector := goaway.NewProfanityDetector().WithSanitizeLeetSpeak(true).WithSanitizeSpecialCharacters(true).WithSanitizeAccents(false)
-	if profanityDetector.IsProfane(username) {
-		return fmt.Errorf("username contains inappropriate language")
-	}
-
-	// If we've passed all checks, the username is valid.
 	return nil
 }
 
