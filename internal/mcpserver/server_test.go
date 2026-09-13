@@ -238,3 +238,18 @@ func TestServerLifecycle_ToolsAndWidget(t *testing.T) {
 		t.Fatal("expected IsError for unauthenticated tool call")
 	}
 }
+
+func TestImageResourceDomains(t *testing.T) {
+	aws := &config.Config{EnvVars: config.EnvVars{S3Bucket: "b", AWSRegion: "us-east-2"}}
+	got := imageResourceDomains(aws)
+	want := []string{"https://b.s3.amazonaws.com", "https://b.s3.us-east-2.amazonaws.com"}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Errorf("AWS-only domains = %v, want %v", got, want)
+	}
+
+	r2 := &config.Config{EnvVars: config.EnvVars{S3Bucket: "b", AWSRegion: "us-east-2", S3PublicURL: "https://img.example.com/"}}
+	got = imageResourceDomains(r2)
+	if len(got) != 3 || got[0] != "https://img.example.com" {
+		t.Errorf("public-URL domains = %v, want origin first then AWS hosts", got)
+	}
+}

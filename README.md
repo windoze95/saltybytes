@@ -44,7 +44,8 @@ Handlers → Services → Repositories → PostgreSQL (GORM)
 | **Anthropic Claude** | Recipe generation, allergen analysis, dietary interviews, voice intent classification, cooking Q&A |
 | **OpenAI** | DALL-E 3 (recipe images), Whisper (voice transcription), text-embedding-3-small (vector search) |
 | **Brave Search** | Web recipe discovery |
-| **AWS S3** | Recipe image storage |
+| **S3-compatible object store** | Recipe image storage (Cloudflare R2 in production; AWS S3 or any S3 API works) |
+| **Amazon SES** | Signup verification email |
 | **PostgreSQL + pgvector** | Data persistence and semantic similarity search |
 
 ## Getting Started
@@ -53,7 +54,7 @@ Handlers → Services → Repositories → PostgreSQL (GORM)
 
 - Go 1.24+
 - PostgreSQL 16+ with the [pgvector](https://github.com/pgvector/pgvector) extension
-- API keys for [Anthropic](https://console.anthropic.com/), [OpenAI](https://platform.openai.com/), and an AWS account for S3
+- API keys for [Anthropic](https://console.anthropic.com/), [OpenAI](https://platform.openai.com/), and an S3-compatible bucket for images (Cloudflare R2, AWS S3, MinIO, …)
 
 ### Setup
 
@@ -70,7 +71,7 @@ cd saltybytes-api
 cp .env.example .env
 ```
 
-See [docs/env-setup.md](docs/env-setup.md) for a detailed walkthrough of every variable, including how to create API keys and configure AWS.
+See [docs/env-setup.md](docs/env-setup.md) for a detailed walkthrough of every variable, including how to create API keys and set up image storage.
 
 3. **Run with Docker Compose** (recommended)
 
@@ -94,12 +95,15 @@ go run ./cmd/api
 | `JWT_SECRET_KEY` | Yes | Token signing secret |
 | `ANTHROPIC_API_KEY` | Yes | Claude — recipe gen, allergens, voice, dietary |
 | `OPENAI_API_KEY` | Yes | DALL-E, Whisper, embeddings |
-| `AWS_REGION` | Yes | AWS region for S3 |
 | `S3_BUCKET` | Yes | Image storage bucket |
+| `AWS_REGION` | Yes | Region for SES (and S3 when `S3_ENDPOINT` is empty) |
 | `ID_HEADER` | Yes | Request validation header |
+| `S3_ENDPOINT` | No | S3-compatible endpoint (Cloudflare R2, MinIO…); empty = AWS S3 |
+| `S3_PUBLIC_URL` | No | Public base URL images are served from (e.g. an R2 custom domain); empty = SDK object URL |
+| `S3_REGION` / `S3_ACCESS_KEY_ID` / `S3_SECRET_ACCESS_KEY` | No | Image-store region + key pair; fall back to `AWS_*` |
 | `BRAVE_SEARCH_KEY` | No | Web recipe search (gracefully disabled if absent) |
-| `AWS_ACCESS_KEY_ID` | No | S3 auth (falls back to IAM role) |
-| `AWS_SECRET_ACCESS_KEY` | No | S3 auth (falls back to IAM role) |
+| `AWS_ACCESS_KEY_ID` | No | SES/S3 auth (falls back to IAM role) |
+| `AWS_SECRET_ACCESS_KEY` | No | SES/S3 auth (falls back to IAM role) |
 | `PORT` | No | Server port (default: 8080) |
 | `GIN_MODE` | No | Set to `release` for production |
 
@@ -166,7 +170,7 @@ go vet ./...
 The CI/CD pipeline runs automatically via GitHub Actions:
 
 - **On PR to main** — vet, test, build validation
-- **On merge to main** — vet, test, Docker build, push to ECR, deploy to ECS (Fargate)
+- **On merge to main** — vet, test, Docker build, push to GHCR (`ghcr.io/windoze95/saltybytes-api`), then deploy to the target selected by the `DEPLOY_TARGET` repository variable: `droplet` (single-host docker-compose stack, see [deploy/README.md](deploy/README.md)) or `ecs` (AWS Fargate, the original target)
 
 ### Manual deployment
 
@@ -174,7 +178,7 @@ The CI/CD pipeline runs automatically via GitHub Actions:
 docker build --platform linux/amd64 -t saltybytes-api .
 ```
 
-The Dockerfile uses a multi-stage build (Go 1.24 builder → distroless runtime) for a minimal production image.
+The Dockerfile uses a multi-stage build (Go 1.25 builder → `debian:12-slim` runtime with ffmpeg for video import).
 
 ## Tech Stack
 
@@ -184,12 +188,12 @@ The Dockerfile uses a multi-stage build (Go 1.24 builder → distroless runtime)
 - **Database**: PostgreSQL 17 + pgvector
 - **AI**: Anthropic Claude, OpenAI (DALL-E, Whisper, Embeddings)
 - **Search**: Brave Search API
-- **Storage**: AWS S3
+- **Storage**: S3-compatible object store (Cloudflare R2 in production)
 - **Auth**: JWT (golang-jwt)
 - **WebSocket**: gorilla/websocket
 - **Logging**: zap
-- **Container**: Docker (distroless base)
-- **CI/CD**: GitHub Actions → ECR → ECS Fargate
+- **Container**: Docker (`debian:12-slim` + ffmpeg)
+- **CI/CD**: GitHub Actions → GHCR → docker-compose on a DigitalOcean droplet (or ECS Fargate)
 
 ## License
 

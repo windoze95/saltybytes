@@ -70,19 +70,39 @@ openssl rand -base64 32
 
 ---
 
-## AWS Credentials (S3 Image Storage)
+## Image Storage (S3-compatible)
 
-Recipe images are stored in AWS S3. You need an S3 bucket and IAM credentials.
+Recipe images go to any bucket that speaks the S3 API. Production uses
+**Cloudflare R2** (free tier, no egress fees, served from a custom domain);
+AWS S3, DigitalOcean Spaces and MinIO work the same way.
 
-### 1. Create an S3 bucket
+### Cloudflare R2 (production)
 
-1. Go to [AWS S3 Console](https://s3.console.aws.amazon.com/)
-2. Click **Create bucket**
-3. Name: `saltybytesrecipeimages` (or your preferred name)
-4. Region: `us-east-2` (or your preferred region)
-5. Uncheck "Block all public access" (images need to be publicly readable)
-6. Create the bucket
-7. Add a bucket policy for public read:
+1. In the Cloudflare dashboard → **R2** → **Create bucket**: `saltybytes-images`.
+2. Bucket → **Settings** → **Custom Domains** → add `img.saltybytes.ai`
+   (Cloudflare creates the DNS record and enables public access through it).
+3. **R2** → **Manage R2 API Tokens** → create a token with **Object Read & Write**
+   scoped to the bucket. Note the Access Key ID, Secret Access Key and the
+   S3 endpoint (`https://<account-id>.r2.cloudflarestorage.com`).
+
+```
+S3_BUCKET=saltybytes-images
+S3_ENDPOINT=https://<account-id>.r2.cloudflarestorage.com
+S3_REGION=auto
+S3_ACCESS_KEY_ID=...
+S3_SECRET_ACCESS_KEY=...
+S3_PUBLIC_URL=https://img.saltybytes.ai
+```
+
+`S3_PUBLIC_URL` is what stored image URLs are built from, so the database
+never references the storage host directly — moving buckets later is a URL
+rewrite, not a code change.
+
+### AWS S3 (alternative)
+
+Leave `S3_ENDPOINT`/`S3_PUBLIC_URL` empty; the SDK's own object URL is stored
+(`https://<bucket>.s3.<region>.amazonaws.com/<key>`), so the bucket must allow
+public reads:
 
 ```json
 {
@@ -93,17 +113,24 @@ Recipe images are stored in AWS S3. You need an S3 bucket and IAM credentials.
       "Effect": "Allow",
       "Principal": "*",
       "Action": "s3:GetObject",
-      "Resource": "arn:aws:s3:::saltybytesrecipeimages/*"
+      "Resource": "arn:aws:s3:::<bucket>/*"
     }
   ]
 }
 ```
 
-### 2. Create IAM credentials
+Give the API an IAM key pair (or task role) with `s3:PutObject`, `s3:GetObject`
+and `s3:DeleteObject` on `arn:aws:s3:::<bucket>/*`, and set `AWS_REGION`,
+`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `S3_BUCKET`.
 
-1. Go to [AWS IAM Console](https://console.aws.amazon.com/iam/)
-2. Create a new user (e.g., `saltybytes-api`)
-3. Attach a policy with S3 access to your bucket:
+---
+
+## AWS Credentials (SES email)
+
+Signup verification emails go through Amazon SES (`EMAIL_VERIFICATION_ENABLED=true`
++ `EMAIL_FROM`, a verified identity). The `AWS_*` variables serve SES — and S3
+only when no `S3_*` override is set. In production the key pair belongs to a
+dedicated IAM user allowed nothing but `ses:SendEmail` / `ses:SendRawEmail`:
 
 ```json
 {
@@ -111,21 +138,17 @@ Recipe images are stored in AWS S3. You need an S3 bucket and IAM credentials.
   "Statement": [
     {
       "Effect": "Allow",
-      "Action": ["s3:PutObject", "s3:GetObject", "s3:DeleteObject"],
-      "Resource": "arn:aws:s3:::saltybytesrecipeimages/*"
+      "Action": ["ses:SendEmail", "ses:SendRawEmail"],
+      "Resource": "*"
     }
   ]
 }
 ```
 
-4. Create an access key for the user
-5. Copy the values:
-
 ```
 AWS_REGION=us-east-2
 AWS_ACCESS_KEY_ID=AKIA...
 AWS_SECRET_ACCESS_KEY=...
-S3_BUCKET=saltybytesrecipeimages
 ```
 
 ---
@@ -206,10 +229,11 @@ GOOGLE_SEARCH_CX=a1b2c3d4e...
 [ ] DATABASE_URL       — PostgreSQL running locally or hosted
 [ ] JWT_SECRET_KEY     — openssl rand -base64 32
 [ ] ID_HEADER          — openssl rand -base64 32
-[ ] AWS_REGION         — e.g., us-east-2
+[ ] S3_BUCKET          — your bucket name
+[ ] S3_ENDPOINT / S3_PUBLIC_URL / S3_ACCESS_KEY_ID / S3_SECRET_ACCESS_KEY — for R2 (empty = AWS S3)
+[ ] AWS_REGION         — e.g., us-east-2 (SES; also S3 when S3_ENDPOINT is empty)
 [ ] AWS_ACCESS_KEY_ID  — (optional if using IAM role)
 [ ] AWS_SECRET_ACCESS_KEY
-[ ] S3_BUCKET          — your bucket name
 [ ] ANTHROPIC_API_KEY  — from console.anthropic.com
 [ ] OPENAI_API_KEY     — from platform.openai.com
 [ ] BRAVE_SEARCH_KEY   — from brave.com/search/api (optional)

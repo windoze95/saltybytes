@@ -2,11 +2,14 @@ package video
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestComputeFPS(t *testing.T) {
@@ -161,5 +164,81 @@ func TestFrameSampler_NoFrames(t *testing.T) {
 	s.runFFmpeg = fakeFFmpeg(t, 0, 0) // nothing produced
 	if _, err := s.Sample(context.Background(), "https://x/v.mp4", 1000); err == nil {
 		t.Fatal("expected error when no frames extracted")
+	}
+}
+
+func TestFFmpegCommand_NicedSingleThread(t *testing.T) {
+	got := ffmpegCommand([]string{"-hide_banner", "-i", "in.mp4", "out.jpg"})
+	want := []string{"-n", "19", "ffmpeg", "-threads", "1", "-hide_banner", "-i", "in.mp4", "out.jpg"}
+	if len(got) != len(want) {
+		t.Fatalf("argv = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("argv = %v, want %v", got, want)
+		}
+	}
+}
+
+// TestFrameSampler_SerializesLocalWork proves a second video job waits for the
+// first job's ffmpeg to finish instead of running alongside it.
+func TestFrameSampler_SerializesLocalWork(t *testing.T) {
+	s := NewFrameSampler()
+	s.download = writeFakeVideo
+
+	entered := make(chan int, 2)
+	releaseFirst := make(chan struct{})
+	var calls int32
+	s.runFFmpeg = func(_ context.Context, args []string) error {
+		n := int(atomic.AddInt32(&calls, 1))
+		entered <- n
+		if n == 1 {
+			<-releaseFirst
+		}
+		out := args[len(args)-1]
+		return os.WriteFile(out, []byte("jpg"), 0o600)
+	}
+
+	done := make(chan error, 2)
+	go func() {
+		_, err := s.ThumbnailFromVideo(context.Background(), []byte("video"))
+		done <- err
+	}()
+	if got := <-entered; got != 1 {
+		t.Fatalf("first job entered ffmpeg as call %d", got)
+	}
+
+	go func() {
+		_, err := s.ThumbnailFromVideo(context.Background(), []byte("video"))
+		done <- err
+	}()
+	select {
+	case n := <-entered:
+		t.Fatalf("second job reached ffmpeg (call %d) while the first still held the slot", n)
+	case <-time.After(100 * time.Millisecond):
+		// gated, as intended
+	}
+
+	close(releaseFirst)
+	if got := <-entered; got != 2 {
+		t.Fatalf("second job entered ffmpeg as call %d", got)
+	}
+	for i := 0; i < 2; i++ {
+		if err := <-done; err != nil {
+			t.Errorf("job %d: %v", i+1, err)
+		}
+	}
+}
+
+// TestFrameSampler_AcquireHonoursContext: a job waiting for the slot gives up
+// when its request is cancelled rather than queueing forever.
+func TestFrameSampler_AcquireHonoursContext(t *testing.T) {
+	s := NewFrameSampler()
+	s.slots <- struct{}{} // slot held by "another job"
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if _, err := s.ThumbnailFromVideo(ctx, []byte("video")); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v, want context.DeadlineExceeded", err)
 	}
 }

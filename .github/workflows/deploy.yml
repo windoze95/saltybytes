@@ -10,11 +10,21 @@ on:
       - ".gitignore"
   workflow_dispatch:
 
+# Two deploy targets share one build. The repository variable DEPLOY_TARGET
+# selects the live one: unset/"ecs" (AWS Fargate, the original) or "droplet"
+# (the single-host docker-compose stack in deploy/). The image is always
+# pushed to GHCR; ECR only while ECS is the target.
 env:
   AWS_REGION: us-east-2
   ECR_REPO: 915841655539.dkr.ecr.us-east-2.amazonaws.com/saltybytes-api
   ECS_CLUSTER: saltybytes
   ECS_SERVICE: saltybytes-api
+  GHCR_REPO: ghcr.io/${{ github.repository_owner }}/saltybytes-api
+  DEPLOY_TARGET: ${{ vars.DEPLOY_TARGET || 'ecs' }}
+
+permissions:
+  contents: read
+  packages: write
 
 jobs:
   deploy:
@@ -41,7 +51,31 @@ jobs:
       - name: Build
         run: go build ./...
 
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push image to GHCR
+        id: build-image
+        run: |
+          SHA=${GITHUB_SHA::7}
+          docker build --platform linux/amd64 \
+            -t $GHCR_REPO:latest \
+            -t $GHCR_REPO:$SHA \
+            .
+          docker push $GHCR_REPO:latest
+          docker push $GHCR_REPO:$SHA
+          DIGEST=$(docker inspect --format '{{index .RepoDigests 0}}' $GHCR_REPO:$SHA | cut -d@ -f2)
+          echo "image-tag=$SHA" >> "$GITHUB_OUTPUT"
+          echo "image-digest=$DIGEST" >> "$GITHUB_OUTPUT"
+          echo "Pushed $GHCR_REPO:$SHA ($DIGEST)"
+
+      # ---------------------------------------------------------------- ECS
       - name: Configure AWS credentials
+        if: env.DEPLOY_TARGET == 'ecs'
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
@@ -49,28 +83,28 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Login to ECR
+        if: env.DEPLOY_TARGET == 'ecs'
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Build, tag, and push Docker image
-        id: build-image
+      - name: Push image to ECR
+        if: env.DEPLOY_TARGET == 'ecs'
         run: |
-          SHA=${GITHUB_SHA::7}
-          docker build --platform linux/amd64 \
-            -t $ECR_REPO:latest \
-            -t $ECR_REPO:$SHA \
-            .
+          SHA=${{ steps.build-image.outputs.image-tag }}
+          docker tag $GHCR_REPO:$SHA $ECR_REPO:latest
+          docker tag $GHCR_REPO:$SHA $ECR_REPO:$SHA
           docker push $ECR_REPO:latest
           docker push $ECR_REPO:$SHA
-          echo "image-tag=$SHA" >> "$GITHUB_OUTPUT"
 
       - name: Deploy to ECS
+        if: env.DEPLOY_TARGET == 'ecs'
         run: |
           aws ecs update-service \
             --cluster $ECS_CLUSTER \
             --service $ECS_SERVICE \
             --force-new-deployment
 
-      - name: Wait for deployment to stabilize
+      - name: Wait for ECS deployment to stabilize
+        if: env.DEPLOY_TARGET == 'ecs'
         timeout-minutes: 15
         run: |
           echo "Waiting for ECS service to reach steady state (15 min timeout)..."
@@ -102,7 +136,8 @@ jobs:
             sleep 15
           done
 
-      - name: Verify deployed image
+      - name: Verify ECS deployed image
+        if: env.DEPLOY_TARGET == 'ecs'
         run: |
           EXPECTED_TAG="${{ steps.build-image.outputs.image-tag }}"
           ECR_REPO_NAME="${ECR_REPO##*/}"
@@ -126,3 +161,57 @@ jobs:
             echo "ERROR: Running image digest does not match pushed tag $EXPECTED_TAG"
             exit 1
           fi
+
+      # ------------------------------------------------------------ droplet
+      # Secrets: DROPLET_HOST (IP or hostname), DROPLET_SSH_KEY (private key
+      # for the "deploy" user), DROPLET_KNOWN_HOSTS (`ssh-keyscan <host>`).
+      - name: Configure SSH
+        if: env.DEPLOY_TARGET == 'droplet'
+        env:
+          SSH_KEY: ${{ secrets.DROPLET_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.DROPLET_KNOWN_HOSTS }}
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_ed25519 && chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts && chmod 644 ~/.ssh/known_hosts
+
+      - name: Sync stack files to droplet
+        if: env.DEPLOY_TARGET == 'droplet'
+        env:
+          HOST: ${{ secrets.DROPLET_HOST }}
+        run: |
+          scp -q deploy/docker-compose.yml deploy/Caddyfile "deploy@$HOST:/opt/saltybytes/"
+          scp -q deploy/scripts/*.sh "deploy@$HOST:/opt/saltybytes/scripts/"
+
+      - name: Deploy to droplet
+        if: env.DEPLOY_TARGET == 'droplet'
+        id: droplet
+        timeout-minutes: 10
+        env:
+          HOST: ${{ secrets.DROPLET_HOST }}
+        run: |
+          TAG="${{ steps.build-image.outputs.image-tag }}"
+          OUT=$(ssh "deploy@$HOST" "/opt/saltybytes/scripts/deploy.sh $TAG" | tee /dev/stderr)
+          RUNNING=$(printf '%s\n' "$OUT" | sed -n 's/^running-digest=.*@//p')
+          echo "running-digest=$RUNNING" >> "$GITHUB_OUTPUT"
+
+      - name: Verify droplet deployed image
+        if: env.DEPLOY_TARGET == 'droplet'
+        run: |
+          EXPECTED="${{ steps.build-image.outputs.image-digest }}"
+          RUNNING="${{ steps.droplet.outputs.running-digest }}"
+          echo "Expected digest: $EXPECTED"
+          echo "Running digest:  $RUNNING"
+          if [ -z "$RUNNING" ] || [ "$EXPECTED" != "$RUNNING" ]; then
+            echo "ERROR: running image digest does not match the pushed image"
+            exit 1
+          fi
+          for i in $(seq 1 10); do
+            if curl -fsS --max-time 10 https://api.saltybytes.ai/ping | grep -q pong; then
+              echo "Public /ping OK."
+              exit 0
+            fi
+            sleep 3
+          done
+          echo "ERROR: https://api.saltybytes.ai/ping did not answer"
+          exit 1
