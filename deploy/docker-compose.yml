@@ -1,0 +1,86 @@
+# Production stack for a single host (DigitalOcean droplet). Lives at
+# /opt/saltybytes on the box; CI copies this directory there on each deploy
+# and runs scripts/deploy.sh. Secrets come from /opt/saltybytes/.env (0600).
+#
+#   caddy  — TLS termination + reverse proxy (Caddyfile)
+#   api    — this repo's image from GHCR (Dockerfile at the repo root)
+#   db     — PostgreSQL 16 with pgvector; data in the pgdata volume
+#
+# The database is reachable only on the host loopback and, when DB_BIND_IP
+# is set to the host's Tailscale address, over the tailnet (for the admin
+# dashboard). It is never published on a public interface.
+
+services:
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./certs:/certs:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - api
+    logging: &logging
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  api:
+    image: ghcr.io/windoze95/saltybytes-api:${API_IMAGE_TAG:-latest}
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      GIN_MODE: release
+      PORT: "8080"
+    # Loopback only: lets deploy.sh and ad-hoc curl hit /ping without going
+    # through Caddy. Not reachable from outside the host.
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      db:
+        condition: service_healthy
+    logging: *logging
+
+  db:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-saltybytes}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-saltybytes}
+    # Sized for a 2 GB host shared with the API. maintenance_work_mem covers
+    # HNSW index builds during a restore.
+    command:
+      - postgres
+      - -c
+      - shared_buffers=256MB
+      - -c
+      - effective_cache_size=768MB
+      - -c
+      - maintenance_work_mem=256MB
+      - -c
+      - work_mem=8MB
+      - -c
+      - max_connections=50
+    ports:
+      - "${DB_BIND_IP:-127.0.0.1}:5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./backups:/backups
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-saltybytes} -d ${POSTGRES_DB:-saltybytes}"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    logging: *logging
+
+volumes:
+  pgdata:
+  caddy_data:
+  caddy_config:

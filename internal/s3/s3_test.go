@@ -3,6 +3,8 @@ package s3
 import (
 	"regexp"
 	"testing"
+
+	"github.com/windoze95/saltybytes-api/internal/config"
 )
 
 func TestGenerateS3Key_VersionedPNG(t *testing.T) {
@@ -102,7 +104,7 @@ func TestS3KeyFromURL(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := S3KeyFromURL(tt.url); got != tt.want {
+			if got := S3KeyFromURL(&config.Config{}, tt.url); got != tt.want {
 				t.Errorf("S3KeyFromURL(%q) = %q, want %q", tt.url, got, tt.want)
 			}
 		})
@@ -156,9 +158,88 @@ func TestRecipeImageKeyFromURL(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := RecipeImageKeyFromURL(tt.url, tt.recipeID); got != tt.want {
+			if got := RecipeImageKeyFromURL(&config.Config{}, tt.url, tt.recipeID); got != tt.want {
 				t.Errorf("RecipeImageKeyFromURL(%q, %d) = %q, want %q", tt.url, tt.recipeID, got, tt.want)
 			}
 		})
+	}
+}
+
+func publicURLConfig(base string) *config.Config {
+	cfg := &config.Config{}
+	cfg.EnvVars.S3PublicURL = base
+	return cfg
+}
+
+func TestS3KeyFromURL_PublicBaseURL(t *testing.T) {
+	cfg := publicURLConfig("https://img.example.com/")
+
+	tests := []struct {
+		name string
+		url  string
+		want string
+	}{
+		{
+			name: "url under the public base maps straight to the key",
+			url:  "https://img.example.com/recipes/1/images/recipe_image_1_1700000000.png",
+			want: "recipes/1/images/recipe_image_1_1700000000.png",
+		},
+		{
+			name: "escaped segment is unescaped",
+			url:  "https://img.example.com/uploads/1/images/my%20image.png",
+			want: "uploads/1/images/my image.png",
+		},
+		{
+			name: "query string is ignored",
+			url:  "https://img.example.com/recipes/1/images/a.png?v=2",
+			want: "recipes/1/images/a.png",
+		},
+		{
+			name: "legacy AWS URL still parses while old rows exist",
+			url:  "https://my-bucket.s3.us-east-2.amazonaws.com/recipes/1/images/recipe_image_1.jpg",
+			want: "recipes/1/images/recipe_image_1.jpg",
+		},
+		{
+			name: "bare base with no key",
+			url:  "https://img.example.com/",
+			want: "",
+		},
+		{
+			name: "similar host is not treated as the public base",
+			url:  "https://img.example.com.evil.test/recipes/1/images/a.png",
+			want: "recipes/1/images/a.png", // falls through to host-agnostic parsing, same as any external URL
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := S3KeyFromURL(cfg, tt.url); got != tt.want {
+				t.Errorf("S3KeyFromURL(%q) = %q, want %q", tt.url, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestPublicURL_RoundTrip(t *testing.T) {
+	cfg := publicURLConfig("https://img.example.com")
+	for _, key := range []string{
+		"recipes/7/images/recipe_image_7_1700000000.png",
+		"uploads/3/images/with space.png",
+		"uploads/3/images/odd#name?.png",
+	} {
+		u := PublicURL(cfg.S3PublicBaseURL(), key)
+		if got := S3KeyFromURL(cfg, u); got != key {
+			t.Errorf("round trip of %q via %q = %q", key, u, got)
+		}
+	}
+}
+
+func TestRecipeImageKeyFromURL_PublicBaseURL(t *testing.T) {
+	cfg := publicURLConfig("https://img.example.com")
+	if got := RecipeImageKeyFromURL(cfg, "https://img.example.com/recipes/7/images/x.png", 7); got != "recipes/7/images/x.png" {
+		t.Errorf("own prefix under public base = %q", got)
+	}
+	if got := RecipeImageKeyFromURL(cfg, "https://img.example.com/recipes/8/images/x.png", 7); got != "" {
+		t.Errorf("other recipe under public base should be rejected, got %q", got)
 	}
 }

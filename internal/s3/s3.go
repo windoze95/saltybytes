@@ -1,3 +1,6 @@
+// Package s3 stores recipe images in an S3-compatible object store: AWS S3
+// by default, or any store reachable through S3_ENDPOINT (Cloudflare R2,
+// DigitalOcean Spaces, MinIO). See config.EnvVars for the S3_* settings.
 package s3
 
 import (
@@ -6,6 +9,7 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -17,35 +21,75 @@ import (
 	"github.com/windoze95/saltybytes-api/internal/config"
 )
 
-// newS3Client creates a new S3 client from the app config.
-// When AWS access key and secret are provided, static credentials are used;
-// otherwise the default credential chain is preserved (IAM role, instance
-// profile, etc.) so ECS/EC2 task roles work without explicit keys.
+// The client is built once per process: config is process-wide, and rebuilding
+// it per call re-resolves credentials (an HTTP round-trip on ECS task roles).
+// Only a successful build is cached, so a transient failure is retried.
+var (
+	clientMu sync.Mutex
+	client   *s3.Client
+)
+
+func getClient(ctx context.Context, cfg *config.Config) (*s3.Client, error) {
+	clientMu.Lock()
+	defer clientMu.Unlock()
+	if client != nil {
+		return client, nil
+	}
+	c, err := newS3Client(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+	client = c
+	return c, nil
+}
+
+// newS3Client creates an S3 client from the app config. Static credentials
+// are used when a key pair is configured (S3_* first, then AWS_*); otherwise
+// the default credential chain is preserved (IAM role, instance profile,
+// etc.) so ECS/EC2 task roles work without explicit keys. With S3_ENDPOINT
+// set, requests go to that endpoint in path style and the SDK's default
+// CRC checksum trailers are disabled — R2 and other compatible stores reject
+// them.
 func newS3Client(ctx context.Context, cfg *config.Config) (*s3.Client, error) {
 	opts := []func(*awsconfig.LoadOptions) error{
-		awsconfig.WithRegion(cfg.EnvVars.AWSRegion),
+		awsconfig.WithRegion(cfg.S3Region()),
 	}
 
-	if cfg.EnvVars.AWSAccessKeyID != "" && cfg.EnvVars.AWSSecretAccessKey != "" {
+	if keyID, secret := cfg.S3Credentials(); keyID != "" && secret != "" {
 		opts = append(opts, awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(
-			cfg.EnvVars.AWSAccessKeyID,
-			cfg.EnvVars.AWSSecretAccessKey,
+			keyID,
+			secret,
 			"",
 		)))
+	}
+
+	endpoint := strings.TrimSpace(cfg.EnvVars.S3Endpoint)
+	if endpoint != "" {
+		opts = append(opts,
+			awsconfig.WithRequestChecksumCalculation(aws.RequestChecksumCalculationWhenRequired),
+			awsconfig.WithResponseChecksumValidation(aws.ResponseChecksumValidationWhenRequired),
+		)
 	}
 
 	awsCfg, err := awsconfig.LoadDefaultConfig(ctx, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load AWS config: %v", err)
 	}
-	return s3.NewFromConfig(awsCfg), nil
+	return s3.NewFromConfig(awsCfg, func(o *s3.Options) {
+		if endpoint != "" {
+			o.BaseEndpoint = aws.String(endpoint)
+			o.UsePathStyle = true
+		}
+	}), nil
 }
 
-// UploadRecipeImageToS3 uploads a given byte array to an S3 bucket and returns
-// the location URL. contentType, when non-empty, is stored as the object's
-// Content-Type so browsers and CDNs serve the image correctly.
+// UploadRecipeImageToS3 uploads a given byte array to the image bucket and
+// returns the object's public URL. contentType, when non-empty, is stored as
+// the object's Content-Type so browsers and CDNs serve the image correctly.
+// With S3_PUBLIC_URL set the URL is <S3_PUBLIC_URL>/<key>; otherwise it is
+// the SDK-reported location (AWS virtual-hosted style).
 func UploadRecipeImageToS3(ctx context.Context, cfg *config.Config, imgBytes []byte, s3Key string, contentType string) (string, error) {
-	client, err := newS3Client(ctx, cfg)
+	client, err := getClient(ctx, cfg)
 	if err != nil {
 		return "", err
 	}
@@ -66,12 +110,25 @@ func UploadRecipeImageToS3(ctx context.Context, cfg *config.Config, imgBytes []b
 		return "", fmt.Errorf("failed to upload to S3: %v", err)
 	}
 
+	if base := cfg.S3PublicBaseURL(); base != "" {
+		return PublicURL(base, s3Key), nil
+	}
 	return result.Location, nil
 }
 
-// DeleteRecipeImageFromS3 deletes a given image from an S3 bucket.
+// PublicURL joins a public base URL and an object key, escaping each key
+// segment so S3KeyFromURL round-trips it.
+func PublicURL(base, key string) string {
+	segments := strings.Split(key, "/")
+	for i, seg := range segments {
+		segments[i] = url.PathEscape(seg)
+	}
+	return strings.TrimRight(base, "/") + "/" + strings.Join(segments, "/")
+}
+
+// DeleteRecipeImageFromS3 deletes a given image from the image bucket.
 func DeleteRecipeImageFromS3(ctx context.Context, cfg *config.Config, s3Key string) error {
-	client, err := newS3Client(ctx, cfg)
+	client, err := getClient(ctx, cfg)
 	if err != nil {
 		return err
 	}
@@ -108,11 +165,19 @@ func GenerateUploadKey(userID uint, ext string) string {
 	return fmt.Sprintf("uploads/%d/images/%s%s", userID, uuid.NewString(), ext)
 }
 
-// S3KeyFromURL derives the S3 object key from an object URL previously
-// returned by an upload. Returns "" when the URL is empty or cannot be parsed.
-func S3KeyFromURL(imageURL string) string {
+// S3KeyFromURL derives the object key from an image URL previously returned
+// by an upload. URLs under S3_PUBLIC_URL map directly; AWS S3 URLs (the
+// pre-S3_PUBLIC_URL shape still present in older rows) are parsed by host
+// style. Returns "" when the URL is empty or cannot be parsed.
+func S3KeyFromURL(cfg *config.Config, imageURL string) string {
 	if imageURL == "" {
 		return ""
+	}
+
+	if base := cfg.S3PublicBaseURL(); base != "" {
+		if rest, ok := strings.CutPrefix(imageURL, base+"/"); ok {
+			return unescapeKey(rest)
+		}
 	}
 
 	u, err := url.Parse(imageURL)
@@ -131,10 +196,16 @@ func S3KeyFromURL(imageURL string) string {
 		}
 	}
 
-	if unescaped, err := url.PathUnescape(key); err == nil {
-		key = unescaped
-	}
+	return unescapeKey(key)
+}
 
+func unescapeKey(key string) string {
+	if i := strings.IndexAny(key, "?#"); i >= 0 {
+		key = key[:i]
+	}
+	if unescaped, err := url.PathUnescape(key); err == nil {
+		return unescaped
+	}
 	return key
 }
 
@@ -164,14 +235,14 @@ func isPathStyleS3Host(host string) bool {
 	return region != "" && !strings.Contains(region, ".")
 }
 
-// RecipeImageKeyFromURL derives the deletable S3 key for a recipe's image
+// RecipeImageKeyFromURL derives the deletable object key for a recipe's image
 // from its stored URL, returning "" unless the key lies under the recipe's
 // own "recipes/<recipeID>/" prefix. A recipe's ImageURL can be
 // client-supplied (manual import) or scraped from external pages (JSON-LD),
 // so a key derived from it must never be trusted to reference objects
 // outside the recipe's own folder.
-func RecipeImageKeyFromURL(imageURL string, recipeID uint) string {
-	key := S3KeyFromURL(imageURL)
+func RecipeImageKeyFromURL(cfg *config.Config, imageURL string, recipeID uint) string {
+	key := S3KeyFromURL(cfg, imageURL)
 	if key == "" {
 		return ""
 	}

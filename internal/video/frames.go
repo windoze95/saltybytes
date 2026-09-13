@@ -41,12 +41,41 @@ type FrameSampler struct {
 	runFFmpeg func(ctx context.Context, args []string) error
 	// download is a test seam; nil downloads over HTTP.
 	download func(ctx context.Context, mediaURL, dest string) error
+	// slots gates the local heavy work (media download + ffmpeg) to
+	// maxConcurrentJobs at a time so a burst of video imports cannot starve
+	// the API or the database on a small host. Only the seconds of local
+	// work are serialized — callers hold no slot while waiting on the model.
+	// nil (zero-value sampler) means ungated.
+	slots chan struct{}
 }
+
+// maxConcurrentJobs is how many video downloads/ffmpeg runs may proceed at
+// once. One: ffmpeg is the only CPU-bound work in the API, and a second
+// import waiting a few seconds beats two imports crawling.
+const maxConcurrentJobs = 1
 
 // NewFrameSampler returns a sampler with sensible defaults, including an
 // SSRF-hardened HTTP client (see newSafeHTTPClient).
 func NewFrameSampler() *FrameSampler {
-	return &FrameSampler{MaxFrames: DefaultMaxFrames, HTTP: newSafeHTTPClient()}
+	return &FrameSampler{
+		MaxFrames: DefaultMaxFrames,
+		HTTP:      newSafeHTTPClient(),
+		slots:     make(chan struct{}, maxConcurrentJobs),
+	}
+}
+
+// acquire waits for a job slot (or ctx cancellation) and returns the release
+// func. Ungated samplers return immediately.
+func (s *FrameSampler) acquire(ctx context.Context) (release func(), err error) {
+	if s.slots == nil {
+		return func() {}, nil
+	}
+	select {
+	case s.slots <- struct{}{}:
+		return func() { <-s.slots }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 // safeDialControl rejects connections to non-public IP addresses. Used as
@@ -92,6 +121,12 @@ func (s *FrameSampler) maxFrames() int {
 
 // Sample downloads mediaURL and returns up to MaxFrames JPEG frames.
 func (s *FrameSampler) Sample(ctx context.Context, mediaURL string, durationMS int) ([][]byte, error) {
+	release, err := s.acquire(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+
 	dir, err := os.MkdirTemp("", "vidframes-*")
 	if err != nil {
 		return nil, err
@@ -138,6 +173,12 @@ func (s *FrameSampler) Sample(ctx context.Context, mediaURL string, durationMS i
 // Sample download so the common path never pays for audio it won't use — this
 // runs only on the rare last-resort Whisper escalation.
 func (s *FrameSampler) ExtractAudio(ctx context.Context, mediaURL string) ([]byte, error) {
+	release, err := s.acquire(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+
 	dir, err := os.MkdirTemp("", "vidaudio-*")
 	if err != nil {
 		return nil, err
@@ -177,6 +218,12 @@ func (s *FrameSampler) ExtractAudio(ctx context.Context, mediaURL string) ([]byt
 // can fall back to frame sampling for oversized clips. Used by the native-video
 // path, which needs the raw bytes to inline into the model request.
 func (s *FrameSampler) DownloadVideo(ctx context.Context, mediaURL string, maxBytes int64) ([]byte, error) {
+	release, err := s.acquire(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+
 	dir, err := os.MkdirTemp("", "vidnative-*")
 	if err != nil {
 		return nil, err
@@ -212,6 +259,12 @@ func (s *FrameSampler) DownloadVideo(ctx context.Context, mediaURL string, maxBy
 // any black intro) from already-downloaded video bytes, for use as the recipe's
 // hero image on the native path where no frame set is produced. Best-effort.
 func (s *FrameSampler) ThumbnailFromVideo(ctx context.Context, videoData []byte) ([]byte, error) {
+	release, err := s.acquire(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+
 	dir, err := os.MkdirTemp("", "vidthumb-*")
 	if err != nil {
 		return nil, err
@@ -303,12 +356,24 @@ func readFrames(dir, glob string, cap int) [][]byte {
 	return frames
 }
 
+// realFFmpeg runs ffmpeg at the lowest scheduling priority with a single
+// decoder thread. Decoding is the expensive step, and on a shared host the
+// API and Postgres must win any contention: a thumbnail cut may take a
+// little longer, a request never does.
 func realFFmpeg(ctx context.Context, args []string) error {
-	out, err := exec.CommandContext(ctx, "ffmpeg", args...).CombinedOutput()
+	out, err := exec.CommandContext(ctx, "nice", ffmpegCommand(args)...).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("ffmpeg failed: %w (%s)", err, string(out))
 	}
 	return nil
+}
+
+// ffmpegCommand builds the argv passed to nice: "-n 19 ffmpeg -threads 1
+// <args>". -threads before -i bounds the decoder, where the CPU goes.
+func ffmpegCommand(args []string) []string {
+	argv := make([]string, 0, len(args)+5)
+	argv = append(argv, "-n", "19", "ffmpeg", "-threads", "1")
+	return append(argv, args...)
 }
 
 func (s *FrameSampler) httpDownload(ctx context.Context, mediaURL, dest string) error {

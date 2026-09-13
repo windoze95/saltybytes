@@ -12,7 +12,7 @@ services:
       - database
 
   database:
-    image: postgres:17.2
+    image: pgvector/pgvector:pg17
     container_name: saltybytes-db
     ports:
       - "5432:5432"

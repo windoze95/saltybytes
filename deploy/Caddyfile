@@ -1,0 +1,41 @@
+# Reverse proxy for the API + public site, behind the Cloudflare proxy.
+#
+# TLS: a Cloudflare Origin CA certificate (15-year, issued in the Cloudflare
+# dashboard for saltybytes.ai + *.saltybytes.ai) at ./certs/origin.pem and
+# ./certs/origin.key, with the zone in "Full (strict)" mode. It is not
+# publicly trusted — only Cloudflare needs to trust it — which is exactly
+# why it works before DNS points here (rehearsal) and needs no renewals.
+# To use Let's Encrypt instead, delete the `tls` line; Caddy will complete
+# the HTTP-01 challenge through the Cloudflare proxy once DNS is switched.
+
+{
+	# Cloudflare's edge ranges (https://www.cloudflare.com/ips/). Requests
+	# from these carry the real client in X-Forwarded-For; anything else is
+	# treated as the client itself, so the header cannot be spoofed.
+	servers {
+		trusted_proxies static 173.245.48.0/20 103.21.244.0/22 103.22.200.0/22 103.31.4.0/22 141.101.64.0/18 108.162.192.0/18 190.93.240.0/20 188.114.96.0/20 197.234.240.0/22 198.41.128.0/17 162.158.0.0/15 104.16.0.0/13 104.24.0.0/14 172.64.0.0/13 131.0.72.0/22 2400:cb00::/32 2606:4700::/32 2803:f800::/32 2405:b500::/32 2405:8100::/32 2a06:98c0::/29 2c0f:f248::/32
+	}
+}
+
+api.saltybytes.ai, saltybytes.ai, www.saltybytes.ai {
+	tls /certs/origin.pem /certs/origin.key
+
+	encode zstd gzip
+
+	# Largest upload path is the multi-file import (28 MB total).
+	request_body {
+		max_size 32MB
+	}
+
+	reverse_proxy api:8080 {
+		# {client_ip} honours trusted_proxies above. The API's own trusted
+		# proxy list covers the Docker network, so it reads this as-is for
+		# per-IP rate limiting.
+		header_up X-Forwarded-For {client_ip}
+
+		# SSE (/v1/recipes/find, /mcp) must stream; WebSockets (/v1/ws/*)
+		# upgrade automatically. Caddy applies no response timeout by
+		# default, so minutes-long AI requests are fine.
+		flush_interval -1
+	}
+}

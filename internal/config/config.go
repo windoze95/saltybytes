@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"reflect"
+	"strings"
 
 	"github.com/caarlos0/env/v11"
 )
@@ -16,15 +17,29 @@ type Config struct {
 // EnvVars holds environment variables required by the application.
 // Fields tagged `optional:"true"` are skipped by CheckConfigEnvFields.
 type EnvVars struct {
-	Port               string `env:"PORT" envDefault:"8080"`
-	DatabaseUrl        string `env:"DATABASE_URL"`
-	JwtSecretKey       string `env:"JWT_SECRET_KEY"`
+	Port         string `env:"PORT" envDefault:"8080"`
+	DatabaseUrl  string `env:"DATABASE_URL"`
+	JwtSecretKey string `env:"JWT_SECRET_KEY"`
+	// AWS_* credentials serve SES (signup emails) and, when no S3_* override is
+	// set, the S3 image bucket too.
 	AWSRegion          string `env:"AWS_REGION"`
 	AWSAccessKeyID     string `env:"AWS_ACCESS_KEY_ID" optional:"true"`
 	AWSSecretAccessKey string `env:"AWS_SECRET_ACCESS_KEY" optional:"true"`
-	S3Bucket           string `env:"S3_BUCKET"`
-	IDHeader           string `env:"ID_HEADER"`
-	AnthropicAPIKey    string `env:"ANTHROPIC_API_KEY"`
+	// Object storage for recipe images. Any S3-compatible store works: leave
+	// S3_ENDPOINT empty for AWS S3 (region/credentials fall back to AWS_*), or
+	// point it at Cloudflare R2 / DigitalOcean Spaces / MinIO with that store's
+	// own key pair. S3_PUBLIC_URL is the base URL objects are served from
+	// (e.g. https://img.saltybytes.ai, an R2 custom domain); stored image URLs
+	// are built from it, so it decouples the DB from the storage host. When
+	// empty, the SDK's own object URL is stored (AWS virtual-hosted style).
+	S3Bucket          string `env:"S3_BUCKET"`
+	S3Endpoint        string `env:"S3_ENDPOINT" optional:"true"`
+	S3Region          string `env:"S3_REGION" optional:"true"`
+	S3AccessKeyID     string `env:"S3_ACCESS_KEY_ID" optional:"true"`
+	S3SecretAccessKey string `env:"S3_SECRET_ACCESS_KEY" optional:"true"`
+	S3PublicURL       string `env:"S3_PUBLIC_URL" optional:"true"`
+	IDHeader          string `env:"ID_HEADER"`
+	AnthropicAPIKey   string `env:"ANTHROPIC_API_KEY"`
 	// AnthropicModel and AnthropicLightModel override the Claude model IDs
 	// used for full-quality and cheap preview/extraction tasks respectively.
 	AnthropicModel      string `env:"ANTHROPIC_MODEL" envDefault:"claude-sonnet-4-6" optional:"true"`
@@ -159,6 +174,31 @@ type EnvVars struct {
 // credentials are fully set.
 func (c *Config) AppleIAPPollingConfigured() bool {
 	return c.EnvVars.AppleIAPKeyID != "" && c.EnvVars.AppleIAPIssuerID != "" && c.EnvVars.AppleIAPPrivateKeyB64 != ""
+}
+
+// S3PublicBaseURL returns S3_PUBLIC_URL without a trailing slash, or "" when
+// stored image URLs should come from the SDK instead.
+func (c *Config) S3PublicBaseURL() string {
+	return strings.TrimRight(strings.TrimSpace(c.EnvVars.S3PublicURL), "/")
+}
+
+// S3Region is the region for the image store: S3_REGION when set (R2 uses
+// "auto"), otherwise AWS_REGION.
+func (c *Config) S3Region() string {
+	if c.EnvVars.S3Region != "" {
+		return c.EnvVars.S3Region
+	}
+	return c.EnvVars.AWSRegion
+}
+
+// S3Credentials returns the static key pair for the image store: the S3_*
+// pair when set, otherwise the AWS_* pair. Both empty means "use the SDK's
+// default credential chain" (ECS/EC2 task roles).
+func (c *Config) S3Credentials() (keyID, secret string) {
+	if c.EnvVars.S3AccessKeyID != "" || c.EnvVars.S3SecretAccessKey != "" {
+		return c.EnvVars.S3AccessKeyID, c.EnvVars.S3SecretAccessKey
+	}
+	return c.EnvVars.AWSAccessKeyID, c.EnvVars.AWSSecretAccessKey
 }
 
 // EmailVerificationActive reports whether the signup email-verification flow

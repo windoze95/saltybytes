@@ -5,6 +5,7 @@ import (
 	_ "embed"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -30,15 +31,28 @@ const serverInstructions = `SaltyBytes finds REAL recipes from around the web an
 Typical flow: search_recipes to find candidates -> preview_recipe on the chosen result -> save_recipe when the user wants to keep it -> start_cooking when they are ready.
 Every tool renders an interactive widget in the conversation; prefer letting the widget present recipe details instead of restating them in text.`
 
+// imageResourceDomains lists the origins the widget may load recipe images
+// from: the configured public image host (S3_PUBLIC_URL) first, plus the AWS
+// S3 hosts that pre-S3_PUBLIC_URL rows still point at.
+func imageResourceDomains(cfg *config.Config) []string {
+	var domains []string
+	if base := cfg.S3PublicBaseURL(); base != "" {
+		if u, err := url.Parse(base); err == nil && u.Scheme != "" && u.Host != "" {
+			domains = append(domains, u.Scheme+"://"+u.Host)
+		}
+	}
+	return append(domains,
+		fmt.Sprintf("https://%s.s3.amazonaws.com", cfg.EnvVars.S3Bucket),
+		fmt.Sprintf("https://%s.s3.%s.amazonaws.com", cfg.EnvVars.S3Bucket, cfg.EnvVars.AWSRegion),
+	)
+}
+
 // widgetResourceMeta declares the widget's MCP Apps metadata (CSP etc.).
-// Recipe imagery comes from the user's own S3 uploads plus arbitrary recipe
+// Recipe imagery comes from the user's own uploads plus arbitrary recipe
 // sites; the widget degrades gracefully (branded placeholder) when a host's
 // CSP blocks an external image.
 func widgetResourceMeta(cfg *config.Config) mcp.Meta {
-	resourceDomains := []string{
-		fmt.Sprintf("https://%s.s3.amazonaws.com", cfg.EnvVars.S3Bucket),
-		fmt.Sprintf("https://%s.s3.%s.amazonaws.com", cfg.EnvVars.S3Bucket, cfg.EnvVars.AWSRegion),
-	}
+	resourceDomains := imageResourceDomains(cfg)
 	return mcp.Meta{"ui": map[string]any{
 		"csp": map[string]any{
 			"connectDomains":  []string{},
@@ -52,10 +66,7 @@ func widgetResourceMeta(cfg *config.Config) mcp.Meta {
 }
 
 func chatGPTResourceMeta(cfg *config.Config) mcp.Meta {
-	resourceDomains := []string{
-		fmt.Sprintf("https://%s.s3.amazonaws.com", cfg.EnvVars.S3Bucket),
-		fmt.Sprintf("https://%s.s3.%s.amazonaws.com", cfg.EnvVars.S3Bucket, cfg.EnvVars.AWSRegion),
-	}
+	resourceDomains := imageResourceDomains(cfg)
 	return mcp.Meta{
 		"openai/widgetDescription":   "Browse, save, and cook SaltyBytes recipes without leaving the conversation.",
 		"openai/widgetPrefersBorder": true,
