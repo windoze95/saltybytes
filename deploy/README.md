@@ -51,7 +51,12 @@ from `.env.example` (`chmod 600`), drop the origin cert in `certs/`, and
 **GitHub** — secrets `DROPLET_HOST`, `DROPLET_SSH_KEY` (private key whose
 public half is in `/home/deploy/.ssh/authorized_keys`), `DROPLET_KNOWN_HOSTS`
 (`ssh-keyscan <host>`). Repository variable `DEPLOY_TARGET=droplet` switches
-CI from ECS to the droplet — leave it unset until cutover.
+CI from ECS to the droplet — leave it unset until cutover. The first CI run
+creates the `saltybytes-api` package on GHCR as **private**; the droplet
+pulls anonymously, so flip it to public once (profile → Packages →
+saltybytes-api → Package settings → Change visibility) — the image holds
+only the binary and prompts, nothing secret — or `docker login ghcr.io` on
+the droplet with a `read:packages` token.
 
 **Unraid dashboard** — `DATABASE_URL=postgres://dashboard_ro:…@<droplet tailscale ip>:5432/saltybytes`;
 unset the `SGSYNC_*` vars (they only existed to whitelist a home IP on RDS).
